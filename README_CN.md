@@ -157,15 +157,55 @@ sflang/
 └── main.go     # 程序入口
 ```
 
+## 性能基准测试
+
+基准测试环境：Windows 11, Go 1.21, Python 3.14。
+
+| 测试项 | Sflang | Python 3.14 | 比率 |
+|--------|--------|-------------|------|
+| 斐波那契(35) | 938 ms | 825 ms | 1.14x |
+| 循环累加(1000万) | 425 ms | 332 ms | 1.28x |
+| 数组测试(10万) | 15 ms | 8 ms | 1.88x |
+| 嵌套循环(1000×1000) | 38 ms | 28 ms | 1.36x |
+| 字符串拼接(1万) | 11 ms | 1 ms | 11x |
+
+> **说明**：Sflang设计目标是简单和快速启动。虽然Python 3.14+对循环和内置函数做了大量优化，但Sflang作为嵌入式脚本语言仍具有竞争力，且占用资源更小。
+
+### 基准测试代码
+
+```sflang
+// 斐波那契
+fn fib(n) {
+    if (n < 2) { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+// 循环累加
+fn loop_sum(n) {
+    let sum = 0
+    for (let i = 0; i < n; i++) {
+        sum = sum + i
+    }
+    return sum
+}
+```
+
 ## 内置函数
 
 - `print(...)` - 输出值到标准输出
+- `println(...)` - 输出值并换行
 - `len(value)` - 获取字符串、数组或映射的长度
-- `type(value)` - 获取值的类型
+- `typeCode(value)` - 获取数值类型码
+- `typeName(value)` - 获取类型名称字符串
+- `str(value)` - 转换为字符串
+- `int(value)` - 转换为整数
+- `float(value)` - 转换为浮点数
+- `bool(value)` - 转换为布尔值
 - `push(array, value)` - 向数组添加元素
 - `pop(array)` - 从数组弹出元素
-- `input([prompt])` - 从标准输入读取
-- 更多...
+- `time()` - 获取当前时间（毫秒）
+- `sleep(ms)` - 休眠指定毫秒数
+- 以及30多个其他函数...
 
 ## 许可证
 

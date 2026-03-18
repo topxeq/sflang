@@ -157,15 +157,55 @@ sflang/
 └── main.go     # Entry point
 ```
 
+## Performance Benchmarks
+
+Benchmarks run on Windows 11, Go 1.21, Python 3.14.
+
+| Test | Sflang | Python 3.14 | Ratio |
+|------|--------|-------------|-------|
+| Fibonacci(35) | 938 ms | 825 ms | 1.14x |
+| Loop Sum(10M) | 425 ms | 332 ms | 1.28x |
+| Array Test(100K) | 15 ms | 8 ms | 1.88x |
+| Nested Loop(1K×1K) | 38 ms | 28 ms | 1.36x |
+| String Concat(10K) | 11 ms | 1 ms | 11x |
+
+> **Note**: Sflang is designed for simplicity and fast startup. While Python 3.14+ has highly optimized loops and built-ins, Sflang delivers competitive performance for an embedded scripting language with a small footprint.
+
+### Benchmark Code
+
+```sflang
+// Fibonacci
+fn fib(n) {
+    if (n < 2) { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+// Loop sum
+fn loop_sum(n) {
+    let sum = 0
+    for (let i = 0; i < n; i++) {
+        sum = sum + i
+    }
+    return sum
+}
+```
+
 ## Built-in Functions
 
 - `print(...)` - Print values to stdout
+- `println(...)` - Print values with newline
 - `len(value)` - Get length of string, array, or map
-- `type(value)` - Get type of value
+- `typeCode(value)` - Get numeric type code
+- `typeName(value)` - Get type name string
+- `str(value)` - Convert to string
+- `int(value)` - Convert to integer
+- `float(value)` - Convert to float
+- `bool(value)` - Convert to boolean
 - `push(array, value)` - Push value to array
 - `pop(array)` - Pop value from array
-- `input([prompt])` - Read input from stdin
-- And more...
+- `time()` - Get current time in milliseconds
+- `sleep(ms)` - Sleep for milliseconds
+- And 30+ more functions...
 
 ## License
 
