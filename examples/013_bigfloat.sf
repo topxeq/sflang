@@ -1,0 +1,61 @@
+// BigFloat example - Arbitrary precision floating-point numbers
+// BigFloat uses suffix 'm' and supports high precision calculations
+
+// Regular float (64-bit) has limited precision
+let piFloat = 3.14159265358979323846
+println("Regular float (limited precision):")
+println("piFloat:", piFloat)
+
+// BigFloat with higher precision
+let piBig = 3.14159265358979323846264338327950288419716939937510m
+let eBig = 2.71828182845904523536028747135266249775724709369995m
+
+println("")
+println("BigFloat examples:")
+println("pi (high precision):", piBig)
+println("e (high precision):", eBig)
+
+// Type information
+println("")
+println("Type info:")
+println("typeName(piBig):", typeName(piBig))
+println("typeCode(piBig):", typeCode(piBig))
+
+// BigFloat as map keys
+let constants = {}
+constants[piBig] = "pi"
+constants[eBig] = "euler's number"
+
+println("")
+println("BigFloat as map keys:")
+println("constants[piBig]:", constants[piBig])
+println("constants[eBig]:", constants[eBig])
+
+// BigFloat in array
+let bigFloatArray = [1.5m, 2.718m, 3.14159m]
+println("")
+println("BigFloat array:", bigFloatArray)
+
+// Scientific notation with BigFloat
+let scientific = 1.23456789e100m
+println("")
+println("Scientific notation:")
+println("scientific:", scientific)
+
+// Very small numbers
+let tiny = 0.00000000000000000000000000000000000000000000123456789m
+println("")
+println("Very small BigFloat:")
+println("tiny:", tiny)
+
+// Compare precision
+let a = 0.1m
+let b = 0.2m
+let c = 0.3m
+println("")
+println("Precision comparison:")
+println("0.1m + 0.2m:", a, "+", b)
+println("(Note: BigFloat maintains precision unlike regular floats)")
+
+println("")
+println("BigFloat example completed!")

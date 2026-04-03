@@ -1,0 +1,50 @@
+// BigInt example - Arbitrary precision integers
+// BigInt uses suffix 'n' and supports unlimited size integers
+
+// Regular int (64-bit) has limits
+let maxInt = 9223372036854775807  // Max int64
+println("Max int64:", maxInt)
+
+// BigInt can go beyond int64 limits
+let big1 = 9223372036854775808n   // int64 max + 1
+let big2 = 123456789012345678901234567890n
+let big3 = 9999999999999999999999999999999999999999n
+
+println("")
+println("BigInt examples:")
+println("big1:", big1)
+println("big2:", big2)
+println("big3:", big3)
+
+// Type information
+println("")
+println("Type info:")
+println("typeName(big1):", typeName(big1))
+println("typeCode(big1):", typeCode(big1))
+
+// BigInt as map keys
+let cache = {}
+cache[big1] = "value for big1"
+cache[big2] = "value for big2"
+
+println("")
+println("BigInt as map keys:")
+println("cache[big1]:", cache[big1])
+println("cache[big2]:", cache[big2])
+println("has(cache, big1):", has(cache, big1))
+
+// BigInt in array
+let bigArray = [100n, 200n, 300n, big1, big2]
+println("")
+println("BigInt array:", bigArray)
+println("bigArray[0]:", bigArray[0])
+println("bigArray[3]:", bigArray[3])
+
+// Very large numbers
+let huge = 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000n
+println("")
+println("Very large BigInt:")
+println("length of huge string:", len(str(huge)))
+
+println("")
+println("BigInt example completed!")
