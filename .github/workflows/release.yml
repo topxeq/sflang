@@ -1,0 +1,80 @@
+name: Build and Release
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Windows
+          - goos: windows
+            goarch: amd64
+            os: ubuntu-latest
+            ext: .exe
+            archive: zip
+          # Linux
+          - goos: linux
+            goarch: amd64
+            os: ubuntu-latest
+            ext: ''
+            archive: tar.gz
+          # Linux ARM
+          - goos: linux
+            goarch: arm64
+            os: ubuntu-latest
+            ext: ''
+            archive: tar.gz
+          # macOS
+          - goos: darwin
+            goarch: amd64
+            os: macos-latest
+            ext: ''
+            archive: tar.gz
+          # macOS ARM (M1/M2)
+          - goos: darwin
+            goarch: arm64
+            os: macos-latest
+            ext: ''
+            archive: tar.gz
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags="-s -w" -o sf${{ matrix.ext }} .
+
+      - name: Prepare package
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            zip -r dist/sf-${{ matrix.goos }}-${{ matrix.goarch }}.zip sf${{ matrix.ext }} README.md README_CN.md LICENSE examples/
+          else
+            tar -czvf dist/sf-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz sf${{ matrix.ext }} README.md README_CN.md LICENSE examples/
+          fi
+        shell: bash
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./dist/sf-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.archive }}
+          asset_name: sf-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.archive }}
+          asset_content_type: application/octet-stream
