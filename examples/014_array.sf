@@ -1,0 +1,141 @@
+// Arrays - Sflang example
+// Equivalent to Charlang's array.char (with Sflang-compatible syntax)
+
+// Declare an array
+let a = [1, 2, 3, "abc", 12.3];
+
+println("a:", a);
+println("a[2]:", a[2]);
+println("length of a:", len(a));
+
+// Reassign the array variable
+a = [1, 2];
+
+// Append values
+a = append(a, "abc");
+
+let b = ["xyz", 16];
+
+// Append another array (using concat instead of appendArray)
+a = concat(a, b);
+
+a = append(a, true);
+a = append(a, bytes(30, 31));
+
+println("after appends:", a);
+
+a[0]++;
+
+println("after a[0]++:", a);
+
+a[1] = [3.2, 16];
+
+// Handle exceptions
+try {
+    a[6] = "5th";  // will index out of range
+} catch (e) {
+    pl("exception: %v", e);
+}
+
+a[4] = 1000;
+
+// The last item (using negative index)
+a[len(a) - 1] = "last";
+
+println("after modifications:", a);
+
+pl("a[1][1] = %v", a[1][1]);
+
+let b1 = [19, 19];
+
+pl("a + b = %v", concat(a, b1));
+
+// Nested concat
+let c = concat(concat([a], [b]), b);
+
+println("nested c:", c);
+
+// Slice
+let d = a[3:5];
+
+println("slice d (a[3:5]):", d);
+
+// Slice with negative end index
+let d1 = slice(a, 3, -1);
+
+pl("d1 (slice from 3 to -1): %v", d1);
+
+// Remove items
+let e = removeItems(a, 1, 3);
+
+println("after removeItems(a, 1, 3):", e);
+
+// Create preallocated array with make
+let f = make("array", 2, 5);
+
+println("make array (size=2, cap=5):", f);
+
+f[0] = make("array", 2, 2);
+f[0][0] = false;
+f[0][1] = true;
+
+println("nested make array:", f);
+
+let g = [1.2, 3, 56];
+
+println("g:", g);
+
+// Check if array contains some items
+println(arrayContains(g, 56));
+println(arrayContains(g, "abc"));
+
+// Iterate with for-in
+for (i, v in c) {
+    pl("i: %v, v: %v", i, v);
+}
+
+// Traditional for loop
+for (let i = 0; i < len(c); i++) {
+    pl("i: %v, v: %v", i, c[i]);
+}
+
+// Negative index access
+let h = [3, 17, 2, 5, 0.6, 22.8];
+
+println("h:", h);
+pl("h[-1] (last): %v", h[-1]);
+pl("h[-2] (second last): %v", h[-2]);
+
+// Sorting
+let h1 = sort(h);
+pl("h sorted: %v", h1);
+
+// Sort with strings
+let m = ["abc", "", "123", "qwer", "fghj"];
+pl("m sorted: %v", sort(m));
+
+// Custom sort with sortByFunc
+let ary1 = [123, 2, "abc", "132", 3.5, "", false, true];
+pl("ary1: %v", ary1);
+
+let func0 = func(elem1, elem2) {
+    return str(elem1) < str(elem2);
+};
+
+let ary2 = sortByFunc(ary1, func0);
+pl("ary1 sorted by string: %v", ary2);
+
+// Custom sort: empty string is the largest
+let n = ["abc", "", "123", "qwer", "fghj"];
+let func1 = func(elem1, elem2) {
+    if (str(elem1) == "") {
+        return false;
+    }
+    if (str(elem2) == "") {
+        return true;
+    }
+    return str(elem1) < str(elem2);
+};
+
+let n1 = sortByFunc(n, func1);
+pl("n custom sorted (empty last): %v", n1);

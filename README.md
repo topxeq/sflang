@@ -159,11 +159,35 @@ let path = `C:\Users\name\file.txt`
 ```sflang
 // Array
 let arr = [1, 2, 3, 4, 5]
-print(arr[0])  // 1
+print(arr[0])   // 1
+print(arr[-1])  // 5 (negative index: -1 is last element)
+
+// Array slice
+print(arr[1:3])   // [2, 3]
+print(arr[:2])    // [1, 2]
+print(arr[3:])    // [4, 5]
+
+// Array increment
+arr[0]++  // arr[0] is now 2
 
 // Map
 let person = {"name": "Alice", "age": 30}
 print(person["name"])  // Alice
+```
+
+### Sorting
+
+```sflang
+// Built-in sort
+let nums = [5, 2, 8, 1, 9]
+print(sort(nums))  // [1, 2, 5, 8, 9]
+
+// Custom sort with comparison function
+let arr = [5, 2, 8, 1, 9]
+let descending = sortByFunc(arr, func(a, b) {
+    return a > b
+})
+print(descending)  // [9, 8, 5, 2, 1]
 ```
 
 ## Embedding in Go
@@ -247,6 +271,8 @@ func loop_sum(n) {
 ### I/O Functions
 - `loadText(path)` - Read text file, returns string or error
 - `saveText(path, content)` - Write text file, returns null or error
+- `loadBytes(path)` - Read binary file, returns bytes or error
+- `saveBytes(path, bytes)` - Write binary file, returns null or error
 
 ### String Functions
 - `subStr(s, start, len)` - Extract substring (Unicode-aware)
@@ -267,6 +293,17 @@ func loop_sum(n) {
 - `concat(arrays...)` - Concatenate arrays
 - `append(array, values...)` - Append values to array
 - `range(end)` or `range(start, end)` - Generate integer array
+- `arrayContains(array, value)` - Check if array contains value
+- `removeItems(array, start, end)` - Remove items from array, returns new array
+- `sort(array)` - Sort array, returns new sorted array
+- `sortByFunc(array, compareFunc)` - Sort array with custom comparison function
+
+### Bytes Functions
+- `bytes(val1, val2, ...)` - Create Bytes object from integer values (0-255)
+
+### Memory Allocation
+- `make("array", size, capacity)` - Create preallocated array filled with null
+- `make("map", size)` - Create preallocated map
 
 ### Type Functions
 - `typeCode(value)` - Get numeric type code
@@ -294,8 +331,11 @@ func loop_sum(n) {
 
 ### System Functions
 - `print(...)` - Print values to stdout
+- `printf(format, args...)` - Format printing (no trailing newline)
 - `println(...)` - Print values with newline
-- `pl(format, args...)` - Format printing
+- `pl(format, args...)` - Format printing with trailing newline
+
+Format specifiers: `%v` (value), `%#v` (type-prefixed), `%s` (string), `%d` (int), `%f` (float), `%t` (bool), `%x` (hex), `%o` (octal), `%c` (char), `%b` (BigInt), `%m` (BigFloat), `%%` (%)
 - `len(value)` - Get length of string, array, or map
 - `time()` - Get current time in milliseconds
 - `sleep(ms)` - Sleep for milliseconds
@@ -314,6 +354,7 @@ func loop_sum(n) {
 
 Example scripts are available in the `examples/` directory:
 
+- `014_array.sf` - Arrays, slices, sorting, and array operations
 - `anonymousFunc.sf` - Anonymous functions and closures
 - `addBom.sf` - Add UTF-8 BOM to text files
 

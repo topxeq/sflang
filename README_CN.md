@@ -159,11 +159,35 @@ let path = `C:\Users\name\file.txt`
 ```sflang
 // 数组
 let arr = [1, 2, 3, 4, 5]
-print(arr[0])  // 1
+print(arr[0])   // 1
+print(arr[-1])  // 5（负数索引：-1 表示最后一个元素）
+
+// 数组切片
+print(arr[1:3])   // [2, 3]
+print(arr[:2])    // [1, 2]
+print(arr[3:])    // [4, 5]
+
+// 数组元素自增
+arr[0]++  // arr[0] 变为 2
 
 // 映射
 let person = {"name": "Alice", "age": 30}
 print(person["name"])  // Alice
+```
+
+### 排序
+
+```sflang
+// 内置排序
+let nums = [5, 2, 8, 1, 9]
+print(sort(nums))  // [1, 2, 5, 8, 9]
+
+// 自定义比较函数排序
+let arr = [5, 2, 8, 1, 9]
+let 降序 = sortByFunc(arr, func(a, b) {
+    return a > b
+})
+print(降序)  // [9, 8, 5, 2, 1]
 ```
 
 ## 在Go中嵌入使用
@@ -247,6 +271,8 @@ func loop_sum(n) {
 ### 输入输出函数
 - `loadText(path)` - 读取文本文件，返回字符串或错误
 - `saveText(path, content)` - 写入文本文件，返回null或错误
+- `loadBytes(path)` - 读取二进制文件，返回字节或错误
+- `saveBytes(path, bytes)` - 写入二进制文件，返回null或错误
 
 ### 字符串函数
 - `subStr(s, start, len)` - 提取子字符串（支持Unicode）
@@ -267,6 +293,17 @@ func loop_sum(n) {
 - `concat(arrays...)` - 连接多个数组
 - `append(array, values...)` - 追加元素到数组
 - `range(end)` 或 `range(start, end)` - 生成整数数组
+- `arrayContains(array, value)` - 检查数组是否包含指定值
+- `removeItems(array, start, end)` - 删除数组元素，返回新数组
+- `sort(array)` - 数组排序，返回新数组
+- `sortByFunc(array, compareFunc)` - 使用自定义比较函数排序
+
+### 字节函数
+- `bytes(val1, val2, ...)` - 从整数值(0-255)创建字节对象
+
+### 内存分配
+- `make("array", size, capacity)` - 创建预分配数组（填充null）
+- `make("map", size)` - 创建预分配映射
 
 ### 类型函数
 - `typeCode(value)` - 获取数值类型码
@@ -294,8 +331,11 @@ func loop_sum(n) {
 
 ### 系统函数
 - `print(...)` - 输出值到标准输出
+- `printf(format, args...)` - 格式化打印（无换行）
 - `println(...)` - 输出值并换行
-- `pl(format, args...)` - 格式化打印
+- `pl(format, args...)` - 格式化打印并换行
+
+格式说明符：`%v`（值）、`%#v`（带类型）、`%s`（字符串）、`%d`（整数）、`%f`（浮点）、`%t`（布尔）、`%x`（十六进制）、`%o`（八进制）、`%c`（字符）、`%b`（大整数）、`%m`（大浮点）、`%%`（百分号）
 - `len(value)` - 获取字符串、数组或映射的长度
 - `time()` - 获取当前时间（毫秒）
 - `sleep(ms)` - 休眠指定毫秒数
@@ -314,6 +354,7 @@ func loop_sum(n) {
 
 示例脚本位于 `examples/` 目录：
 
+- `014_array.sf` - 数组、切片、排序和数组操作
 - `anonymousFunc.sf` - 匿名函数和闭包
 - `addBom.sf` - 为文本文件添加UTF-8 BOM
 

@@ -16,6 +16,15 @@ const (
 	MaxTryHandlers = 256
 )
 
+// currentVM holds a reference to the currently running VM.
+// This allows builtin functions to call user-defined functions.
+var currentVM *VM
+
+// GetCurrentVM returns the currently running VM.
+func GetCurrentVM() *VM {
+	return currentVM
+}
+
 // VM represents the virtual machine state.
 // Fields are ordered for optimal memory access patterns.
 type VM struct {
@@ -117,6 +126,10 @@ func (vm *VM) pop() object.Object {
 
 // Run executes the bytecode with aggressive optimizations.
 func (vm *VM) Run() error {
+	// Set current VM for builtin access
+	currentVM = vm
+	defer func() { currentVM = nil }()
+
 	// Cache current frame pointer for faster access
 	frame := vm.currentFrame()
 
@@ -499,10 +512,15 @@ func (vm *VM) Run() error {
 				if !ok {
 					return fmt.Errorf("non-integer array index: %s", index.Type())
 				}
-				if idx.Value < 0 || int(idx.Value) >= len(l.Elements) {
+				idxVal := int(idx.Value)
+				// Support negative indices: -1 means last element, -2 means second last, etc.
+				if idxVal < 0 {
+					idxVal = len(l.Elements) + idxVal
+				}
+				if idxVal < 0 || idxVal >= len(l.Elements) {
 					result = object.NULL
 				} else {
-					result = l.Elements[idx.Value]
+					result = l.Elements[idxVal]
 				}
 			case *object.Map:
 				key, ok := index.(object.Hashable)
@@ -520,10 +538,15 @@ func (vm *VM) Run() error {
 				if !ok {
 					return fmt.Errorf("non-integer string index: %s", index.Type())
 				}
-				if idx.Value < 0 || int(idx.Value) >= len(l.Value) {
+				idxVal := int(idx.Value)
+				// Support negative indices for strings as well
+				if idxVal < 0 {
+					idxVal = len(l.Value) + idxVal
+				}
+				if idxVal < 0 || idxVal >= len(l.Value) {
 					result = object.NULL
 				} else {
-					result = &object.String{Value: string(l.Value[idx.Value])}
+					result = &object.String{Value: string(l.Value[idxVal])}
 				}
 			default:
 				return fmt.Errorf("index operator not supported: %s", left.Type())
@@ -545,10 +568,15 @@ func (vm *VM) Run() error {
 				if !ok {
 					return fmt.Errorf("non-integer array index: %s", index.Type())
 				}
-				if idx.Value < 0 || int(idx.Value) >= len(l.Elements) {
+				idxVal := int(idx.Value)
+				// Support negative indices for array assignment
+				if idxVal < 0 {
+					idxVal = len(l.Elements) + idxVal
+				}
+				if idxVal < 0 || idxVal >= len(l.Elements) {
 					return fmt.Errorf("array index out of bounds: %d", idx.Value)
 				}
-				l.Elements[idx.Value] = value
+				l.Elements[idxVal] = value
 			case *object.Map:
 				key, ok := index.(object.Hashable)
 				if !ok {
@@ -1157,4 +1185,416 @@ func (vm *VM) StackTop() object.Object {
 		return nil
 	}
 	return vm.stack[vm.sp-1]
+}
+
+// CallClosure calls a closure with the given arguments and returns the result.
+// This is used by builtins that need to call user-defined functions.
+func (vm *VM) CallClosure(closure *object.Closure, args ...object.Object) (object.Object, error) {
+	fn := closure.Fn
+
+	// Check argument count
+	if !fn.IsVariadic && len(args) != fn.NumParameters {
+		return nil, fmt.Errorf("wrong number of arguments: want=%d, got=%d", fn.NumParameters, len(args))
+	}
+	if fn.IsVariadic && len(args) < fn.NumParameters {
+		return nil, fmt.Errorf("wrong number of arguments: want>=%d, got=%d", fn.NumParameters, len(args))
+	}
+
+	// Save current state
+	savedFrameIndex := vm.frameIndex
+
+	// Push arguments onto stack
+	for _, arg := range args {
+		vm.stack[vm.sp] = arg
+		vm.sp++
+	}
+
+	// Push new frame
+	basePointer := vm.sp - len(args)
+	vm.pushFrame(fn, closure.Free, basePointer)
+	vm.sp = basePointer + fn.NumLocals
+
+	// Run only this closure until it returns
+	for vm.frameIndex > savedFrameIndex {
+		frame := vm.currentFrame()
+		frame.ip++
+
+		ip := frame.ip
+		ins := frame.fn.Instructions
+
+		if ip >= len(ins) {
+			break
+		}
+
+		op := compiler.Opcode(ins[ip])
+
+		switch op {
+		case compiler.OpReturnValue:
+			vm.sp--
+			result := vm.stack[vm.sp]
+			vm.popFrame()
+			return result, nil
+
+		case compiler.OpReturn:
+			vm.popFrame()
+			return object.NULL, nil
+
+		default:
+			// Handle other opcodes inline
+			if err := vm.executeInstruction(op, ins, ip); err != nil {
+				vm.frameIndex = savedFrameIndex
+				return nil, err
+			}
+		}
+	}
+
+	return object.NULL, nil
+}
+
+// executeInstruction executes a single instruction for CallClosure.
+func (vm *VM) executeInstruction(op compiler.Opcode, ins []byte, ip int) error {
+	frame := vm.currentFrame()
+
+	switch op {
+	case compiler.OpConstant:
+		constIndex := int(ins[ip+1])<<8 | int(ins[ip+2])
+		frame.ip += 2
+		vm.stack[vm.sp] = vm.constants[constIndex]
+		vm.sp++
+
+	case compiler.OpNull:
+		vm.stack[vm.sp] = object.NULL
+		vm.sp++
+
+	case compiler.OpTrue:
+		vm.stack[vm.sp] = object.TRUE
+		vm.sp++
+
+	case compiler.OpFalse:
+		vm.stack[vm.sp] = object.FALSE
+		vm.sp++
+
+	case compiler.OpPop:
+		vm.sp--
+
+	case compiler.OpDup:
+		vm.stack[vm.sp] = vm.stack[vm.sp-1]
+		vm.sp++
+
+	case compiler.OpAdd:
+		vm.sp--
+		right := vm.stack[vm.sp]
+		vm.sp--
+		left := vm.stack[vm.sp]
+		result, err := vm.addObjects(left, right)
+		if err != nil {
+			return err
+		}
+		vm.stack[vm.sp] = result
+		vm.sp++
+
+	case compiler.OpSub:
+		vm.sp--
+		right := vm.stack[vm.sp]
+		vm.sp--
+		left := vm.stack[vm.sp]
+		result, err := vm.subObjects(left, right)
+		if err != nil {
+			return err
+		}
+		vm.stack[vm.sp] = result
+		vm.sp++
+
+	case compiler.OpMul:
+		vm.sp--
+		right := vm.stack[vm.sp]
+		vm.sp--
+		left := vm.stack[vm.sp]
+		result, err := vm.mulObjects(left, right)
+		if err != nil {
+			return err
+		}
+		vm.stack[vm.sp] = result
+		vm.sp++
+
+	case compiler.OpDiv:
+		vm.sp--
+		right := vm.stack[vm.sp]
+		vm.sp--
+		left := vm.stack[vm.sp]
+		result, err := vm.divObjects(left, right)
+		if err != nil {
+			return err
+		}
+		vm.stack[vm.sp] = result
+		vm.sp++
+
+	case compiler.OpMod:
+		vm.sp--
+		right := vm.stack[vm.sp]
+		vm.sp--
+		left := vm.stack[vm.sp]
+		result, err := vm.modObjects(left, right)
+		if err != nil {
+			return err
+		}
+		vm.stack[vm.sp] = result
+		vm.sp++
+
+	case compiler.OpNeg:
+		vm.sp--
+		val := vm.stack[vm.sp]
+		result, err := vm.negObject(val)
+		if err != nil {
+			return err
+		}
+		vm.stack[vm.sp] = result
+		vm.sp++
+
+	case compiler.OpEqual:
+		vm.sp--
+		right := vm.stack[vm.sp]
+		vm.sp--
+		left := vm.stack[vm.sp]
+		if vm.objectsEqual(left, right) {
+			vm.stack[vm.sp] = object.TRUE
+		} else {
+			vm.stack[vm.sp] = object.FALSE
+		}
+		vm.sp++
+
+	case compiler.OpNotEqual:
+		vm.sp--
+		right := vm.stack[vm.sp]
+		vm.sp--
+		left := vm.stack[vm.sp]
+		if vm.objectsEqual(left, right) {
+			vm.stack[vm.sp] = object.FALSE
+		} else {
+			vm.stack[vm.sp] = object.TRUE
+		}
+		vm.sp++
+
+	case compiler.OpLess:
+		vm.sp--
+		right := vm.stack[vm.sp]
+		vm.sp--
+		left := vm.stack[vm.sp]
+		cmp, err := vm.compareLess(left, right)
+		if err != nil {
+			return err
+		}
+		vm.stack[vm.sp] = cmp
+		vm.sp++
+
+	case compiler.OpLessEqual:
+		vm.sp--
+		right := vm.stack[vm.sp]
+		vm.sp--
+		left := vm.stack[vm.sp]
+		cmp, err := vm.compareLessEqual(left, right)
+		if err != nil {
+			return err
+		}
+		vm.stack[vm.sp] = cmp
+		vm.sp++
+
+	case compiler.OpGreater:
+		vm.sp--
+		right := vm.stack[vm.sp]
+		vm.sp--
+		left := vm.stack[vm.sp]
+		cmp, err := vm.compareGreater(left, right)
+		if err != nil {
+			return err
+		}
+		vm.stack[vm.sp] = cmp
+		vm.sp++
+
+	case compiler.OpGreaterEqual:
+		vm.sp--
+		right := vm.stack[vm.sp]
+		vm.sp--
+		left := vm.stack[vm.sp]
+		cmp, err := vm.compareGreaterEqual(left, right)
+		if err != nil {
+			return err
+		}
+		vm.stack[vm.sp] = cmp
+		vm.sp++
+
+	case compiler.OpNot:
+		vm.sp--
+		val := vm.stack[vm.sp]
+		if val == object.TRUE {
+			vm.stack[vm.sp] = object.FALSE
+		} else if val == object.FALSE {
+			vm.stack[vm.sp] = object.TRUE
+		} else if val == object.NULL {
+			vm.stack[vm.sp] = object.TRUE
+		} else {
+			vm.stack[vm.sp] = object.FALSE
+		}
+		vm.sp++
+
+	case compiler.OpAnd:
+		vm.sp--
+		right := vm.stack[vm.sp]
+		vm.sp--
+		left := vm.stack[vm.sp]
+		if left == object.FALSE || left == object.NULL {
+			vm.stack[vm.sp] = object.FALSE
+		} else {
+			vm.stack[vm.sp] = right
+		}
+		vm.sp++
+
+	case compiler.OpOr:
+		vm.sp--
+		right := vm.stack[vm.sp]
+		vm.sp--
+		left := vm.stack[vm.sp]
+		if left == object.TRUE {
+			vm.stack[vm.sp] = object.TRUE
+		} else {
+			vm.stack[vm.sp] = right
+		}
+		vm.sp++
+
+	case compiler.OpJump:
+		pos := int(ins[ip+1])<<8 | int(ins[ip+2])
+		frame.ip = pos - 1
+
+	case compiler.OpJumpNotTrue:
+		pos := int(ins[ip+1])<<8 | int(ins[ip+2])
+		frame.ip += 2
+		vm.sp--
+		condition := vm.stack[vm.sp]
+		if condition == object.FALSE || condition == object.NULL {
+			frame.ip = pos - 1
+		}
+
+	case compiler.OpJumpTrue:
+		pos := int(ins[ip+1])<<8 | int(ins[ip+2])
+		frame.ip += 2
+		vm.sp--
+		condition := vm.stack[vm.sp]
+		if condition != object.FALSE && condition != object.NULL {
+			frame.ip = pos - 1
+		}
+
+	case compiler.OpGetLocal:
+		localIndex := int(ins[ip+1])
+		frame.ip++
+		vm.stack[vm.sp] = vm.stack[frame.basePointer+localIndex]
+		vm.sp++
+
+	case compiler.OpSetLocal:
+		localIndex := int(ins[ip+1])
+		frame.ip++
+		vm.sp--
+		vm.stack[frame.basePointer+localIndex] = vm.stack[vm.sp]
+
+	case compiler.OpGetFree:
+		freeIndex := int(ins[ip+1])
+		frame.ip++
+		vm.stack[vm.sp] = frame.free[freeIndex]
+		vm.sp++
+
+	case compiler.OpGetBuiltin:
+		builtinIndex := int(ins[ip+1])
+		frame.ip++
+		vm.stack[vm.sp] = object.Builtins[builtinIndex]
+		vm.sp++
+
+	case compiler.OpIndex:
+		vm.sp--
+		index := vm.stack[vm.sp]
+		vm.sp--
+		left := vm.stack[vm.sp]
+		var result object.Object
+		switch l := left.(type) {
+		case *object.Array:
+			idx, ok := index.(*object.Integer)
+			if !ok {
+				return fmt.Errorf("non-integer array index: %s", index.Type())
+			}
+			idxVal := int(idx.Value)
+			if idxVal < 0 {
+				idxVal = len(l.Elements) + idxVal
+			}
+			if idxVal < 0 || idxVal >= len(l.Elements) {
+				result = object.NULL
+			} else {
+				result = l.Elements[idxVal]
+			}
+		case *object.Map:
+			key, ok := index.(object.Hashable)
+			if !ok {
+				return fmt.Errorf("unusable as map key: %s", index.Type())
+			}
+			pair, ok := l.Pairs[key.HashKey()]
+			if !ok {
+				result = object.NULL
+			} else {
+				result = pair.Value
+			}
+		case *object.String:
+			idx, ok := index.(*object.Integer)
+			if !ok {
+				return fmt.Errorf("non-integer string index: %s", index.Type())
+			}
+			idxVal := int(idx.Value)
+			if idxVal < 0 {
+				idxVal = len(l.Value) + idxVal
+			}
+			if idxVal < 0 || idxVal >= len(l.Value) {
+				result = object.NULL
+			} else {
+				result = &object.String{Value: string(l.Value[idxVal])}
+			}
+		default:
+			return fmt.Errorf("index operator not supported: %s", left.Type())
+		}
+		vm.stack[vm.sp] = result
+		vm.sp++
+
+	case compiler.OpCall:
+		numArgs := int(ins[ip+1])
+		frame.ip++
+		callee := vm.stack[vm.sp-1-numArgs]
+
+		switch fn := callee.(type) {
+		case *object.Closure:
+			if !fn.Fn.IsVariadic && numArgs != fn.Fn.NumParameters {
+				return fmt.Errorf("wrong number of arguments: want=%d, got=%d", fn.Fn.NumParameters, numArgs)
+			}
+			newBasePointer := vm.sp - numArgs
+			vm.pushFrame(fn.Fn, fn.Free, newBasePointer)
+			vm.sp = newBasePointer + fn.Fn.NumLocals
+
+		case *object.Builtin:
+			args := make([]object.Object, numArgs)
+			for i := 0; i < numArgs; i++ {
+				args[i] = vm.stack[vm.sp-numArgs+i]
+			}
+			result := fn.Fn(args...)
+			vm.sp = vm.sp - numArgs - 1
+			if result != nil {
+				vm.stack[vm.sp] = result
+				vm.sp++
+			} else {
+				vm.stack[vm.sp] = object.NULL
+				vm.sp++
+			}
+
+		default:
+			return fmt.Errorf("not a function: %T", callee)
+		}
+
+	default:
+		return fmt.Errorf("unsupported opcode in executeInstruction: %d", op)
+	}
+
+	return nil
 }

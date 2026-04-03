@@ -323,7 +323,7 @@ func (c *Compiler) Compile(node ast.Node) error {
 		c.emit(OpSetLocal, indexSymbol.Index)
 
 		// Get length - push builtin first, then argument, then call
-		c.emit(OpGetBuiltin, 3) // len
+		c.emit(OpGetBuiltin, 4) // len
 		if err := c.Compile(node.Source); err != nil {
 			return err
 		}
@@ -597,7 +597,7 @@ func (c *Compiler) Compile(node ast.Node) error {
 		}
 
 	case *ast.PostfixExpression:
-		// i++ or i--
+		// i++ or i-- or a[i]++ or a[i]--
 		if ident, ok := node.Left.(*ast.Identifier); ok {
 			symbol, ok := c.symbolTable.Resolve(ident.Value)
 			if !ok {
@@ -619,6 +619,40 @@ func (c *Compiler) Compile(node ast.Node) error {
 				c.emit(OpSetLocal, symbol.Index)
 			}
 			// Don't leave a value on the stack - this is a statement form
+		} else if indexExpr, ok := node.Left.(*ast.IndexExpression); ok {
+			// a[i]++ or a[i]--
+			// We need to: get current value, increment it, store it back
+
+			// Compile array and index to get current value
+			if err := c.Compile(indexExpr.Left); err != nil {
+				return err
+			}
+			if err := c.Compile(indexExpr.Index); err != nil {
+				return err
+			}
+			c.emit(OpIndex) // [value]
+
+			// Increment/decrement
+			c.emit(OpConstant, c.addConstant(object.GetInteger(1)))
+			if node.Operator == "++" {
+				c.emit(OpAdd)
+			} else {
+				c.emit(OpSub)
+			}
+			// Stack: [new_value]
+
+			// Now compile array and index again for set
+			if err := c.Compile(indexExpr.Left); err != nil {
+				return err
+			}
+			if err := c.Compile(indexExpr.Index); err != nil {
+				return err
+			}
+			// Stack: [new_value, array, index]
+			// Need: [array, index, new_value] for OpSetIndex
+			// rot3: [a,b,c] -> [c,a,b]
+			c.emit(OpRot3) // [array, index, new_value]
+			c.emit(OpSetIndex)
 		}
 
 	case *ast.CallExpression:

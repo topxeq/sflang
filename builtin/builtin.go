@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/topxeq/sflang/object"
+	"github.com/topxeq/sflang/vm"
 )
 
 // Builtins contains all built-in functions.
@@ -19,6 +21,7 @@ var Builtins = []struct {
 	Fn   object.BuiltinFunction
 }{
 	{"print", builtinPrint},
+	{"printf", builtinPrintf},
 	{"println", builtinPrintln},
 	{"pl", builtinPl},
 	{"len", builtinLen},
@@ -61,11 +64,19 @@ var Builtins = []struct {
 	{"append", builtinAppend},
 	{"error", builtinError},
 	{"loadText", builtinLoadText},
+	{"loadBytes", builtinLoadBytes},
 	{"saveText", builtinSaveText},
+	{"saveBytes", builtinSaveBytes},
 	{"getSwitch", builtinGetSwitch},
 	{"fatalf", builtinFatalf},
 	{"checkErr", builtinCheckErr},
 	{"subStr", builtinSubStr},
+	{"arrayContains", builtinArrayContains},
+	{"removeItems", builtinRemoveItems},
+	{"bytes", builtinBytes},
+	{"make", builtinMake},
+	{"sort", builtinSort},
+	{"sortByFunc", builtinSortByFunc},
 }
 
 // GetBuiltinByName returns a built-in function by name.
@@ -96,18 +107,11 @@ func builtinPrint(args ...object.Object) object.Object {
 	return object.NULL
 }
 
-func builtinPrintln(args ...object.Object) object.Object {
-	for _, arg := range args {
-		fmt.Print(arg.Inspect())
-	}
-	fmt.Println()
-	return object.NULL
-}
-
-// builtinPl is a format printing function similar to fmt.Printf.
-// It takes a format string and arguments, replaces format specifiers,
-// and prints the result. Supported format specifiers:
+// builtinPrintf is a format printing function similar to fmt.Printf.
+// Unlike 'pl', it does not add a newline at the end.
+// Supported format specifiers:
 //   %v - default format (value inspection)
+//   %#v - type-prefixed format (typeName(value))
 //   %s - string
 //   %d - integer (decimal)
 //   %f - float
@@ -115,15 +119,17 @@ func builtinPrintln(args ...object.Object) object.Object {
 //   %x - hexadecimal (integer)
 //   %o - octal (integer)
 //   %c - character (integer to rune)
+//   %b - BigInt (arbitrary precision integer)
+//   %m - BigFloat (arbitrary precision float)
 //   %% - literal percent sign
-func builtinPl(args ...object.Object) object.Object {
+func builtinPrintf(args ...object.Object) object.Object {
 	if len(args) < 1 {
-		return object.NewError("wrong number of arguments for pl: got=%d, want>=1", len(args))
+		return object.NewError("wrong number of arguments for printf: got=%d, want>=1", len(args))
 	}
 
 	formatStr, ok := args[0].(*object.String)
 	if !ok {
-		return object.NewError("first argument to 'pl' must be string, got %s", args[0].Type())
+		return object.NewError("first argument to 'printf' must be string, got %s", args[0].Type())
 	}
 
 	format := formatStr.Value
@@ -133,6 +139,21 @@ func builtinPl(args ...object.Object) object.Object {
 	for i := 0; i < len(format); i++ {
 		if format[i] == '%' && i+1 < len(format) {
 			spec := format[i+1]
+			// Check for %#v (type-prefixed format)
+			if spec == '#' && i+2 < len(format) && format[i+2] == 'v' {
+				if argIndex >= len(args) {
+					result.WriteString("%#v")
+				} else {
+					arg := args[argIndex]
+					result.WriteString(arg.TypeName())
+					result.WriteString("(")
+					result.WriteString(arg.Inspect())
+					result.WriteString(")")
+					argIndex++
+				}
+				i += 2
+				continue
+			}
 			switch spec {
 			case 'v':
 				if argIndex >= len(args) {
@@ -234,6 +255,239 @@ func builtinPl(args ...object.Object) object.Object {
 					switch arg := args[argIndex].(type) {
 					case *object.Integer:
 						result.WriteRune(rune(arg.Value))
+					default:
+						result.WriteString(arg.Inspect())
+					}
+					argIndex++
+				}
+				i++
+			case 'b':
+				// BigInt format
+				if argIndex >= len(args) {
+					result.WriteString("%b")
+				} else {
+					switch arg := args[argIndex].(type) {
+					case *object.BigInt:
+						result.WriteString(arg.Value.String())
+					default:
+						result.WriteString(arg.Inspect())
+					}
+					argIndex++
+				}
+				i++
+			case 'm':
+				// BigFloat format
+				if argIndex >= len(args) {
+					result.WriteString("%m")
+				} else {
+					switch arg := args[argIndex].(type) {
+					case *object.BigFloat:
+						result.WriteString(arg.Value.Text('g', -1))
+					default:
+						result.WriteString(arg.Inspect())
+					}
+					argIndex++
+				}
+				i++
+			case '%':
+				result.WriteByte('%')
+				i++
+			default:
+				result.WriteByte(format[i])
+			}
+		} else {
+			result.WriteByte(format[i])
+		}
+	}
+
+	fmt.Print(result.String())
+	return object.NULL
+}
+
+func builtinPrintln(args ...object.Object) object.Object {
+	for _, arg := range args {
+		fmt.Print(arg.Inspect())
+	}
+	fmt.Println()
+	return object.NULL
+}
+
+// builtinPl is a format printing function similar to fmt.Printf.
+// It takes a format string and arguments, replaces format specifiers,
+// and prints the result. Supported format specifiers:
+//   %v - default format (value inspection)
+//   %#v - type-prefixed format (typeName(value))
+//   %s - string
+//   %d - integer (decimal)
+//   %f - float
+//   %t - boolean
+//   %x - hexadecimal (integer)
+//   %o - octal (integer)
+//   %c - character (integer to rune)
+//   %b - BigInt (arbitrary precision integer)
+//   %m - BigFloat (arbitrary precision float)
+//   %% - literal percent sign
+func builtinPl(args ...object.Object) object.Object {
+	if len(args) < 1 {
+		return object.NewError("wrong number of arguments for pl: got=%d, want>=1", len(args))
+	}
+
+	formatStr, ok := args[0].(*object.String)
+	if !ok {
+		return object.NewError("first argument to 'pl' must be string, got %s", args[0].Type())
+	}
+
+	format := formatStr.Value
+	argIndex := 1
+	var result strings.Builder
+
+	for i := 0; i < len(format); i++ {
+		if format[i] == '%' && i+1 < len(format) {
+			spec := format[i+1]
+			// Check for %#v (type-prefixed format)
+			if spec == '#' && i+2 < len(format) && format[i+2] == 'v' {
+				if argIndex >= len(args) {
+					result.WriteString("%#v")
+				} else {
+					arg := args[argIndex]
+					result.WriteString(arg.TypeName())
+					result.WriteString("(")
+					result.WriteString(arg.Inspect())
+					result.WriteString(")")
+					argIndex++
+				}
+				i += 2
+				continue
+			}
+			switch spec {
+			case 'v':
+				if argIndex >= len(args) {
+					result.WriteString("%v")
+				} else {
+					result.WriteString(args[argIndex].Inspect())
+					argIndex++
+				}
+				i++
+			case 's':
+				if argIndex >= len(args) {
+					result.WriteString("%s")
+				} else {
+					result.WriteString(args[argIndex].Inspect())
+					argIndex++
+				}
+				i++
+			case 'd':
+				if argIndex >= len(args) {
+					result.WriteString("%d")
+				} else {
+					switch arg := args[argIndex].(type) {
+					case *object.Integer:
+						result.WriteString(strconv.FormatInt(arg.Value, 10))
+					case *object.Float:
+						result.WriteString(strconv.FormatInt(int64(arg.Value), 10))
+					default:
+						result.WriteString(arg.Inspect())
+					}
+					argIndex++
+				}
+				i++
+			case 'f':
+				if argIndex >= len(args) {
+					result.WriteString("%f")
+				} else {
+					switch arg := args[argIndex].(type) {
+					case *object.Float:
+						result.WriteString(strconv.FormatFloat(arg.Value, 'f', -1, 64))
+					case *object.Integer:
+						result.WriteString(strconv.FormatFloat(float64(arg.Value), 'f', -1, 64))
+					default:
+						result.WriteString(arg.Inspect())
+					}
+					argIndex++
+				}
+				i++
+			case 't':
+				if argIndex >= len(args) {
+					result.WriteString("%t")
+				} else {
+					switch arg := args[argIndex].(type) {
+					case *object.Boolean:
+						if arg.Value {
+							result.WriteString("true")
+						} else {
+							result.WriteString("false")
+						}
+					default:
+						result.WriteString(arg.Inspect())
+					}
+					argIndex++
+				}
+				i++
+			case 'x':
+				if argIndex >= len(args) {
+					result.WriteString("%x")
+				} else {
+					switch arg := args[argIndex].(type) {
+					case *object.Integer:
+						result.WriteString(strconv.FormatInt(arg.Value, 16))
+					case *object.Float:
+						result.WriteString(strconv.FormatInt(int64(arg.Value), 16))
+					default:
+						result.WriteString(arg.Inspect())
+					}
+					argIndex++
+				}
+				i++
+			case 'o':
+				if argIndex >= len(args) {
+					result.WriteString("%o")
+				} else {
+					switch arg := args[argIndex].(type) {
+					case *object.Integer:
+						result.WriteString(strconv.FormatInt(arg.Value, 8))
+					case *object.Float:
+						result.WriteString(strconv.FormatInt(int64(arg.Value), 8))
+					default:
+						result.WriteString(arg.Inspect())
+					}
+					argIndex++
+				}
+				i++
+			case 'c':
+				if argIndex >= len(args) {
+					result.WriteString("%c")
+				} else {
+					switch arg := args[argIndex].(type) {
+					case *object.Integer:
+						result.WriteRune(rune(arg.Value))
+					default:
+						result.WriteString(arg.Inspect())
+					}
+					argIndex++
+				}
+				i++
+			case 'b':
+				// BigInt format
+				if argIndex >= len(args) {
+					result.WriteString("%b")
+				} else {
+					switch arg := args[argIndex].(type) {
+					case *object.BigInt:
+						result.WriteString(arg.Value.String())
+					default:
+						result.WriteString(arg.Inspect())
+					}
+					argIndex++
+				}
+				i++
+			case 'm':
+				// BigFloat format
+				if argIndex >= len(args) {
+					result.WriteString("%m")
+				} else {
+					switch arg := args[argIndex].(type) {
+					case *object.BigFloat:
+						result.WriteString(arg.Value.Text('g', -1))
 					default:
 						result.WriteString(arg.Inspect())
 					}
@@ -1034,6 +1288,51 @@ func builtinSaveText(args ...object.Object) object.Object {
 	return object.NULL
 }
 
+// builtinLoadBytes reads a binary file and returns a Bytes object.
+// loadBytes(path) - reads binary file, returns Bytes or Error.
+func builtinLoadBytes(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return object.NewError("wrong number of arguments for loadBytes: got=%d, want=1", len(args))
+	}
+
+	path, ok := args[0].(*object.String)
+	if !ok {
+		return object.NewError("argument to 'loadBytes' must be string, got %s", args[0].Type())
+	}
+
+	content, err := os.ReadFile(path.Value)
+	if err != nil {
+		return object.NewError("failed to read file '%s': %s", path.Value, err.Error())
+	}
+
+	return &object.Bytes{Value: content}
+}
+
+// builtinSaveBytes writes a Bytes object to a binary file.
+// saveBytes(path, bytes) - writes bytes to path, returns NULL or Error.
+func builtinSaveBytes(args ...object.Object) object.Object {
+	if len(args) != 2 {
+		return object.NewError("wrong number of arguments for saveBytes: got=%d, want=2", len(args))
+	}
+
+	path, ok := args[0].(*object.String)
+	if !ok {
+		return object.NewError("first argument to 'saveBytes' must be string, got %s", args[0].Type())
+	}
+
+	content, ok := args[1].(*object.Bytes)
+	if !ok {
+		return object.NewError("second argument to 'saveBytes' must be bytes, got %s", args[1].Type())
+	}
+
+	err := os.WriteFile(path.Value, content.Value, 0644)
+	if err != nil {
+		return object.NewError("failed to write file '%s': %s", path.Value, err.Error())
+	}
+
+	return object.NULL
+}
+
 // builtinGetSwitch extracts a switch value from an arguments array.
 // getSwitch(args, switchName, default) - looks for "--name=value" or "-name=value" pattern.
 func builtinGetSwitch(args ...object.Object) object.Object {
@@ -1216,4 +1515,300 @@ func objectEqual(a, b object.Object) bool {
 		return ok && a.Value == b.Value
 	}
 	return false
+}
+
+// builtinArrayContains checks if an array contains a specific element.
+// arrayContains(arr, value) - returns true if arr contains value, false otherwise.
+func builtinArrayContains(args ...object.Object) object.Object {
+	if len(args) != 2 {
+		return object.NewError("wrong number of arguments for arrayContains: got=%d, want=2", len(args))
+	}
+
+	arr, ok := args[0].(*object.Array)
+	if !ok {
+		return object.NewError("first argument to 'arrayContains' must be array, got %s", args[0].Type())
+	}
+
+	for _, el := range arr.Elements {
+		if objectEqual(el, args[1]) {
+			return object.TRUE
+		}
+	}
+
+	return object.FALSE
+}
+
+// builtinRemoveItems removes items from an array at specified positions.
+// removeItems(arr, start, end) - returns a new array with items from start to end removed.
+// The original array is not modified.
+func builtinRemoveItems(args ...object.Object) object.Object {
+	if len(args) != 3 {
+		return object.NewError("wrong number of arguments for removeItems: got=%d, want=3", len(args))
+	}
+
+	arr, ok := args[0].(*object.Array)
+	if !ok {
+		return object.NewError("first argument to 'removeItems' must be array, got %s", args[0].Type())
+	}
+
+	start, ok := args[1].(*object.Integer)
+	if !ok {
+		return object.NewError("second argument to 'removeItems' must be integer, got %s", args[1].Type())
+	}
+
+	end, ok := args[2].(*object.Integer)
+	if !ok {
+		return object.NewError("third argument to 'removeItems' must be integer, got %s", args[2].Type())
+	}
+
+	startIdx := int(start.Value)
+	endIdx := int(end.Value)
+
+	// Handle negative indices
+	if startIdx < 0 {
+		startIdx = len(arr.Elements) + startIdx
+	}
+	if endIdx < 0 {
+		endIdx = len(arr.Elements) + endIdx
+	}
+
+	// Clamp indices
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if endIdx > len(arr.Elements) {
+		endIdx = len(arr.Elements)
+	}
+	if startIdx > endIdx {
+		startIdx = endIdx
+	}
+
+	// Create new array without the removed items
+	var result []object.Object
+	result = append(result, arr.Elements[:startIdx]...)
+	result = append(result, arr.Elements[endIdx:]...)
+
+	return &object.Array{Elements: result}
+}
+
+// builtinBytes creates a Bytes object from integer values.
+// bytes(val1, val2, ...) - creates a Bytes object from the given integer values (0-255).
+// Each argument should be an integer in range 0-255.
+func builtinBytes(args ...object.Object) object.Object {
+	if len(args) < 1 {
+		// Return empty Bytes if no arguments
+		return &object.Bytes{Value: []byte{}}
+	}
+
+	bytes := make([]byte, 0, len(args))
+	for i, arg := range args {
+		switch v := arg.(type) {
+		case *object.Integer:
+			if v.Value < 0 || v.Value > 255 {
+				return object.NewError("argument %d to 'bytes' must be in range 0-255, got %d", i, v.Value)
+			}
+			bytes = append(bytes, byte(v.Value))
+		case *object.Byte:
+			bytes = append(bytes, v.Value)
+		default:
+			return object.NewError("argument %d to 'bytes' must be integer or byte, got %s", i, arg.Type())
+		}
+	}
+
+	return &object.Bytes{Value: bytes}
+}
+
+// builtinMake creates a new array or map with preallocated size/capacity.
+// make("array", size, capacity) - creates an array with given size, filled with null values.
+// make("array", size) - creates an array with given size, capacity equals size.
+// make("map", size) - creates a map with preallocated space for approximately size elements.
+func builtinMake(args ...object.Object) object.Object {
+	if len(args) < 2 {
+		return object.NewError("wrong number of arguments for make: got=%d, want>=2", len(args))
+	}
+
+	typeName, ok := args[0].(*object.String)
+	if !ok {
+		return object.NewError("first argument to 'make' must be string (type name), got %s", args[0].Type())
+	}
+
+	switch typeName.Value {
+	case "array":
+		size, ok := args[1].(*object.Integer)
+		if !ok {
+			return object.NewError("second argument to 'make' for array must be integer, got %s", args[1].Type())
+		}
+
+		sizeVal := int(size.Value)
+		if sizeVal < 0 {
+			return object.NewError("array size cannot be negative: %d", sizeVal)
+		}
+
+		capacity := sizeVal
+		if len(args) >= 3 {
+			cap, ok := args[2].(*object.Integer)
+			if !ok {
+				return object.NewError("third argument to 'make' for array must be integer, got %s", args[2].Type())
+			}
+			capacity = int(cap.Value)
+			if capacity < sizeVal {
+				capacity = sizeVal
+			}
+		}
+
+		// Create array filled with NULL values
+		elements := make([]object.Object, sizeVal, capacity)
+		for i := 0; i < sizeVal; i++ {
+			elements[i] = object.NULL
+		}
+
+		return &object.Array{Elements: elements}
+
+	case "map":
+		size, ok := args[1].(*object.Integer)
+		if !ok {
+			return object.NewError("second argument to 'make' for map must be integer, got %s", args[1].Type())
+		}
+
+		sizeVal := int(size.Value)
+		if sizeVal < 0 {
+			return object.NewError("map size cannot be negative: %d", sizeVal)
+		}
+
+		// Create empty map with preallocated space
+		return &object.Map{Pairs: make(map[object.HashKey]object.MapKeyPair, sizeVal)}
+
+	default:
+		return object.NewError("unknown type for 'make': %s (supported: 'array', 'map')", typeName.Value)
+	}
+}
+
+// builtinSort sorts an array of comparable elements.
+// sort(arr) - returns a new sorted array.
+// Supports arrays of integers, floats, and strings.
+// Mixed type arrays will be sorted by type name first, then by value.
+func builtinSort(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return object.NewError("wrong number of arguments for sort: got=%d, want=1", len(args))
+	}
+
+	arr, ok := args[0].(*object.Array)
+	if !ok {
+		return object.NewError("argument to 'sort' must be array, got %s", args[0].Type())
+	}
+
+	if len(arr.Elements) == 0 {
+		return arr
+	}
+
+	// Create a copy to sort
+	elements := make([]object.Object, len(arr.Elements))
+	copy(elements, arr.Elements)
+
+	// Sort by type first, then by value
+	sort.Slice(elements, func(i, j int) bool {
+		a, b := elements[i], elements[j]
+		typeA, typeB := a.Type(), b.Type()
+
+		if typeA != typeB {
+			return typeA < typeB
+		}
+
+		switch a := a.(type) {
+		case *object.Integer:
+			bVal := b.(*object.Integer)
+			return a.Value < bVal.Value
+		case *object.Float:
+			bVal := b.(*object.Float)
+			return a.Value < bVal.Value
+		case *object.String:
+			bVal := b.(*object.String)
+			return a.Value < bVal.Value
+		case *object.Boolean:
+			bVal := b.(*object.Boolean)
+			if a.Value == bVal.Value {
+				return false
+			}
+			return !a.Value && bVal.Value
+		default:
+			return a.Inspect() < b.Inspect()
+		}
+	})
+
+	return &object.Array{Elements: elements}
+}
+
+// builtinSortByFunc sorts an array using a custom comparison function.
+// sortByFunc(arr, compareFunc) - returns a new sorted array.
+// The compareFunc receives two elements and returns true if the first should come before the second.
+// Alternative signature: sortByFunc(arr, compareFunc, true) - passes indices instead of elements.
+func builtinSortByFunc(args ...object.Object) object.Object {
+	if len(args) < 2 || len(args) > 3 {
+		return object.NewError("wrong number of arguments for sortByFunc: got=%d, want=2 or 3", len(args))
+	}
+
+	arr, ok := args[0].(*object.Array)
+	if !ok {
+		return object.NewError("first argument to 'sortByFunc' must be array, got %s", args[0].Type())
+	}
+
+	closure, ok := args[1].(*object.Closure)
+	if !ok {
+		return object.NewError("second argument to 'sortByFunc' must be function, got %s", args[1].Type())
+	}
+
+	if len(arr.Elements) == 0 {
+		return arr
+	}
+
+	// Check if we should pass indices (third argument is true) or elements
+	useIndices := false
+	if len(args) == 3 {
+		if flag, ok := args[2].(*object.Boolean); ok {
+			useIndices = flag.Value
+		}
+	}
+
+	// Get the current VM
+	currentVM := vm.GetCurrentVM()
+	if currentVM == nil {
+		return object.NewError("sortByFunc: no VM context available")
+	}
+
+	// Create a copy to sort
+	elements := make([]object.Object, len(arr.Elements))
+	copy(elements, arr.Elements)
+
+	// Sort using the comparison function
+	sort.Slice(elements, func(i, j int) bool {
+		var arg1, arg2 object.Object
+
+		if useIndices {
+			// Pass indices into the original array
+			arg1 = &object.Integer{Value: int64(i)}
+			arg2 = &object.Integer{Value: int64(j)}
+		} else {
+			// Pass the actual elements being compared
+			arg1 = elements[i]
+			arg2 = elements[j]
+		}
+
+		result, err := currentVM.CallClosure(closure, arg1, arg2)
+		if err != nil {
+			return false
+		}
+
+		if result == object.TRUE {
+			return true
+		}
+		if result == object.FALSE {
+			return false
+		}
+		if boolean, ok := result.(*object.Boolean); ok {
+			return boolean.Value
+		}
+		return false
+	})
+
+	return &object.Array{Elements: elements}
 }
