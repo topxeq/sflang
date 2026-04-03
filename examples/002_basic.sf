@@ -1,0 +1,4 @@
+// Basic print - Sflang example
+// Equivalent to Charlang's basic.char
+
+println("Hello world!");

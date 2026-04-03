@@ -1,0 +1,31 @@
+// anonymousFunc.sf - Anonymous functions and closures in Sflang
+// Ported from Charlang's anonymousFunc.char
+
+// define a complex anonymous function (IIFE - Immediately Invoked Function Expression)
+// This creates a function that takes x, returns a function that takes y and calls x(y)
+// Then immediately calls it with another anonymous function and a string
+(func(x) {
+    return func(y) {
+        x(y)
+    }
+})(func(z) {
+    println("Hi!", z)
+})("Nice to see you.")
+
+// anonymous function to test variable "count" (closure example)
+// NewAddFunc returns a closure that captures and modifies the count variable
+NewAddFunc := func() {
+    let count = 0
+
+    return func(n) {
+        count = count + n
+        return count
+    }
+}
+
+// access count through closure, can see count changing
+f2 := NewAddFunc()
+
+println(f2(3))
+println(f2(5))
+println(f2(9))

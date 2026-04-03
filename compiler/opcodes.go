@@ -14,6 +14,8 @@ const (
 	OpFalse    Opcode = 0x04 // Push false onto stack
 	OpPop      Opcode = 0x05 // Pop value from stack
 	OpDup      Opcode = 0x06 // Duplicate top of stack
+	OpSwap     Opcode = 0x07 // Swap top two values on stack
+	OpRot3     Opcode = 0x08 // Rotate top 3 values: [a, b, c] -> [c, a, b]
 
 	// 0x1X - Arithmetic operations
 	OpAdd  Opcode = 0x10 // Addition
@@ -53,31 +55,35 @@ const (
 	OpGetBuiltin Opcode = 0x55 // Get built-in function
 
 	// 0x6X - Control flow operations
-	OpJump        Opcode = 0x60 // Unconditional jump
-	OpJumpNotTrue Opcode = 0x61 // Jump if top of stack is not true
-	OpCall        Opcode = 0x62 // Call function
-	OpReturn      Opcode = 0x63 // Return from function (no value)
-	OpReturnValue Opcode = 0x64 // Return from function with value
-	OpBreak       Opcode = 0x65 // Break from loop
-	OpContinue    Opcode = 0x66 // Continue loop
+	OpJump         Opcode = 0x60 // Unconditional jump
+	OpJumpNotTrue  Opcode = 0x61 // Jump if top of stack is not true (always pops)
+	OpJumpTrue     Opcode = 0x67 // Jump if top of stack is true (always pops)
+	OpCall         Opcode = 0x62 // Call function
+	OpReturn       Opcode = 0x63 // Return from function (no value)
+	OpReturnValue  Opcode = 0x64 // Return from function with value
+	OpBreak        Opcode = 0x65 // Break from loop
+	OpContinue     Opcode = 0x66 // Continue loop
 
 	// 0x7X - Array and Map operations
 	OpArray    Opcode = 0x70 // Create array
 	OpMap      Opcode = 0x71 // Create map
 	OpIndex    Opcode = 0x72 // Index access
 	OpSetIndex Opcode = 0x73 // Index assignment
+	OpSlice    Opcode = 0x74 // Array slice
 
 	// 0x8X - Function and closure operations
 	OpClosure Opcode = 0x80 // Create closure
-	OpGetUp   Opcode = 0x81 // Get upvalue
+	OpGetUp   Opcode = 0x81 // Get upvalue (free variable)
+	OpSetUp   Opcode = 0x82 // Set upvalue (free variable)
 
 	// 0x9X - Exception operations
-	OpThrow   Opcode = 0x90 // Throw exception
-	OpTry     Opcode = 0x91 // Start try block
-	OpCatch   Opcode = 0x92 // Start catch block
-	OpEndTry  Opcode = 0x93 // End try-catch block
-	OpPushTry Opcode = 0x94 // Push try handler
-	OpPopTry  Opcode = 0x95 // Pop try handler
+	OpThrow      Opcode = 0x90 // Throw exception
+	OpTry        Opcode = 0x91 // Start try block
+	OpCatch      Opcode = 0x92 // Start catch block
+	OpEndTry     Opcode = 0x93 // End try-catch block
+	OpPushTry    Opcode = 0x94 // Push try handler
+	OpPopTry     Opcode = 0x95 // Pop try handler
+	OpCatchStart Opcode = 0x96 // Start catch block execution (adjust basePointer)
 )
 
 // OpcodeWidths defines the width (in bytes) of each opcode's operands.
@@ -90,6 +96,8 @@ var OpcodeWidths = map[Opcode]int{
 	OpFalse:        0,
 	OpPop:          0,
 	OpDup:          0,
+	OpSwap:         0,
+	OpRot3:         0,
 	OpAdd:          0,
 	OpSub:          0,
 	OpMul:          0,
@@ -119,6 +127,7 @@ var OpcodeWidths = map[Opcode]int{
 	OpGetBuiltin:   1,
 	OpJump:         2,
 	OpJumpNotTrue:  2,
+	OpJumpTrue:     2,
 	OpCall:         1,
 	OpReturn:       0,
 	OpReturnValue:  0,
@@ -128,14 +137,17 @@ var OpcodeWidths = map[Opcode]int{
 	OpMap:          2,
 	OpIndex:        0,
 	OpSetIndex:     0,
+	OpSlice:        0,
 	OpClosure:      3, // 2 bytes for function index + 1 byte for free variables count
 	OpGetUp:        1,
+	OpSetUp:        1,
 	OpThrow:        0,
 	OpTry:          2,
 	OpCatch:        2,
 	OpEndTry:       0,
 	OpPushTry:      2,
 	OpPopTry:       0,
+	OpCatchStart:   0,
 }
 
 // Make creates a bytecode instruction from an opcode and operands.

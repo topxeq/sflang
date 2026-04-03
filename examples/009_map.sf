@@ -1,0 +1,51 @@
+// Maps - Sflang example
+// Equivalent to Charlang's map.char (partial)
+
+// Declare an empty map
+let a = {};
+
+// Note: Sflang uses ["key"] syntax for assignment
+a["Num"] = 3;
+a["key1"] = "abc";
+a["key2"] = true;
+a["ary"] = [1, "xyz", false];
+
+println("map a:", a);
+println("length of a:", len(a));
+
+// Access by key
+println("a[Num]:", a["Num"]);
+
+// Modify value
+a["Num"] = a["Num"] + 1;
+println("after a[Num] += 1:", a["Num"]);
+
+// Iterate using keys() function
+let ks = keys(a);
+for (let i = 0; i < len(ks); i++) {
+    let k = ks[i];
+    println("[", k, "]:", a[k]);
+}
+
+// Declare map with initial values
+let b = {
+    "intItem": 12,
+    "floatItem": 5.6,
+    "boolItem": true,
+    "stringItem": "str1",
+    "arrayItem": ["array", "in", "map"]
+};
+
+println("map b:", b);
+
+// Check if key exists
+println("has Num:", has(a, "Num"));
+println("has none:", has(a, "none"));
+
+// Remove key-value pair
+delete(a, "Num");
+println("after delete:", a);
+
+// Get values
+let vs = values(a);
+println("values:", vs);

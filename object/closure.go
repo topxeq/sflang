@@ -12,6 +12,7 @@ type CompiledFunction struct {
 	Instructions  []byte
 	NumLocals     int
 	NumParameters int
+	IsVariadic    bool // Whether this function has a variadic parameter
 }
 
 // Type returns the ObjectType for CompiledFunction.
@@ -19,7 +20,11 @@ func (cf *CompiledFunction) Type() ObjectType { return FUNCTION_OBJ }
 
 // Inspect returns a string representation of the compiled function.
 func (cf *CompiledFunction) Inspect() string {
-	return fmt.Sprintf("CompiledFunction[%d locals, %d params]", cf.NumLocals, cf.NumParameters)
+	variadic := ""
+	if cf.IsVariadic {
+		variadic = ", variadic"
+	}
+	return fmt.Sprintf("CompiledFunction[%d locals, %d params%s]", cf.NumLocals, cf.NumParameters, variadic)
 }
 
 // TypeCode returns the fixed numeric type code for CompiledFunction.

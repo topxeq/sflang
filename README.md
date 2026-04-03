@@ -25,6 +25,12 @@ Sflang is a bytecode VM-based interpreted language designed for simplicity and s
 - Map (Object)
 - Null
 - Function
+- Byte (uint8)
+- Char (rune)
+- Bytes (byte array)
+- Chars (rune array)
+- Time
+- File
 
 ## Installation
 
@@ -78,7 +84,7 @@ let pi = 3.14159
 ### Functions
 
 ```sflang
-fn add(a, b) {
+func add(a, b) {
     return a + b
 }
 
@@ -101,6 +107,22 @@ while (i < 10) {
     print(i)
     i = i + 1
 }
+```
+
+### Strings
+
+```sflang
+// Normal string with escape sequences
+let s1 = "Hello\nWorld"
+let s2 = 'Single quotes work too'
+
+// Raw string (backticks) - no escape processing, can span multiple lines
+let raw = `Line 1
+Line 2
+Line 3`
+
+// Useful for file paths and regex
+let path = `C:\Users\name\file.txt`
 ```
 
 ### Arrays and Maps
@@ -149,6 +171,7 @@ sflang/
 ├── ast/        # Abstract Syntax Tree definitions
 ├── builtin/    # Built-in functions
 ├── compiler/   # Bytecode compiler
+├── examples/   # Example scripts
 ├── lexer/      # Lexical analyzer
 ├── object/     # Runtime objects
 ├── parser/     # Parser
@@ -175,13 +198,13 @@ Benchmarks run on Windows 11, Go 1.21, Python 3.14.
 
 ```sflang
 // Fibonacci
-fn fib(n) {
+func fib(n) {
     if (n < 2) { return n }
     return fib(n - 1) + fib(n - 2)
 }
 
 // Loop sum
-fn loop_sum(n) {
+func loop_sum(n) {
     let sum = 0
     for (let i = 0; i < n; i++) {
         sum = sum + i
@@ -192,20 +215,78 @@ fn loop_sum(n) {
 
 ## Built-in Functions
 
-- `print(...)` - Print values to stdout
-- `println(...)` - Print values with newline
-- `len(value)` - Get length of string, array, or map
+### I/O Functions
+- `loadText(path)` - Read text file, returns string or error
+- `saveText(path, content)` - Write text file, returns null or error
+
+### String Functions
+- `subStr(s, start, len)` - Extract substring (Unicode-aware)
+- `split(str, sep)` - Split string by separator
+- `join(array, sep)` - Join array elements with separator
+- `trim(str)` - Remove leading/trailing whitespace
+- `upper(str)` - Convert to uppercase
+- `lower(str)` - Convert to lowercase
+- `contains(str, substr)` - Check if string contains substring
+- `indexOf(str, substr)` - Find substring position
+- `replace(str, old, new)` - Replace occurrences
+
+### Array Functions
+- `push(array, value)` - Push value to array
+- `pop(array)` - Pop value from array
+- `shift(array)` - Remove and return first element
+- `slice(array, start, end)` - Extract array slice
+- `concat(arrays...)` - Concatenate arrays
+- `append(array, values...)` - Append values to array
+- `range(end)` or `range(start, end)` - Generate integer array
+
+### Type Functions
 - `typeCode(value)` - Get numeric type code
 - `typeName(value)` - Get type name string
 - `str(value)` - Convert to string
 - `int(value)` - Convert to integer
 - `float(value)` - Convert to float
 - `bool(value)` - Convert to boolean
-- `push(array, value)` - Push value to array
-- `pop(array)` - Pop value from array
+
+### Math Functions
+- `abs(x)` - Absolute value
+- `min(values...)` - Minimum value
+- `max(values...)` - Maximum value
+- `floor(x)` - Floor value
+- `ceil(x)` - Ceiling value
+- `sqrt(x)` - Square root
+- `pow(x, y)` - Power
+- `sin(x)`, `cos(x)` - Trigonometric functions
+
+### Map Functions
+- `keys(map)` - Get map keys
+- `values(map)` - Get map values
+- `has(map, key)` - Check if key exists
+- `delete(map, key)` - Delete key from map
+
+### System Functions
+- `print(...)` - Print values to stdout
+- `println(...)` - Print values with newline
+- `pl(format, args...)` - Format printing
+- `len(value)` - Get length of string, array, or map
 - `time()` - Get current time in milliseconds
 - `sleep(ms)` - Sleep for milliseconds
-- And 30+ more functions...
+- `exit(code)` - Exit program
+
+### Error Handling
+- `error(msg)` - Create error object
+- `checkErr(err)` - Check error and panic if not null
+- `fatalf(format, args...)` - Print error and exit
+
+### Command Line
+- `argsG` - Global variable containing command line arguments
+- `getSwitch(args, name, default)` - Extract switch value from args
+
+## Examples
+
+Example scripts are available in the `examples/` directory:
+
+- `anonymousFunc.sf` - Anonymous functions and closures
+- `addBom.sf` - Add UTF-8 BOM to text files
 
 ## License
 

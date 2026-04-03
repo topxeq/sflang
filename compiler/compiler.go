@@ -15,6 +15,7 @@ import (
 type Bytecode struct {
 	Instructions []byte
 	Constants    []object.Object
+	NumLocals    int // Number of local variables needed
 }
 
 // Compiler holds the state of the compilation process.
@@ -23,10 +24,12 @@ type Compiler struct {
 	constants    []object.Object
 	symbolTable  *SymbolTable
 
-	scopes        []CompilationScope
-	scopeIndex    int
-	loopContexts  []LoopContext
-	tryContexts   []TryContext
+	scopes           []CompilationScope
+	scopeIndex       int
+	loopContexts     []LoopContext
+	tryContexts      []TryContext
+	maxLocals        int // Maximum locals used in any scope (for stack allocation)
+	loopLocalsOffset int // Cumulative locals used by for-in loops (to avoid overlap)
 }
 
 // CompilationScope holds the bytecode for a single compilation scope.
@@ -93,6 +96,12 @@ func (c *Compiler) Compile(node ast.Node) error {
 				c.emit(OpSetGlobal, symbol.Index)
 			} else {
 				c.emit(OpSetLocal, symbol.Index)
+			}
+		} else if ifExpr, ok := node.Expression.(*ast.IfExpression); ok {
+			// Special handling for if-else as statement
+			// The result should be popped, and jumps should go after the pop
+			if err := c.compileIfStatement(ifExpr); err != nil {
+				return err
 			}
 		} else if _, ok := node.Expression.(*ast.PostfixExpression); ok {
 			// Postfix expressions (i++, i--) don't leave a value on the stack
@@ -276,44 +285,99 @@ func (c *Compiler) Compile(node ast.Node) error {
 	case *ast.ForInStatement:
 		c.enterLoop()
 
-		// Compile source expression
+		// Check if we're already in an enclosed scope (e.g., inside a function)
+		// If so, don't create another enclosed scope - just define loop variables in current scope
+		// This avoids issues with free variables in nested scopes
+		inEnclosedScope := c.symbolTable.Outer != nil
+
+		var outerSymbolTable *SymbolTable
+		var offset int
+
+		if !inEnclosedScope {
+			// Create a new enclosed symbol table for loop variables
+			// This makes loop variables local instead of global
+			// Use cumulative offset to avoid conflicts with previous loops
+			outerSymbolTable = c.symbolTable
+			offset = outerSymbolTable.NumDefinitions() + c.loopLocalsOffset
+			c.symbolTable = NewEnclosedSymbolTableWithOffset(outerSymbolTable, offset)
+		}
+
+		// Define loop variables first (they'll be assigned during iteration)
+		var keySymbol, valueSymbol Symbol
+		if node.Key != nil {
+			keySymbol = c.symbolTable.Define(node.Key.Value)
+			// Initialize to null
+			c.emit(OpNull)
+			c.emit(OpSetLocal, keySymbol.Index)
+		}
+		if node.Value != nil {
+			valueSymbol = c.symbolTable.Define(node.Value.Value)
+			// Initialize to null
+			c.emit(OpNull)
+			c.emit(OpSetLocal, valueSymbol.Index)
+		}
+
+		// Store index counter
+		indexSymbol := c.symbolTable.Define("__for_in_index__")
+		c.emit(OpConstant, c.addConstant(object.GetInteger(0)))
+		c.emit(OpSetLocal, indexSymbol.Index)
+
+		// Get length - push builtin first, then argument, then call
+		c.emit(OpGetBuiltin, 3) // len
 		if err := c.Compile(node.Source); err != nil {
 			return err
 		}
-
-		// Call iterator builtin (will be implemented in VM)
-		c.emit(OpGetBuiltin, BuiltinIterator)
 		c.emit(OpCall, 1)
 
-		// Define loop variables
-		if node.Key != nil {
-			c.symbolTable.Define(node.Key.Value)
-		}
-		if node.Value != nil {
-			c.symbolTable.Define(node.Value.Value)
-		}
+		// Store length
+		lengthSymbol := c.symbolTable.Define("__for_in_length__")
+		c.emit(OpSetLocal, lengthSymbol.Index)
 
 		// Loop start
 		loopStart := len(c.currentInstructions())
 		c.currentLoopContext().loopStart = loopStart
 
-		// Call iterator next
-		c.emit(OpDup) // Duplicate iterator
-		c.emit(OpGetBuiltin, BuiltinNext)
-		c.emit(OpCall, 1)
-
-		// Check if done (returns null when done)
-		c.emit(OpNull)
-		c.emit(OpEqual)
+		// Check if index < length
+		c.emit(OpGetLocal, indexSymbol.Index)
+		c.emit(OpGetLocal, lengthSymbol.Index)
+		c.emit(OpLess) // index < length
 		jumpNotTruePos := c.emit(OpJumpNotTrue, 9999)
 
-		// Unpack key, value (implementation depends on iterator protocol)
-		// For now, this is a simplified version
+		// Compile source again for indexing
+		if err := c.Compile(node.Source); err != nil {
+			return err
+		}
+
+		// Get current index
+		c.emit(OpGetLocal, indexSymbol.Index)
+
+		// Index into source to get value
+		c.emit(OpIndex)
+
+		// Store value in loop variable
+		if node.Value != nil {
+			c.emit(OpSetLocal, valueSymbol.Index)
+		} else {
+			// No value variable, pop the indexed value
+			c.emit(OpPop)
+		}
+
+		// Store key (index) in loop variable
+		if node.Key != nil {
+			c.emit(OpGetLocal, indexSymbol.Index)
+			c.emit(OpSetLocal, keySymbol.Index)
+		}
 
 		// Compile body
 		if err := c.Compile(node.Body); err != nil {
 			return err
 		}
+
+		// Increment index
+		c.emit(OpGetLocal, indexSymbol.Index)
+		c.emit(OpConstant, c.addConstant(object.GetInteger(1)))
+		c.emit(OpAdd)
+		c.emit(OpSetLocal, indexSymbol.Index)
 
 		// Jump back to loop start
 		continuePos := len(c.currentInstructions())
@@ -322,9 +386,24 @@ func (c *Compiler) Compile(node ast.Node) error {
 		// End of loop
 		endPos := len(c.currentInstructions())
 		c.changeOperand(jumpNotTruePos, endPos)
-		c.emit(OpPop) // Pop iterator
 
 		c.leaveLoop(continuePos, endPos)
+
+		// Only update offsets and restore symbol table if we created an enclosed scope
+		if !inEnclosedScope {
+			// Track max locals for stack allocation
+			loopLocals := c.symbolTable.NumDefinitions()
+			if loopLocals > c.maxLocals {
+				c.maxLocals = loopLocals
+			}
+
+			// Update cumulative loop locals offset for subsequent loops
+			loopVarCount := loopLocals - offset
+			c.loopLocalsOffset += loopVarCount
+
+			// Restore the outer symbol table
+			c.symbolTable = outerSymbolTable
+		}
 
 	case *ast.BreakStatement:
 		if len(c.loopContexts) == 0 {
@@ -357,19 +436,51 @@ func (c *Compiler) Compile(node ast.Node) error {
 		catchStart := len(c.currentInstructions())
 		c.changeOperand(catchJumpPos, catchStart)
 
-		// Define catch variable
-		if node.CatchVar != nil {
-			c.symbolTable.Define(node.CatchVar.Value)
+		// Compile catch body if present
+		if node.CatchBody != nil {
+			// Create a new symbol table scope for catch block so catchVar becomes a local
+			oldSymbolTable := c.symbolTable
+			c.symbolTable = NewEnclosedSymbolTable(c.symbolTable)
+
+			// Define catch variable in the new scope (will be LocalScope)
+			if node.CatchVar != nil {
+				c.symbolTable.Define(node.CatchVar.Value)
+			}
+
+			// Emit OpCatchStart to signal VM to adjust basePointer
+			c.emit(OpCatchStart)
+
+			// Compile catch body
+			if err := c.Compile(node.CatchBody); err != nil {
+				return err
+			}
+
+			// Restore symbol table
+			c.symbolTable = oldSymbolTable
 		}
 
-		// Compile catch body
-		if err := c.Compile(node.CatchBody); err != nil {
-			return err
+		// Jump over finally (after catch)
+		jumpOverFinallyPos := c.emit(OpJump, 9999)
+
+		// Finally block position (where execution jumps after try or catch)
+		finallyStart := len(c.currentInstructions())
+
+		// Compile finally body if present
+		if node.FinallyBody != nil {
+			if err := c.Compile(node.FinallyBody); err != nil {
+				return err
+			}
 		}
 
-		// After catch
-		afterCatch := len(c.currentInstructions())
-		c.changeOperand(jumpOverCatchPos, afterCatch)
+		// Update jumps to skip to after finally
+		afterFinally := len(c.currentInstructions())
+		c.changeOperand(jumpOverCatchPos, finallyStart)
+		c.changeOperand(jumpOverFinallyPos, afterFinally)
+
+		// If there's no catch, the try handler should jump to finally
+		if node.CatchBody == nil {
+			c.changeOperand(catchJumpPos, finallyStart)
+		}
 
 	case *ast.ThrowStatement:
 		if err := c.Compile(node.ErrExpr); err != nil {
@@ -536,11 +647,41 @@ func (c *Compiler) Compile(node ast.Node) error {
 		}
 		c.emit(OpIndex)
 
+	case *ast.SliceExpression:
+		if err := c.Compile(node.Left); err != nil {
+			return err
+		}
+
+		// Push start index (or 0 if nil)
+		if node.Start != nil {
+			if err := c.Compile(node.Start); err != nil {
+				return err
+			}
+		} else {
+			c.emit(OpConstant, c.addConstant(object.GetInteger(0)))
+		}
+
+		// Push end index (or -1 for "end of array" if nil)
+		if node.End != nil {
+			if err := c.Compile(node.End); err != nil {
+				return err
+			}
+		} else {
+			c.emit(OpConstant, c.addConstant(object.GetInteger(-1)))
+		}
+
+		c.emit(OpSlice)
+
 	case *ast.FunctionLiteral:
 		c.enterScope()
 
 		for _, p := range node.Parameters {
 			c.symbolTable.Define(p.Value)
+		}
+
+		// Define variadic parameter if present
+		if node.VariadicParam != nil {
+			c.symbolTable.Define(node.VariadicParam.Value)
 		}
 
 		if err := c.Compile(node.Body); err != nil {
@@ -555,10 +696,16 @@ func (c *Compiler) Compile(node ast.Node) error {
 		numLocals := c.symbolTable.NumDefinitions()
 		instructions := c.leaveScope()
 
+		// Load free symbols onto the stack before creating closure
+		for _, s := range freeSymbols {
+			c.loadSymbol(s)
+		}
+
 		compiledFn := &object.CompiledFunction{
 			Instructions:  instructions,
 			NumLocals:     numLocals,
 			NumParameters: len(node.Parameters),
+			IsVariadic:    node.VariadicParam != nil,
 		}
 
 		fnIndex := c.addConstant(compiledFn)
@@ -585,18 +732,21 @@ func (c *Compiler) compileAssignmentLeft(left ast.Expression) error {
 			c.emit(OpSetLocal, symbol.Index)
 		} else if symbol.Scope == FreeScope {
 			// Free variables need special handling
-			c.emit(OpGetUp, symbol.Index)
+			c.emit(OpSetUp, symbol.Index)
 		}
 	case *ast.IndexExpression:
-		// Stack: array, index, value -> set array[index] = value
+		// Stack before: [value]
+		// After compiling left.Left: [value, array]
+		// After compiling left.Index: [value, array, index]
+		// Need: [array, index, value] for OpSetIndex
 		if err := c.Compile(left.Left); err != nil {
 			return err
 		}
 		if err := c.Compile(left.Index); err != nil {
 			return err
 		}
-		// Reorder stack: currently have [value, array, index], need [array, index, value]
-		// This requires swapping - for simplicity, we use a different approach
+		// Rotate: [value, array, index] -> [array, index, value]
+		c.emit(OpRot3)
 		c.emit(OpSetIndex)
 	default:
 		return fmt.Errorf("cannot assign to %T", left)
@@ -626,9 +776,14 @@ func (c *Compiler) compileLogicalAnd(node *ast.InfixExpression) error {
 		return err
 	}
 
-	jumpPos := c.emit(OpJumpNotTrue, 9999)
-	c.emit(OpPop)
+	// Duplicate left value - one for checking, one for result if false
+	c.emit(OpDup)
 
+	// If left is false, jump to end (left stays on stack as result)
+	jumpPos := c.emit(OpJumpNotTrue, 9999)
+
+	// Left is true, pop the duplicated left, evaluate right
+	c.emit(OpPop)
 	if err := c.Compile(node.Right); err != nil {
 		return err
 	}
@@ -645,10 +800,13 @@ func (c *Compiler) compileLogicalOr(node *ast.InfixExpression) error {
 		return err
 	}
 
-	// Jump if true (skip right side)
-	jumpPos := c.emit(OpJump, 9999)
+	// Duplicate left value - one for checking, one for result if true
+	c.emit(OpDup)
 
-	// If false, evaluate right side
+	// If left is true, jump to end (left stays on stack as result)
+	jumpPos := c.emit(OpJumpTrue, 9999)
+
+	// Left is false, pop the duplicated left, evaluate right
 	c.emit(OpPop)
 	if err := c.Compile(node.Right); err != nil {
 		return err
@@ -656,6 +814,38 @@ func (c *Compiler) compileLogicalOr(node *ast.InfixExpression) error {
 
 	endPos := len(c.currentInstructions())
 	c.changeOperand(jumpPos, endPos)
+
+	return nil
+}
+
+// compileIfStatement compiles an if-else as a statement (result is discarded).
+// This ensures jumps go to the correct position after all code.
+func (c *Compiler) compileIfStatement(node *ast.IfExpression) error {
+	if err := c.Compile(node.Condition); err != nil {
+		return err
+	}
+
+	// Jump to else or end if not true
+	jumpNotTruePos := c.emit(OpJumpNotTrue, 9999)
+
+	if err := c.Compile(node.Consequence); err != nil {
+		return err
+	}
+
+	// Jump over alternative
+	jumpPos := c.emit(OpJump, 9999)
+
+	afterConsequence := len(c.currentInstructions())
+	c.changeOperand(jumpNotTruePos, afterConsequence)
+
+	if node.Alternative != nil {
+		if err := c.Compile(node.Alternative); err != nil {
+			return err
+		}
+	}
+
+	afterAlternative := len(c.currentInstructions())
+	c.changeOperand(jumpPos, afterAlternative)
 
 	return nil
 }
@@ -744,9 +934,15 @@ func (c *Compiler) currentLoopContext() *LoopContext {
 
 // Bytecode returns the compiled bytecode.
 func (c *Compiler) Bytecode() *Bytecode {
+	// Use the maximum of main scope locals and enclosed scope locals
+	numLocals := c.symbolTable.NumDefinitions()
+	if c.maxLocals > numLocals {
+		numLocals = c.maxLocals
+	}
 	return &Bytecode{
 		Instructions: c.currentInstructions(),
 		Constants:    c.constants,
+		NumLocals:    numLocals,
 	}
 }
 

@@ -62,6 +62,7 @@ var precedences = map[lexer.TokenType]int{
 	lexer.PERCENT:     PRODUCT,
 	lexer.LPAREN:      CALL,
 	lexer.LBRACKET:    INDEX,
+		lexer.DOT:         CALL, // member access
 	lexer.INCREMENT:   CALL, // postfix ++
 	lexer.DECREMENT:   CALL, // postfix --
 }
@@ -119,6 +120,7 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerInfix(lexer.SHR, p.parseInfixExpression)
 	p.registerInfix(lexer.LPAREN, p.parseCallExpression)
 	p.registerInfix(lexer.LBRACKET, p.parseIndexExpression)
+	p.registerInfix(lexer.DOT, p.parseDotExpression)
 	p.registerInfix(lexer.INCREMENT, p.parsePostfixExpression)
 	p.registerInfix(lexer.DECREMENT, p.parsePostfixExpression)
 
@@ -165,6 +167,8 @@ func (p *Parser) parseStatement() ast.Statement {
 	switch p.currentToken.Type {
 	case lexer.LET:
 		return p.parseLetStatement()
+	case lexer.VAR:
+		return p.parseVarStatement()
 	case lexer.RETURN:
 		return p.parseReturnStatement()
 	case lexer.FOR:
@@ -207,6 +211,53 @@ func (p *Parser) parseLetStatement() *ast.LetStatement {
 	return stmt
 }
 
+// parseVarStatement parses a var statement.
+// Syntax: var <identifier>; or var <identifier> = <expression>;
+func (p *Parser) parseVarStatement() *ast.LetStatement {
+	stmt := &ast.LetStatement{Token: p.currentToken}
+
+	if !p.expectPeek(lexer.IDENT) {
+		return nil
+	}
+
+	stmt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+
+	// Check if there's an assignment
+	if p.peekTokenIs(lexer.ASSIGN) {
+		p.nextToken() // move to =
+		p.nextToken() // move past =
+		stmt.Value = p.parseExpression(LOWEST)
+	} else {
+		// No initialization, set to null
+		stmt.Value = &ast.NullLiteral{Token: lexer.Token{Type: lexer.NULL, Literal: "null"}}
+	}
+
+	if p.peekTokenIs(lexer.SEMICOLON) {
+		p.nextToken()
+	}
+
+	return stmt
+}
+
+// parseDefineStatement parses a short variable declaration statement.
+// Syntax: <identifier> := <expression>;
+func (p *Parser) parseDefineStatement() *ast.LetStatement {
+	stmt := &ast.LetStatement{Token: p.currentToken}
+
+	stmt.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+
+	p.nextToken() // move to :=
+	p.nextToken() // move past :=
+
+	stmt.Value = p.parseExpression(LOWEST)
+
+	if p.peekTokenIs(lexer.SEMICOLON) {
+		p.nextToken()
+	}
+
+	return stmt
+}
+
 // parseReturnStatement parses a return statement.
 // Syntax: return <expression>;
 func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
@@ -224,18 +275,38 @@ func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
 
 // parseExpressionStatement parses an expression statement.
 func (p *Parser) parseExpressionStatement() ast.Statement {
-	// Check for assignment
+	// Check for short variable declaration (identifier := value)
+	if p.currentTokenIs(lexer.IDENT) && p.peekTokenIs(lexer.DEFINE) {
+		return p.parseDefineStatement()
+	}
+
+	// Check for simple assignment (identifier = value)
 	if p.peekTokenIs(lexer.ASSIGN) {
 		return p.parseAssignmentStatement()
 	}
 
-	// Check for compound assignment
+	// Check for compound assignment (identifier += value, etc.)
 	if p.isCompoundAssignToken(p.peekToken.Type) {
 		return p.parseCompoundAssignStatement()
 	}
 
 	stmt := &ast.ExpressionStatement{Token: p.currentToken}
 	stmt.Expression = p.parseExpression(LOWEST)
+
+	// Check for index assignment (a[index] = value) after parsing expression
+	if p.peekTokenIs(lexer.ASSIGN) {
+		// Check if the expression is an index expression or identifier
+		if _, ok := stmt.Expression.(*ast.IndexExpression); ok {
+			return p.parseIndexAssignmentStatement(stmt.Expression)
+		}
+	}
+
+	// Check for compound index assignment (a[index] += value)
+	if p.isCompoundAssignToken(p.peekToken.Type) {
+		if _, ok := stmt.Expression.(*ast.IndexExpression); ok {
+			return p.parseCompoundIndexAssignStatement(stmt.Expression)
+		}
+	}
 
 	if p.peekTokenIs(lexer.SEMICOLON) {
 		p.nextToken()
@@ -290,6 +361,45 @@ func (p *Parser) parseCompoundAssignStatement() *ast.CompoundAssignStatement {
 	return stmt
 }
 
+// parseIndexAssignmentStatement parses an index assignment statement.
+// Example: a[0] = 10, m["key"] = "value"
+func (p *Parser) parseIndexAssignmentStatement(left ast.Expression) *ast.AssignStatement {
+	stmt := &ast.AssignStatement{Token: p.peekToken}
+
+	stmt.Left = left
+
+	p.nextToken() // move to =
+	p.nextToken() // move past =
+
+	stmt.Right = p.parseExpression(LOWEST)
+
+	if p.peekTokenIs(lexer.SEMICOLON) {
+		p.nextToken()
+	}
+
+	return stmt
+}
+
+// parseCompoundIndexAssignStatement parses a compound index assignment statement.
+// Example: a[0] += 10, m["key"] *= 2
+func (p *Parser) parseCompoundIndexAssignStatement(left ast.Expression) *ast.CompoundAssignStatement {
+	stmt := &ast.CompoundAssignStatement{Token: p.peekToken}
+
+	stmt.Left = left
+
+	stmt.Operator = p.peekToken.Literal
+	p.nextToken() // move to the compound operator
+
+	p.nextToken() // move past the operator
+	stmt.Right = p.parseExpression(LOWEST)
+
+	if p.peekTokenIs(lexer.SEMICOLON) {
+		p.nextToken()
+	}
+
+	return stmt
+}
+
 // parseBlockStatement parses a block statement.
 func (p *Parser) parseBlockStatement() *ast.BlockStatement {
 	block := &ast.BlockStatement{Token: p.currentToken}
@@ -311,6 +421,7 @@ func (p *Parser) parseBlockStatement() *ast.BlockStatement {
 // parseForStatement parses a for loop statement.
 // Syntax: for (<init>; <condition>; <update>) { <body> }
 // or: for (<key>, <value> in <source>) { <body> }
+// Supports empty sections: for (;;) is an infinite loop
 func (p *Parser) parseForStatement() ast.Statement {
 	stmt := &ast.ForStatement{Token: p.currentToken}
 
@@ -318,10 +429,12 @@ func (p *Parser) parseForStatement() ast.Statement {
 		return nil
 	}
 
-	// Check for for-in syntax
-	if p.peekTokenIs(lexer.IDENT) {
-		// Could be for-in: for (k, v in obj) or for (k in obj)
-		p.nextToken()
+	// Peek ahead to check for for-in syntax
+	// We look at the token after the next identifier
+	nextTok := p.lexer.PeekToken()
+	if nextTok.Type == lexer.COMMA || nextTok.Type == lexer.IN {
+		// This is for-in syntax
+		p.nextToken() // move to first identifier
 		firstIdent := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 
 		if p.peekTokenIs(lexer.COMMA) {
@@ -375,49 +488,81 @@ func (p *Parser) parseForStatement() ast.Statement {
 				Body:   p.parseBlockStatement(),
 			}
 		}
-		// Not for-in, rewind
-		p.nextToken()
-		p.nextToken()
 	}
 
 	// Regular for loop: for (init; condition; update) { body }
-	// Move past the opening parenthesis
+	// currentToken is LPAREN, peekToken is the first token of init
 	p.nextToken()
 
+	// Parse init (empty if current token is semicolon)
 	if !p.currentTokenIs(lexer.SEMICOLON) {
 		stmt.Init = p.parseStatement()
 	}
 
-	// After parseStatement, currentToken might be at semicolon (if statement consumed it)
-	// or before semicolon. Check and handle both cases.
+	// Move past the first semicolon (init/condition separator)
 	if p.currentTokenIs(lexer.SEMICOLON) {
-		// Statement already consumed the semicolon, move to condition
 		p.nextToken()
 	} else if p.peekTokenIs(lexer.SEMICOLON) {
-		// Statement didn't consume semicolon, consume it now
 		p.nextToken()
 		p.nextToken()
 	} else {
-		// Missing semicolon
 		p.peekError(lexer.SEMICOLON)
 		return nil
 	}
 
+	// Parse condition (empty if current token is semicolon - infinite loop)
 	if !p.currentTokenIs(lexer.SEMICOLON) {
 		stmt.Condition = p.parseExpression(LOWEST)
 	}
 
-	if !p.expectPeek(lexer.SEMICOLON) {
+	// Move past the second semicolon (condition/update separator)
+	if p.currentTokenIs(lexer.SEMICOLON) {
+		// Condition was empty, already at semicolon, move to next
+		p.nextToken()
+	} else if p.peekTokenIs(lexer.SEMICOLON) {
+		// Condition was present, expect semicolon and move past it
+		p.nextToken()
+		p.nextToken()
+	} else {
+		p.peekError(lexer.SEMICOLON)
 		return nil
 	}
 
-	p.nextToken()
+	// Parse update (empty if current token is right paren)
 	if !p.currentTokenIs(lexer.RPAREN) {
 		stmt.Update = p.parseStatement()
 	}
 
-	if !p.expectPeek(lexer.RPAREN) {
+	// After update, handle the closing parenthesis
+	// currentToken could be at various positions depending on what was parsed
+	if p.currentTokenIs(lexer.RPAREN) {
+		// Update was empty or ended at RPAREN
+		p.nextToken()
+	} else if p.peekTokenIs(lexer.RPAREN) {
+		// Update ended with peekToken at RPAREN
+		p.nextToken()
+		p.nextToken()
+	} else if p.currentTokenIs(lexer.SEMICOLON) {
+		// Update ended with semicolon (shouldn't happen for empty update, but handle it)
+		p.nextToken()
+		if p.currentTokenIs(lexer.RPAREN) {
+			p.nextToken()
+		} else if p.peekTokenIs(lexer.RPAREN) {
+			p.nextToken()
+			p.nextToken()
+		} else {
+			p.peekError(lexer.RPAREN)
+			return nil
+		}
+	} else {
+		// Neither currentToken nor peekToken is RPAREN - this is an error
+		p.peekError(lexer.RPAREN)
 		return nil
+	}
+
+	if p.currentTokenIs(lexer.LBRACE) {
+		stmt.Body = p.parseBlockStatement()
+		return stmt
 	}
 
 	if !p.expectPeek(lexer.LBRACE) {
@@ -451,8 +596,8 @@ func (p *Parser) parseContinueStatement() *ast.ContinueStatement {
 	return stmt
 }
 
-// parseTryStatement parses a try-catch statement.
-// Syntax: try { <body> } catch (<var>) { <catchBody> }
+// parseTryStatement parses a try-catch-finally statement.
+// Syntax: try { <body> } catch (<var>) { <catchBody> } [finally { <finallyBody> }]
 func (p *Parser) parseTryStatement() *ast.TryStatement {
 	stmt := &ast.TryStatement{Token: p.currentToken}
 
@@ -462,29 +607,47 @@ func (p *Parser) parseTryStatement() *ast.TryStatement {
 
 	stmt.Body = p.parseBlockStatement()
 
-	if !p.expectPeek(lexer.CATCH) {
-		return nil
+	// Catch is optional if finally is present
+	if p.peekTokenIs(lexer.CATCH) {
+		p.nextToken() // move to catch
+
+		if !p.expectPeek(lexer.LPAREN) {
+			return nil
+		}
+
+		if !p.expectPeek(lexer.IDENT) {
+			return nil
+		}
+
+		stmt.CatchVar = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+
+		if !p.expectPeek(lexer.RPAREN) {
+			return nil
+		}
+
+		if !p.expectPeek(lexer.LBRACE) {
+			return nil
+		}
+
+		stmt.CatchBody = p.parseBlockStatement()
 	}
 
-	if !p.expectPeek(lexer.LPAREN) {
-		return nil
+	// Check for finally block
+	if p.peekTokenIs(lexer.FINALLY) {
+		p.nextToken() // move to finally
+
+		if !p.expectPeek(lexer.LBRACE) {
+			return nil
+		}
+
+		stmt.FinallyBody = p.parseBlockStatement()
 	}
 
-	if !p.expectPeek(lexer.IDENT) {
+	// Must have at least catch or finally
+	if stmt.CatchBody == nil && stmt.FinallyBody == nil {
+		p.errors = append(p.errors, "try statement must have catch or finally block")
 		return nil
 	}
-
-	stmt.CatchVar = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-
-	if !p.expectPeek(lexer.RPAREN) {
-		return nil
-	}
-
-	if !p.expectPeek(lexer.LBRACE) {
-		return nil
-	}
-
-	stmt.CatchBody = p.parseBlockStatement()
 
 	return stmt
 }
@@ -733,16 +896,85 @@ func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
 	return exp
 }
 
-// parseIndexExpression parses an index expression.
+// parseIndexExpression parses an index or slice expression.
+// Index: a[0], a["key"]
+// Slice: a[1:3], a[:3], a[1:], a[:]
 func (p *Parser) parseIndexExpression(left ast.Expression) ast.Expression {
-	exp := &ast.IndexExpression{Token: p.currentToken, Left: left}
+	token := p.currentToken
 
 	p.nextToken()
-	exp.Index = p.parseExpression(LOWEST)
+
+	// Check for slice expression starting with :
+	if p.currentTokenIs(lexer.COLON) {
+		// Slice with no start: [:end]
+		p.nextToken() // move past :
+		slice := &ast.SliceExpression{Token: token, Left: left}
+
+		if !p.currentTokenIs(lexer.RBRACKET) {
+			slice.End = p.parseExpression(LOWEST)
+		}
+
+		// Consume the closing bracket
+		if p.currentTokenIs(lexer.RBRACKET) {
+			return slice
+		}
+		if !p.expectPeek(lexer.RBRACKET) {
+			return nil
+		}
+
+		return slice
+	}
+
+	// Parse the index/start
+	index := p.parseExpression(LOWEST)
+
+	// Check for slice expression with start
+	if p.peekTokenIs(lexer.COLON) {
+		p.nextToken() // move to :
+		p.nextToken() // move past :
+
+		slice := &ast.SliceExpression{Token: token, Left: left, Start: index}
+
+		if !p.currentTokenIs(lexer.RBRACKET) {
+			slice.End = p.parseExpression(LOWEST)
+		}
+
+		// Consume the closing bracket
+		if p.currentTokenIs(lexer.RBRACKET) {
+			return slice
+		}
+		if !p.expectPeek(lexer.RBRACKET) {
+			return nil
+		}
+
+		return slice
+	}
+
+	// Regular index expression
+	exp := &ast.IndexExpression{Token: token, Left: left, Index: index}
 
 	if !p.expectPeek(lexer.RBRACKET) {
 		return nil
 	}
+
+	return exp
+}
+
+// parseDotExpression parses a dot expression for map member access.
+// Example: a.key is transformed to a["key"]
+func (p *Parser) parseDotExpression(left ast.Expression) ast.Expression {
+	// Create an IndexExpression with the key as a string literal
+	exp := &ast.IndexExpression{Token: p.currentToken, Left: left}
+
+	p.nextToken()
+
+	// The identifier after the dot becomes the string key
+	if !p.currentTokenIs(lexer.IDENT) {
+		p.errors = append(p.errors, fmt.Sprintf("expected identifier after '.', got %s", p.currentToken.Type))
+		return nil
+	}
+
+	exp.Index = &ast.StringLiteral{Token: p.currentToken, Value: p.currentToken.Literal}
 
 	return exp
 }
@@ -794,7 +1026,7 @@ func (p *Parser) parseIfExpression() ast.Expression {
 func (p *Parser) parseFunctionLiteral() ast.Expression {
 	lit := &ast.FunctionLiteral{Token: p.currentToken}
 
-	// Check for named function: fn name(params) { ... }
+	// Check for named function: func name(params) { ... }
 	if p.peekTokenIs(lexer.IDENT) {
 		p.nextToken()
 		lit.Name = p.currentToken.Literal
@@ -804,7 +1036,7 @@ func (p *Parser) parseFunctionLiteral() ast.Expression {
 		return nil
 	}
 
-	lit.Parameters = p.parseFunctionParameters()
+	lit.Parameters, lit.VariadicParam = p.parseFunctionParameters()
 
 	if !p.expectPeek(lexer.LBRACE) {
 		return nil
@@ -816,30 +1048,57 @@ func (p *Parser) parseFunctionLiteral() ast.Expression {
 }
 
 // parseFunctionParameters parses function parameters.
-func (p *Parser) parseFunctionParameters() []*ast.Identifier {
+// Supports regular parameters and variadic parameter (...args).
+// Variadic parameter must be the last parameter.
+// Returns regular parameters, and sets variadic param if present.
+func (p *Parser) parseFunctionParameters() ([]*ast.Identifier, *ast.Identifier) {
 	var identifiers []*ast.Identifier
+	var variadicParam *ast.Identifier
 
 	if p.peekTokenIs(lexer.RPAREN) {
 		p.nextToken()
-		return identifiers
+		return identifiers, nil
 	}
 
 	p.nextToken()
+
+	// Check for variadic parameter as first parameter
+	if p.currentTokenIs(lexer.ELLIPSIS) {
+		// ...args as first/only parameter
+		p.nextToken()
+		variadicParam = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+		if !p.expectPeek(lexer.RPAREN) {
+			return nil, nil
+		}
+		return identifiers, variadicParam
+	}
+
 	ident := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 	identifiers = append(identifiers, ident)
 
 	for p.peekTokenIs(lexer.COMMA) {
 		p.nextToken()
 		p.nextToken()
+
+		// Check for variadic parameter
+		if p.currentTokenIs(lexer.ELLIPSIS) {
+			p.nextToken()
+			variadicParam = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			if !p.expectPeek(lexer.RPAREN) {
+				return nil, nil
+			}
+			return identifiers, variadicParam
+		}
+
 		ident := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
 		identifiers = append(identifiers, ident)
 	}
 
 	if !p.expectPeek(lexer.RPAREN) {
-		return nil
+		return nil, nil
 	}
 
-	return identifiers
+	return identifiers, variadicParam
 }
 
 // Helper methods

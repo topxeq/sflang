@@ -1,0 +1,33 @@
+// addBom.sf - Add UTF-8 BOM to a text file
+// Ported from Charlang's addBom.char
+// Usage: sf addBom.sf -file=path/to/file.txt [-output=path/to/output.txt]
+
+// Get file path from command line arguments
+let file1T = getSwitch(argsG, "-file=", "")
+
+if (file1T == "") {
+    fatalf("empty file path")
+}
+
+// Get output file path (default to input file)
+let outputFileT = getSwitch(argsG, "-output=", file1T)
+
+// Read the file content
+let fcT = loadText(file1T)
+
+// Check for error
+if (typeCode(fcT) == 10) {
+    fatalf("failed to load file: %s", fcT)
+}
+
+// Add UTF-8 BOM (U+FEFF)
+let bom = "\uFEFF"
+fcT = bom + fcT
+
+// Save to output file
+let rs = saveText(outputFileT, fcT)
+
+// Check for error
+checkErr(rs)
+
+println("done save to " + outputFileT)

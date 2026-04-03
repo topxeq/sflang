@@ -1,0 +1,4 @@
+// Hello World - Sflang example
+// Equivalent to Charlang's helloWorld.char
+
+println("Hello world!");

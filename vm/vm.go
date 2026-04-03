@@ -36,21 +36,25 @@ type VM struct {
 
 // TryHandler represents a try-catch handler.
 type TryHandler struct {
-	catchIP   int
-	catchBase int
-	catchVar  string
+	catchIP     int    // Instruction pointer for catch block
+	catchBase   int    // Stack base pointer to restore
+	catchFrame  int    // Frame index where try block was defined
+	catchVarIdx int    // Local variable index for catch variable
 }
 
 // New creates a new VM with the given bytecode.
 func New(bytecode *compiler.Bytecode) *VM {
-	mainFn := &object.CompiledFunction{Instructions: bytecode.Instructions}
+	mainFn := &object.CompiledFunction{
+		Instructions: bytecode.Instructions,
+		NumLocals:    bytecode.NumLocals,
+	}
 
 	globals := make([]object.Object, GlobalSize)
 
 	vm := &VM{
 		constants:   bytecode.Constants,
 		stack:       make([]object.Object, StackSize),
-		sp:          0,
+		sp:          bytecode.NumLocals, // Reserve stack space for local variables
 		globals:     globals,
 		frames:      make([]Frame, MaxFrames),
 		frameIndex:  1,
@@ -155,6 +159,21 @@ func (vm *VM) Run() error {
 		case compiler.OpDup:
 			vm.stack[vm.sp] = vm.stack[vm.sp-1]
 			vm.sp++
+
+		case compiler.OpSwap:
+			// Swap top two values: [a, b] -> [b, a]
+			vm.stack[vm.sp-1], vm.stack[vm.sp-2] = vm.stack[vm.sp-2], vm.stack[vm.sp-1]
+
+		case compiler.OpRot3:
+			// Rotate top 3 values for index assignment
+			// Before: [value, array, index] (positions: sp-3, sp-2, sp-1)
+			// After: [array, index, value]
+			value := vm.stack[vm.sp-3]
+			array := vm.stack[vm.sp-2]
+			index := vm.stack[vm.sp-1]
+			vm.stack[vm.sp-3] = array
+			vm.stack[vm.sp-2] = index
+			vm.stack[vm.sp-1] = value
 
 		case compiler.OpAdd:
 			vm.sp--
@@ -399,6 +418,15 @@ func (vm *VM) Run() error {
 				frame.ip = pos - 1
 			}
 
+		case compiler.OpJumpTrue:
+			pos := int(ins[ip+1])<<8 | int(ins[ip+2])
+			frame.ip += 2
+			vm.sp--
+			condition := vm.stack[vm.sp]
+			if condition != object.FALSE && condition != object.NULL {
+				frame.ip = pos - 1
+			}
+
 		case compiler.OpSetGlobal:
 			globalIndex := int(ins[ip+1])<<8 | int(ins[ip+2])
 			frame.ip += 2
@@ -531,6 +559,52 @@ func (vm *VM) Run() error {
 				return fmt.Errorf("index assignment not supported: %s", left.Type())
 			}
 
+		case compiler.OpSlice:
+			// Stack: [array, start, end]
+			vm.sp--
+			endIdx := vm.stack[vm.sp]
+			vm.sp--
+			startIdx := vm.stack[vm.sp]
+			vm.sp--
+			left := vm.stack[vm.sp]
+
+			arr, ok := left.(*object.Array)
+			if !ok {
+				return fmt.Errorf("slice operator not supported: %s", left.Type())
+			}
+
+			start, ok1 := startIdx.(*object.Integer)
+			if !ok1 {
+				return fmt.Errorf("non-integer slice start: %s", startIdx.Type())
+			}
+
+			var end int
+			if endI, ok2 := endIdx.(*object.Integer); ok2 {
+				if endI.Value == -1 {
+					// -1 means "end of array"
+					end = len(arr.Elements)
+				} else {
+					end = int(endI.Value)
+				}
+			} else {
+				return fmt.Errorf("non-integer slice end: %s", endIdx.Type())
+			}
+
+			startVal := int(start.Value)
+			if startVal < 0 {
+				startVal = 0
+			}
+			if end < startVal {
+				end = startVal
+			}
+			if end > len(arr.Elements) {
+				end = len(arr.Elements)
+			}
+
+			result := &object.Array{Elements: arr.Elements[startVal:end]}
+			vm.stack[vm.sp] = result
+			vm.sp++
+
 		case compiler.OpCall:
 			numArgs := int(ins[ip+1])
 			frame.ip++
@@ -540,17 +614,54 @@ func (vm *VM) Run() error {
 
 			switch fn := callee.(type) {
 			case *object.Closure:
-				if numArgs != fn.Fn.NumParameters {
-					return fmt.Errorf("wrong number of arguments: want=%d, got=%d", fn.Fn.NumParameters, numArgs)
+				if fn.Fn.IsVariadic {
+					// For variadic functions, allow any number of args >= NumParameters
+					minArgs := fn.Fn.NumParameters
+					if numArgs < minArgs {
+						return fmt.Errorf("wrong number of arguments: want>=%d, got=%d", minArgs, numArgs)
+					}
+
+					// Collect variadic args into an array
+					// Stack layout: [closure][regular_args...][variadic_args...]
+					//             sp-numArgs-1      sp-numArgs    sp-numVarArgs
+					numVarArgs := numArgs - minArgs
+					varArgs := make([]object.Object, numVarArgs)
+					for i := 0; i < numVarArgs; i++ {
+						// Variadic args are at positions [sp-numVarArgs, sp-1)
+						varArgs[i] = vm.stack[vm.sp-numVarArgs+i]
+					}
+					argsArray := &object.Array{Elements: varArgs}
+
+					// Reorganize stack: remove variadic args, add argsArray
+					// New layout: [closure][regular_args...][argsArray]
+					// The argsArray should be at position sp-1 after reorganization
+
+					// Move argsArray to replace variadic args
+					// Position of first variadic arg: sp - numVarArgs
+					vm.stack[vm.sp-numVarArgs] = argsArray
+
+					// New stack has: closure + regular args + argsArray
+
+					// BasePointer points to first argument (or argsArray if no regular args)
+					basePointer := vm.sp - numVarArgs - minArgs
+					vm.pushFrame(fn.Fn, fn.Free, basePointer)
+					vm.sp = basePointer + fn.Fn.NumLocals
+
+					// Update frame reference
+					frame = vm.currentFrame()
+				} else {
+					if numArgs != fn.Fn.NumParameters {
+						return fmt.Errorf("wrong number of arguments: want=%d, got=%d", fn.Fn.NumParameters, numArgs)
+					}
+
+					// Push new frame (no allocation)
+					basePointer := vm.sp - numArgs
+					vm.pushFrame(fn.Fn, fn.Free, basePointer)
+					vm.sp = basePointer + fn.Fn.NumLocals
+
+					// Update frame reference
+					frame = vm.currentFrame()
 				}
-
-				// Push new frame (no allocation)
-				basePointer := vm.sp - numArgs
-				vm.pushFrame(fn.Fn, fn.Free, basePointer)
-				vm.sp = basePointer + fn.Fn.NumLocals
-
-				// Update frame reference
-				frame = vm.currentFrame()
 
 			case *object.Builtin:
 				// Build args slice
@@ -618,6 +729,18 @@ func (vm *VM) Run() error {
 			frame.ip++
 			vm.stack[vm.sp] = frame.free[freeIndex]
 			vm.sp++
+
+		case compiler.OpGetUp:
+			freeIndex := int(ins[ip+1])
+			frame.ip++
+			vm.stack[vm.sp] = frame.free[freeIndex]
+			vm.sp++
+
+		case compiler.OpSetUp:
+			freeIndex := int(ins[ip+1])
+			frame.ip++
+			vm.sp--
+			frame.free[freeIndex] = vm.stack[vm.sp]
 
 		case compiler.OpBitAnd:
 			vm.sp--
@@ -698,28 +821,45 @@ func (vm *VM) Run() error {
 			catchPos := int(ins[ip+1])<<8 | int(ins[ip+2])
 			frame.ip += 2
 			vm.tryHandlers[vm.tryIndex] = TryHandler{
-				catchIP:   catchPos,
-				catchBase: frame.basePointer,
+				catchIP:    catchPos,
+				catchBase:  frame.basePointer,
+				catchFrame: vm.frameIndex,
 			}
 			vm.tryIndex++
 
 		case compiler.OpPopTry:
 			vm.tryIndex--
 
+		case compiler.OpCatchStart:
+			// Adjust basePointer for catch block execution
+			// The error object is at vm.sp - 1, set basePointer so OpGetLocal(0) reads it
+			frame.basePointer = vm.sp - 1
+
 		case compiler.OpThrow:
 			vm.sp--
 			errObj := vm.stack[vm.sp]
 
-			// Find catch handler
+			// Find catch handler - unwind try handlers and frames
 			for vm.tryIndex > 0 {
 				vm.tryIndex--
 				handler := vm.tryHandlers[vm.tryIndex]
 
-				// Restore state
+				// Unwind frames if needed - restore to the frame where try was defined
+				for vm.frameIndex > handler.catchFrame {
+					vm.frameIndex--
+					frame = &vm.frames[vm.frameIndex-1]
+				}
+
+				// Update frame reference after potential unwinding
+				frame = vm.currentFrame()
+
+				// Restore state for catch block execution
+				// Set basePointer to catchBase so catch variable (index 0) reads from correct position
+				frame.basePointer = handler.catchBase
 				frame.ip = handler.catchIP - 1
 				vm.sp = handler.catchBase
 
-				// Push error as catch variable
+				// Push error object as catch variable at position catchBase
 				vm.stack[vm.sp] = errObj
 				vm.sp++
 				goto continue_execution

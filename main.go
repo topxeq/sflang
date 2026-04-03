@@ -119,6 +119,9 @@ func runFile(filename string, printAst, printBytecode bool, args []string) error
 		symbolTable.DefineBuiltin(i, name)
 	}
 
+	// Define argsG as a global variable before compilation
+	argsSymbol := symbolTable.Define("argsG")
+
 	// Compile
 	c := compiler.NewWithState(symbolTable, nil)
 	if err := c.Compile(program); err != nil {
@@ -134,8 +137,21 @@ func runFile(filename string, printAst, printBytecode bool, args []string) error
 		return nil
 	}
 
-	// Run the VM
-	machine := vm.New(c.Bytecode())
+	// Create globals array and pre-populate argsG
+	globals := make([]object.Object, vm.GlobalSize)
+
+	// Convert args to Sflang Array of Strings
+	argsElements := make([]object.Object, len(args)+1)
+	// First element is the script path
+	argsElements[0] = &object.String{Value: filename}
+	// Remaining elements are the script arguments
+	for i, arg := range args {
+		argsElements[i+1] = &object.String{Value: arg}
+	}
+	globals[argsSymbol.Index] = &object.Array{Elements: argsElements}
+
+	// Run the VM with pre-populated globals
+	machine := vm.NewWithGlobals(c.Bytecode(), globals)
 	if err := machine.Run(); err != nil {
 		return fmt.Errorf("runtime error: %w", err)
 	}

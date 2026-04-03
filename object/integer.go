@@ -41,7 +41,7 @@ func (i *Integer) Inspect() string {	return strconv.FormatInt(i.Value, 10) }
 func (i *Integer) TypeCode() int { return TypeCodeInteger }
 
 // TypeName returns the human-readable type name.
-func (i *Integer) TypeName() string { return "integer" }
+func (i *Integer) TypeName() string { return "int" }
 
 // HashKey returns a HashKey for using integers as map keys.
 func (i *Integer) HashKey() HashKey {

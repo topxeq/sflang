@@ -1,0 +1,19 @@
+// Variables - Sflang example
+// Equivalent to Charlang's var.char
+
+// Define a variable
+let a = null;
+
+// Note: Sflang uses 'let' instead of 'var'
+// and requires initialization
+
+a = 1;
+println(a);
+
+// Assign a value of another type
+a = "abc";
+println(a);
+
+// Define and assign in one step
+let b = true;
+println(b);

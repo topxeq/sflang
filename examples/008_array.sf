@@ -1,0 +1,40 @@
+// Arrays - Sflang example
+// Equivalent to Charlang's array.char (partial)
+
+// Declare an array
+let a = [1, 2, 3, "abc", 12.3];
+
+println("a:", a);
+println("a[2]:", a[2]);
+println("length of a:", len(a));
+
+// Reassign the array variable
+a = [1, 2];
+
+// Append values
+a = append(a, "abc");
+
+let b = ["xyz", 16];
+
+// Append another array
+a = concat(a, b);
+
+a = append(a, true);
+
+println("after append:", a);
+
+// Modify element by index
+a[0] = a[0] + 1;
+println("after a[0] += 1:", a);
+
+// Handle exceptions
+try {
+    throw "test exception";
+} catch (e) {
+    println("exception:", e);
+}
+
+// Sorting example - need sort function
+let h = [3, 17, 2, 5, 0.6, 22.8];
+println("unsorted:", h);
+// Note: Sflang does not have built-in sort yet

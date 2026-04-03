@@ -21,14 +21,14 @@ type Function struct {
 func (f *Function) Type() ObjectType { return FUNCTION_OBJ }
 
 // Inspect returns a string representation of the function signature.
-// Format: fn(param1, param2, ...) { ... }
+// Format: func(param1, param2, ...) { ... }
 func (f *Function) Inspect() string {
 	var out bytes.Buffer
 	params := make([]string, 0, len(f.Parameters))
 	for _, p := range f.Parameters {
 		params = append(params, p.String())
 	}
-	out.WriteString("fn(")
+	out.WriteString("func(")
 	out.WriteString(strings.Join(params, ", "))
 	out.WriteString(") {\n")
 	out.WriteString(f.Body.String())

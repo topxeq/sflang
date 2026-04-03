@@ -1,0 +1,29 @@
+// If statement - Sflang example
+// Equivalent to Charlang's if.char
+
+let a = null;
+
+if (!a) {
+    println("!a");
+}
+
+println("!a", !a);
+
+if (a) {
+    println("a =", a);
+} else {
+    println("a is not initialized");
+}
+
+let b = 1;
+
+if (b) {
+    println("b =", b);
+} else {
+    println("b is not initialized");
+}
+
+println("!b", !b);
+
+let c = "abc";
+println("!c", !c);

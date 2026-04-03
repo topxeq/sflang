@@ -1,0 +1,7 @@
+// Simple add operation - Sflang example
+// Equivalent to Charlang's 001_helloWorld.char
+
+let x = 1.2;
+let y = x + 1;
+
+println(x + y);

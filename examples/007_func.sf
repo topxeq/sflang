@@ -1,0 +1,25 @@
+// Functions - Sflang example
+// Equivalent to Charlang's func.char
+
+// Declare a function with arguments
+func f1(a, b, c, d) {
+    return a * b + c / d;
+}
+
+let result1 = f1(3, 6, 8, 9);
+println("result1=", result1);
+
+// Note: Sflang does not support variadic functions (...args)
+// The f2 example from Charlang cannot be directly translated
+
+// Alternative: use array as parameter
+func sumAll(arr) {
+    let sum = 0;
+    for (let i = 0; i < len(arr); i++) {
+        sum = sum + arr[i];
+    }
+    return sum;
+}
+
+let result2 = sumAll([3, 6, 8, 9, 7]);
+println("result2=", result2);

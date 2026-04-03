@@ -39,6 +39,16 @@ func NewEnclosedSymbolTable(outer *SymbolTable) *SymbolTable {
 	return s
 }
 
+// NewEnclosedSymbolTableWithOffset creates a symbol table enclosed by an outer one,
+// with an initial numDefinitions offset. This is useful for for-in loops that
+// don't create new frames but need local variables with non-conflicting indices.
+func NewEnclosedSymbolTableWithOffset(outer *SymbolTable, offset int) *SymbolTable {
+	s := NewSymbolTable()
+	s.Outer = outer
+	s.numDefinitions = offset
+	return s
+}
+
 // Define adds a new symbol to the symbol table.
 func (s *SymbolTable) Define(name string) Symbol {
 	symbol := Symbol{Name: name, Index: s.numDefinitions}

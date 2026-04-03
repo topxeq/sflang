@@ -1,0 +1,28 @@
+// Fibonacci - Sflang example
+// Equivalent to Charlang's fib.char
+
+func fib(x) {
+    if (x < 2) {
+        return x;
+    }
+    return fib(x - 1) + fib(x - 2);
+}
+
+let count = 35;
+
+// Get count from command line if provided
+// Note: Sflang uses argsG for command-line arguments
+// let args = argsG;
+// if (len(args) > 1) {
+//     count = int(args[1]);
+// }
+
+println("count:", count);
+
+let t1 = time();
+let rs = fib(count);
+let t2 = time();
+
+let diff = t2 - t1;
+println("time elapsed:", diff, "ms");
+println(rs);

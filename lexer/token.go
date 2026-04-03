@@ -26,6 +26,7 @@ const (
 
 	// Operators
 	ASSIGN   TokenType = "="   // Assignment
+	DEFINE   TokenType = ":="  // Short variable declaration
 	PLUS     TokenType = "+"   // Addition
 	MINUS    TokenType = "-"   // Subtraction/Negation
 	BANG     TokenType = "!"   // Logical NOT
@@ -78,9 +79,13 @@ const (
 	LBRACKET TokenType = "[" // Left bracket
 	RBRACKET TokenType = "]" // Right bracket
 
+	// Variadic
+	ELLIPSIS TokenType = "..." // Ellipsis for variadic parameters
+
 	// Keywords
-	FN     TokenType = "fn"     // Function declaration
+	FN     TokenType = "func"   // Function declaration
 	LET    TokenType = "let"    // Variable declaration
+	VAR    TokenType = "var"    // Variable declaration without initialization
 	IF     TokenType = "if"     // If statement
 	ELSE   TokenType = "else"   // Else clause
 	FOR    TokenType = "for"    // For loop
@@ -95,15 +100,17 @@ const (
 	NULL  TokenType = "null"  // Null value
 
 	// Exception handling
-	TRY   TokenType = "try"   // Try block
-	CATCH TokenType = "catch" // Catch block
-	THROW TokenType = "throw" // Throw statement
+	TRY     TokenType = "try"     // Try block
+	CATCH   TokenType = "catch"   // Catch block
+	FINALLY TokenType = "finally" // Finally block
+	THROW   TokenType = "throw"   // Throw statement
 )
 
 // Keywords maps keyword strings to their token types.
 var Keywords = map[string]TokenType{
-	"fn":       FN,
+	"func":     FN,
 	"let":      LET,
+	"var":      VAR,
 	"if":       IF,
 	"else":     ELSE,
 	"for":      FOR,
@@ -116,6 +123,7 @@ var Keywords = map[string]TokenType{
 	"null":     NULL,
 	"try":      TRY,
 	"catch":    CATCH,
+	"finally":  FINALLY,
 	"throw":    THROW,
 }
 

@@ -20,6 +20,12 @@ const (
 	ERROR_OBJ    ObjectType = "ERROR"
 	RETURN_OBJ   ObjectType = "RETURN"
 	CLOSURE_OBJ  ObjectType = "CLOSURE"
+	BYTE_OBJ     ObjectType = "BYTE"
+	CHAR_OBJ     ObjectType = "CHAR"
+	BYTES_OBJ    ObjectType = "BYTES"
+	CHARS_OBJ    ObjectType = "CHARS"
+	TIME_OBJ     ObjectType = "TIME"
+	FILE_OBJ     ObjectType = "FILE"
 )
 
 // TypeCode constants define fixed numeric codes for each type.
@@ -38,14 +44,20 @@ const (
 	TypeCodeError    = 10
 	TypeCodeReturn   = 11
 	TypeCodeClosure  = 12
+	TypeCodeByte     = 13
+	TypeCodeChar     = 14
+	TypeCodeBytes    = 15
+	TypeCodeChars    = 16
+	TypeCodeTime     = 17
+	TypeCodeFile     = 18
 )
 
 // typeNameMap maps type codes to their string names for fast lookup.
 var typeNameMap = map[int]string{
-	TypeCodeInteger:  "integer",
+	TypeCodeInteger:  "int",
 	TypeCodeFloat:    "float",
 	TypeCodeString:   "string",
-	TypeCodeBoolean:  "boolean",
+	TypeCodeBoolean:  "bool",
 	TypeCodeNull:     "null",
 	TypeCodeArray:    "array",
 	TypeCodeMap:      "map",
@@ -54,6 +66,12 @@ var typeNameMap = map[int]string{
 	TypeCodeError:    "error",
 	TypeCodeReturn:   "return",
 	TypeCodeClosure:  "closure",
+	TypeCodeByte:     "byte",
+	TypeCodeChar:     "char",
+	TypeCodeBytes:    "bytes",
+	TypeCodeChars:    "chars",
+	TypeCodeTime:     "time",
+	TypeCodeFile:     "file",
 }
 
 // GetTypeName returns the string name for a given type code.

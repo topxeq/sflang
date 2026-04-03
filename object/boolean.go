@@ -18,7 +18,7 @@ func (b *Boolean) Inspect() string { return fmt.Sprintf("%t", b.Value) }
 func (b *Boolean) TypeCode() int { return TypeCodeBoolean }
 
 // TypeName returns the human-readable type name.
-func (b *Boolean) TypeName() string { return "boolean" }
+func (b *Boolean) TypeName() string { return "bool" }
 
 // HashKey returns a HashKey for using booleans as map keys.
 func (b *Boolean) HashKey() HashKey {

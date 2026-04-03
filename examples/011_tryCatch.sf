@@ -1,0 +1,19 @@
+// Try-catch - Sflang example
+// Equivalent to Charlang's tryCatch.char
+
+let a = 0;
+let r = null;
+
+try {
+    // Note: Division by zero behavior depends on implementation
+    // In Sflang, this may throw an error
+    if (a == 0) {
+        throw "division by zero";
+    }
+    r = 3 / a;
+} catch (e) {
+    println("exception:", e);
+}
+
+println("r:", r);
+println("done");

@@ -1,0 +1,36 @@
+// For loop - Sflang example
+// Equivalent to Charlang's for1.char
+
+let c1 = 0;
+
+// Classic for loop
+for (let i = 0; i < 5; i++) {
+    c1 = c1 + i;
+}
+
+println(c1 * 3);
+
+// For loop with external variable
+let j = 0;
+for (let k = 0; k < 5; k++) {
+    println("j:", j);
+    j = j + 1;
+}
+
+// Simulating infinite loop with break
+// Note: Sflang requires all parts of for loop
+// Use while-like pattern with condition
+let c = 5;
+for (let dummy = 0; c <= 30; dummy = 0) {
+    c = c + 5;
+
+    if (c < 10) {
+        // skip
+    }
+
+    if (c > 30) {
+        break;
+    }
+}
+
+println("c:", c);

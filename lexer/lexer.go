@@ -161,11 +161,27 @@ func (l *Lexer) NextToken() Token {
 	case ',':
 		tok = Token{Type: COMMA, Literal: string(l.ch), Line: line, Column: column}
 	case ':':
-		tok = Token{Type: COLON, Literal: string(l.ch), Line: line, Column: column}
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = Token{Type: DEFINE, Literal: ":=", Line: line, Column: column}
+		} else {
+			tok = Token{Type: COLON, Literal: string(l.ch), Line: line, Column: column}
+		}
 	case ';':
 		tok = Token{Type: SEMICOLON, Literal: string(l.ch), Line: line, Column: column}
 	case '.':
-		tok = Token{Type: DOT, Literal: string(l.ch), Line: line, Column: column}
+		if l.peekChar() == '.' {
+			l.readChar()
+			if l.peekChar() == '.' {
+				l.readChar()
+				tok = Token{Type: ELLIPSIS, Literal: "...", Line: line, Column: column}
+			} else {
+				// Two dots - not valid, but treat as two DOT tokens
+				tok = Token{Type: DOT, Literal: ".", Line: line, Column: column}
+			}
+		} else {
+			tok = Token{Type: DOT, Literal: string(l.ch), Line: line, Column: column}
+		}
 	case '(':
 		tok = Token{Type: LPAREN, Literal: string(l.ch), Line: line, Column: column}
 	case ')':
@@ -373,6 +389,181 @@ func (l *Lexer) peekChar() byte {
 		return 0
 	}
 	return l.input[l.readPosition]
+}
+
+// PeekToken returns the next token without advancing the position.
+// This allows looking ahead one token without consuming it.
+func (l *Lexer) PeekToken() Token {
+	// Save current state
+	pos := l.position
+	readPos := l.readPosition
+	ch := l.ch
+	line := l.line
+	col := l.column
+
+	// Read next token
+	l.skipWhitespace()
+	startLine := l.line
+	startCol := l.column
+
+	var tok Token
+	switch l.ch {
+	case '=':
+		if l.peekChar() == '=' {
+			ch := l.ch
+			l.readChar()
+			tok = Token{Type: EQ, Literal: string(ch) + string(l.ch), Line: startLine, Column: startCol}
+		} else {
+			tok = Token{Type: ASSIGN, Literal: string(l.ch), Line: startLine, Column: startCol}
+		}
+	case '+':
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = Token{Type: PLUS_ASSIGN, Literal: "+=", Line: startLine, Column: startCol}
+		} else if l.peekChar() == '+' {
+			l.readChar()
+			tok = Token{Type: INCREMENT, Literal: "++", Line: startLine, Column: startCol}
+		} else {
+			tok = Token{Type: PLUS, Literal: string(l.ch), Line: startLine, Column: startCol}
+		}
+	case '-':
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = Token{Type: MINUS_ASSIGN, Literal: "-=", Line: startLine, Column: startCol}
+		} else if l.peekChar() == '-' {
+			l.readChar()
+			tok = Token{Type: DECREMENT, Literal: "--", Line: startLine, Column: startCol}
+		} else {
+			tok = Token{Type: MINUS, Literal: string(l.ch), Line: startLine, Column: startCol}
+		}
+	case '*':
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = Token{Type: MUL_ASSIGN, Literal: "*=", Line: startLine, Column: startCol}
+		} else {
+			tok = Token{Type: ASTERISK, Literal: string(l.ch), Line: startLine, Column: startCol}
+		}
+	case '/':
+		if l.peekChar() == '/' {
+			tok = Token{Type: SEMICOLON, Literal: "", Line: startLine, Column: startCol} // Skip comment
+		} else if l.peekChar() == '*' {
+			tok = Token{Type: SEMICOLON, Literal: "", Line: startLine, Column: startCol} // Skip block comment
+		} else if l.peekChar() == '=' {
+			l.readChar()
+			tok = Token{Type: DIV_ASSIGN, Literal: "/=", Line: startLine, Column: startCol}
+		} else {
+			tok = Token{Type: SLASH, Literal: string(l.ch), Line: startLine, Column: startCol}
+		}
+	case '%':
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = Token{Type: MOD_ASSIGN, Literal: "%=", Line: startLine, Column: startCol}
+		} else {
+			tok = Token{Type: PERCENT, Literal: string(l.ch), Line: startLine, Column: startCol}
+		}
+	case '!':
+		if l.peekChar() == '=' {
+			ch := l.ch
+			l.readChar()
+			tok = Token{Type: NOT_EQ, Literal: string(ch) + string(l.ch), Line: startLine, Column: startCol}
+		} else {
+			tok = Token{Type: BANG, Literal: string(l.ch), Line: startLine, Column: startCol}
+		}
+	case '<':
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = Token{Type: LT_EQ, Literal: "<=", Line: startLine, Column: startCol}
+		} else if l.peekChar() == '<' {
+			l.readChar()
+			tok = Token{Type: SHL, Literal: "<<", Line: startLine, Column: startCol}
+		} else {
+			tok = Token{Type: LT, Literal: string(l.ch), Line: startLine, Column: startCol}
+		}
+	case '>':
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = Token{Type: GT_EQ, Literal: ">=", Line: startLine, Column: startCol}
+		} else if l.peekChar() == '>' {
+			l.readChar()
+			tok = Token{Type: SHR, Literal: ">>", Line: startLine, Column: startCol}
+		} else {
+			tok = Token{Type: GT, Literal: string(l.ch), Line: startLine, Column: startCol}
+		}
+	case '&':
+		if l.peekChar() == '&' {
+			l.readChar()
+			tok = Token{Type: AND, Literal: "&&", Line: startLine, Column: startCol}
+		} else {
+			tok = Token{Type: BIT_AND, Literal: string(l.ch), Line: startLine, Column: startCol}
+		}
+	case '|':
+		if l.peekChar() == '|' {
+			l.readChar()
+			tok = Token{Type: OR, Literal: "||", Line: startLine, Column: startCol}
+		} else {
+			tok = Token{Type: BIT_OR, Literal: string(l.ch), Line: startLine, Column: startCol}
+		}
+	case '^':
+		tok = Token{Type: BIT_XOR, Literal: string(l.ch), Line: startLine, Column: startCol}
+	case '~':
+		tok = Token{Type: BIT_NOT, Literal: string(l.ch), Line: startLine, Column: startCol}
+	case ',':
+		tok = Token{Type: COMMA, Literal: string(l.ch), Line: startLine, Column: startCol}
+	case ':':
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = Token{Type: DEFINE, Literal: ":=", Line: startLine, Column: startCol}
+		} else {
+			tok = Token{Type: COLON, Literal: string(l.ch), Line: startLine, Column: startCol}
+		}
+	case ';':
+		tok = Token{Type: SEMICOLON, Literal: string(l.ch), Line: startLine, Column: startCol}
+	case '.':
+		tok = Token{Type: DOT, Literal: string(l.ch), Line: startLine, Column: startCol}
+	case '(':
+		tok = Token{Type: LPAREN, Literal: string(l.ch), Line: startLine, Column: startCol}
+	case ')':
+		tok = Token{Type: RPAREN, Literal: string(l.ch), Line: startLine, Column: startCol}
+	case '{':
+		tok = Token{Type: LBRACE, Literal: string(l.ch), Line: startLine, Column: startCol}
+	case '}':
+		tok = Token{Type: RBRACE, Literal: string(l.ch), Line: startLine, Column: startCol}
+	case '[':
+		tok = Token{Type: LBRACKET, Literal: string(l.ch), Line: startLine, Column: startCol}
+	case ']':
+		tok = Token{Type: RBRACKET, Literal: string(l.ch), Line: startLine, Column: startCol}
+	case '"':
+		tok = Token{Type: STRING, Literal: l.readString('"'), Line: startLine, Column: startCol}
+	case '\'':
+		tok = Token{Type: STRING, Literal: l.readString('\''), Line: startLine, Column: startCol}
+	case '`':
+		tok = Token{Type: STRING, Literal: l.readRawString(), Line: startLine, Column: startCol}
+	case 0:
+		tok = Token{Type: EOF, Literal: "", Line: startLine, Column: startCol}
+	default:
+		if isLetter(l.ch) {
+			ident := l.readIdentifier()
+			tok = Token{Type: LookupIdent(ident), Literal: ident, Line: startLine, Column: startCol}
+		} else if isDigit(l.ch) {
+			num := l.readNumber()
+			if strings.Contains(num, ".") || strings.Contains(strings.ToLower(num), "e") {
+				tok = Token{Type: FLOAT, Literal: num, Line: startLine, Column: startCol}
+			} else {
+				tok = Token{Type: INT, Literal: num, Line: startLine, Column: startCol}
+			}
+		} else {
+			tok = Token{Type: ILLEGAL, Literal: string(l.ch), Line: startLine, Column: startCol}
+		}
+	}
+
+	// Restore state
+	l.position = pos
+	l.readPosition = readPos
+	l.ch = ch
+	l.line = line
+	l.column = col
+
+	return tok
 }
 
 // isLetter returns true if the character is a letter or underscore.

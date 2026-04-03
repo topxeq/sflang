@@ -301,6 +301,34 @@ func (ie *IndexExpression) String() string {
 	return out.String()
 }
 
+// SliceExpression represents an array slice expression.
+// Example: a[1:3] returns elements from index 1 to 2 (exclusive of 3)
+// Start and End can be nil for open-ended slices: a[:3], a[1:], a[:]
+type SliceExpression struct {
+	Token lexer.Token // The [ token
+	Left  Expression
+	Start Expression // Can be nil for [:end]
+	End   Expression // Can be nil for [start:]
+}
+
+func (se *SliceExpression) expressionNode()      {}
+func (se *SliceExpression) TokenLiteral() string { return se.Token.Literal }
+func (se *SliceExpression) String() string {
+	var out bytes.Buffer
+	out.WriteString("(")
+	out.WriteString(se.Left.String())
+	out.WriteString("[")
+	if se.Start != nil {
+		out.WriteString(se.Start.String())
+	}
+	out.WriteString(":")
+	if se.End != nil {
+		out.WriteString(se.End.String())
+	}
+	out.WriteString("])")
+	return out.String()
+}
+
 // MapLiteral represents a map literal expression.
 // Example: {"key": "value", "num": 42}
 type MapLiteral struct {
@@ -323,12 +351,14 @@ func (ml *MapLiteral) String() string {
 }
 
 // FunctionLiteral represents a function definition expression.
-// Example: fn(x, y) { return x + y; }
+// Example: func(x, y) { return x + y; }
+// Variadic: func(x, ...args) { return args; }
 type FunctionLiteral struct {
-	Token      lexer.Token // The fn token
-	Name       string      // Optional function name
-	Parameters []*Identifier
-	Body       *BlockStatement
+	Token          lexer.Token // The func token
+	Name           string      // Optional function name
+	Parameters     []*Identifier
+	VariadicParam  *Identifier // Optional variadic parameter (...args)
+	Body           *BlockStatement
 }
 
 func (fl *FunctionLiteral) expressionNode()      {}
@@ -346,6 +376,13 @@ func (fl *FunctionLiteral) String() string {
 	}
 	out.WriteString("(")
 	out.WriteString(strings.Join(params, ", "))
+	if fl.VariadicParam != nil {
+		if len(params) > 0 {
+			out.WriteString(", ")
+		}
+		out.WriteString("...")
+		out.WriteString(fl.VariadicParam.String())
+	}
 	out.WriteString(") ")
 	out.WriteString(fl.Body.String())
 	return out.String()
@@ -455,13 +492,14 @@ func (cs *ContinueStatement) statementNode()       {}
 func (cs *ContinueStatement) TokenLiteral() string { return cs.Token.Literal }
 func (cs *ContinueStatement) String() string       { return "continue" }
 
-// TryStatement represents a try-catch statement.
-// Example: try { ... } catch (e) { ... }
+// TryStatement represents a try-catch-finally statement.
+// Example: try { ... } catch (e) { ... } finally { ... }
 type TryStatement struct {
 	Token        lexer.Token // The try token
 	Body         *BlockStatement
 	CatchVar     *Identifier
 	CatchBody    *BlockStatement
+	FinallyBody  *BlockStatement
 }
 
 func (ts *TryStatement) statementNode()       {}
@@ -477,6 +515,10 @@ func (ts *TryStatement) String() string {
 		}
 		out.WriteString(") ")
 		out.WriteString(ts.CatchBody.String())
+	}
+	if ts.FinallyBody != nil {
+		out.WriteString(" finally ")
+		out.WriteString(ts.FinallyBody.String())
 	}
 	return out.String()
 }
