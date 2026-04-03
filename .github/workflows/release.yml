@@ -2,7 +2,8 @@ name: Build and Release
 
 on:
   release:
-    types: [created]
+    types: [created, published]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -70,6 +71,7 @@ jobs:
         shell: bash
 
       - name: Upload Release Asset
+        if: github.event_name == 'release'
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -78,3 +80,10 @@ jobs:
           asset_path: ./dist/sf-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.archive }}
           asset_name: sf-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.archive }}
           asset_content_type: application/octet-stream
+
+      - name: Upload Artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sf-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ./dist/*
