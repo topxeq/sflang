@@ -34,6 +34,20 @@ Sflang is a bytecode VM-based interpreted language designed for simplicity and s
 
 ## Installation
 
+### Download Pre-built Binaries
+
+Download the latest release for your platform from [Releases](https://github.com/topxeq/sflang/releases):
+
+| Platform | Architecture | File |
+|----------|--------------|------|
+| Windows | x64 | `sf-windows-amd64.zip` |
+| Linux | x64 | `sf-linux-amd64.tar.gz` |
+| Linux | ARM64 | `sf-linux-arm64.tar.gz` |
+| macOS | x64 | `sf-darwin-amd64.tar.gz` |
+| macOS | M1/M2 | `sf-darwin-arm64.tar.gz` |
+
+Extract and place `sf` (or `sf.exe` on Windows) in your PATH.
+
 ### Build from Source
 
 ```bash
@@ -44,7 +58,7 @@ go build -o sf
 
 ### Requirements
 
-- Go 1.21 or higher
+- Go 1.21 or higher (for building from source)
 
 ## Usage
 
