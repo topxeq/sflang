@@ -34,6 +34,18 @@ Sflang is a bytecode VM-based interpreted language designed for simplicity and s
 
 ## Installation
 
+### One-line Install
+
+**Linux / macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/topxeq/sflang/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/topxeq/sflang/main/install.ps1 | iex
+```
+
 ### Download Pre-built Binaries
 
 Download the latest release for your platform from [Releases](https://github.com/topxeq/sflang/releases):
