@@ -149,6 +149,28 @@ func (fl *FloatLiteral) expressionNode()      {}
 func (fl *FloatLiteral) TokenLiteral() string { return fl.Token.Literal }
 func (fl *FloatLiteral) String() string       { return fl.Token.Literal }
 
+// BigIntLiteral represents a big integer literal expression.
+// BigInt supports arbitrary-precision integers with suffix 'n'.
+type BigIntLiteral struct {
+	Token lexer.Token
+	Value string // String representation of the big integer
+}
+
+func (bil *BigIntLiteral) expressionNode()      {}
+func (bil *BigIntLiteral) TokenLiteral() string { return bil.Token.Literal }
+func (bil *BigIntLiteral) String() string       { return bil.Token.Literal }
+
+// BigFloatLiteral represents a big float literal expression.
+// BigFloat supports arbitrary-precision floating-point numbers with suffix 'm'.
+type BigFloatLiteral struct {
+	Token lexer.Token
+	Value string // String representation of the big float
+}
+
+func (bfl *BigFloatLiteral) expressionNode()      {}
+func (bfl *BigFloatLiteral) TokenLiteral() string { return bfl.Token.Literal }
+func (bfl *BigFloatLiteral) String() string       { return bfl.Token.Literal }
+
 // StringLiteral represents a string literal expression.
 type StringLiteral struct {
 	Token lexer.Token

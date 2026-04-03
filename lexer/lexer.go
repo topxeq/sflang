@@ -209,7 +209,13 @@ func (l *Lexer) NextToken() Token {
 			return tok
 		} else if isDigit(l.ch) {
 			num := l.readNumber()
-			if strings.Contains(num, ".") || strings.Contains(strings.ToLower(num), "e") {
+			// Check for BigInt suffix 'n'
+			if strings.HasSuffix(num, "n") {
+				tok = Token{Type: BIGINT, Literal: num, Line: line, Column: column}
+			} else if strings.HasSuffix(num, "m") {
+				// BigFloat suffix 'm'
+				tok = Token{Type: BIGFLOAT, Literal: num, Line: line, Column: column}
+			} else if strings.Contains(num, ".") || strings.Contains(strings.ToLower(num), "e") {
 				tok = Token{Type: FLOAT, Literal: num, Line: line, Column: column}
 			} else {
 				tok = Token{Type: INT, Literal: num, Line: line, Column: column}
@@ -233,8 +239,9 @@ func (l *Lexer) readIdentifier() string {
 	return l.input[position:l.position]
 }
 
-// readNumber reads a numeric literal (integer or float) from input.
+// readNumber reads a numeric literal (integer, float, bigint, or bigfloat) from input.
 // Supports decimal notation and scientific notation (e.g., 1.5e10).
+// BigInt has suffix 'n', BigFloat has suffix 'm'.
 func (l *Lexer) readNumber() string {
 	position := l.position
 
@@ -260,6 +267,11 @@ func (l *Lexer) readNumber() string {
 		for isDigit(l.ch) {
 			l.readChar()
 		}
+	}
+
+	// Check for BigInt suffix 'n' or BigFloat suffix 'm'
+	if l.ch == 'n' || l.ch == 'm' {
+		l.readChar()
 	}
 
 	return l.input[position:l.position]
@@ -546,7 +558,13 @@ func (l *Lexer) PeekToken() Token {
 			tok = Token{Type: LookupIdent(ident), Literal: ident, Line: startLine, Column: startCol}
 		} else if isDigit(l.ch) {
 			num := l.readNumber()
-			if strings.Contains(num, ".") || strings.Contains(strings.ToLower(num), "e") {
+			// Check for BigInt suffix 'n'
+			if strings.HasSuffix(num, "n") {
+				tok = Token{Type: BIGINT, Literal: num, Line: startLine, Column: startCol}
+			} else if strings.HasSuffix(num, "m") {
+				// BigFloat suffix 'm'
+				tok = Token{Type: BIGFLOAT, Literal: num, Line: startLine, Column: startCol}
+			} else if strings.Contains(num, ".") || strings.Contains(strings.ToLower(num), "e") {
 				tok = Token{Type: FLOAT, Literal: num, Line: startLine, Column: startCol}
 			} else {
 				tok = Token{Type: INT, Literal: num, Line: startLine, Column: startCol}

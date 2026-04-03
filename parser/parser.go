@@ -4,6 +4,7 @@ package parser
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/topxeq/sflang/ast"
 	"github.com/topxeq/sflang/lexer"
@@ -86,6 +87,8 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(lexer.IDENT, p.parseIdentifier)
 	p.registerPrefix(lexer.INT, p.parseIntegerLiteral)
 	p.registerPrefix(lexer.FLOAT, p.parseFloatLiteral)
+	p.registerPrefix(lexer.BIGINT, p.parseBigIntLiteral)
+	p.registerPrefix(lexer.BIGFLOAT, p.parseBigFloatLiteral)
 	p.registerPrefix(lexer.STRING, p.parseStringLiteral)
 	p.registerPrefix(lexer.TRUE, p.parseBooleanLiteral)
 	p.registerPrefix(lexer.FALSE, p.parseBooleanLiteral)
@@ -758,6 +761,30 @@ func (p *Parser) parseFloatLiteral() ast.Expression {
 			lit.Value /= 10
 		}
 	}
+
+	return lit
+}
+
+// parseBigIntLiteral parses a big integer literal expression.
+// BigInt literals have the suffix 'n' (e.g., 123456789012345678901234567890n).
+func (p *Parser) parseBigIntLiteral() ast.Expression {
+	lit := &ast.BigIntLiteral{Token: p.currentToken}
+
+	// Remove the 'n' suffix and store the value as string
+	value := strings.TrimSuffix(p.currentToken.Literal, "n")
+	lit.Value = value
+
+	return lit
+}
+
+// parseBigFloatLiteral parses a big float literal expression.
+// BigFloat literals have the suffix 'm' (e.g., 3.141592653589793238462643383279m).
+func (p *Parser) parseBigFloatLiteral() ast.Expression {
+	lit := &ast.BigFloatLiteral{Token: p.currentToken}
+
+	// Remove the 'm' suffix and store the value as string
+	value := strings.TrimSuffix(p.currentToken.Literal, "m")
+	lit.Value = value
 
 	return lit
 }

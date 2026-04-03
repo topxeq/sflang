@@ -19,10 +19,12 @@ const (
 	EOF     TokenType = "EOF"     // End of file
 
 	// Identifiers and literals
-	IDENT  TokenType = "IDENT"  // Identifier (variable/function name)
-	INT    TokenType = "INT"    // Integer literal
-	FLOAT  TokenType = "FLOAT"  // Floating-point literal
-	STRING TokenType = "STRING" // String literal
+	IDENT    TokenType = "IDENT"    // Identifier (variable/function name)
+	INT      TokenType = "INT"      // Integer literal
+	FLOAT    TokenType = "FLOAT"    // Floating-point literal
+	BIGINT   TokenType = "BIGINT"   // Big integer literal (suffix 'n')
+	BIGFLOAT TokenType = "BIGFLOAT" // Big float literal (suffix 'm')
+	STRING   TokenType = "STRING"   // String literal
 
 	// Operators
 	ASSIGN   TokenType = "="   // Assignment

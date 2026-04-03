@@ -502,6 +502,20 @@ func (c *Compiler) Compile(node ast.Node) error {
 		fl := &object.Float{Value: node.Value}
 		c.emit(OpConstant, c.addConstant(fl))
 
+	case *ast.BigIntLiteral:
+		bigInt, err := object.ParseBigInt(node.Value)
+		if err != nil {
+			return fmt.Errorf(err.Message)
+		}
+		c.emit(OpConstant, c.addConstant(bigInt))
+
+	case *ast.BigFloatLiteral:
+		bigFloat, err := object.ParseBigFloat(node.Value)
+		if err != nil {
+			return fmt.Errorf(err.Message)
+		}
+		c.emit(OpConstant, c.addConstant(bigFloat))
+
 	case *ast.StringLiteral:
 		str := &object.String{Value: node.Value}
 		c.emit(OpConstant, c.addConstant(str))

@@ -8,70 +8,76 @@ type ObjectType string
 
 // Type constants define the string identifiers for each object type.
 const (
-	INTEGER_OBJ  ObjectType = "INTEGER"
-	FLOAT_OBJ    ObjectType = "FLOAT"
-	STRING_OBJ   ObjectType = "STRING"
-	BOOLEAN_OBJ  ObjectType = "BOOLEAN"
-	NULL_OBJ     ObjectType = "NULL"
-	ARRAY_OBJ    ObjectType = "ARRAY"
-	MAP_OBJ      ObjectType = "MAP"
-	FUNCTION_OBJ ObjectType = "FUNCTION"
-	BUILTIN_OBJ  ObjectType = "BUILTIN"
-	ERROR_OBJ    ObjectType = "ERROR"
-	RETURN_OBJ   ObjectType = "RETURN"
-	CLOSURE_OBJ  ObjectType = "CLOSURE"
-	BYTE_OBJ     ObjectType = "BYTE"
-	CHAR_OBJ     ObjectType = "CHAR"
-	BYTES_OBJ    ObjectType = "BYTES"
-	CHARS_OBJ    ObjectType = "CHARS"
-	TIME_OBJ     ObjectType = "TIME"
-	FILE_OBJ     ObjectType = "FILE"
+	INTEGER_OBJ   ObjectType = "INTEGER"
+	FLOAT_OBJ     ObjectType = "FLOAT"
+	BIGINT_OBJ    ObjectType = "BIGINT"
+	BIGFLOAT_OBJ  ObjectType = "BIGFLOAT"
+	STRING_OBJ    ObjectType = "STRING"
+	BOOLEAN_OBJ   ObjectType = "BOOLEAN"
+	NULL_OBJ      ObjectType = "NULL"
+	ARRAY_OBJ     ObjectType = "ARRAY"
+	MAP_OBJ       ObjectType = "MAP"
+	FUNCTION_OBJ  ObjectType = "FUNCTION"
+	BUILTIN_OBJ   ObjectType = "BUILTIN"
+	ERROR_OBJ     ObjectType = "ERROR"
+	RETURN_OBJ    ObjectType = "RETURN"
+	CLOSURE_OBJ   ObjectType = "CLOSURE"
+	BYTE_OBJ      ObjectType = "BYTE"
+	CHAR_OBJ      ObjectType = "CHAR"
+	BYTES_OBJ     ObjectType = "BYTES"
+	CHARS_OBJ     ObjectType = "CHARS"
+	TIME_OBJ      ObjectType = "TIME"
+	FILE_OBJ      ObjectType = "FILE"
 )
 
 // TypeCode constants define fixed numeric codes for each type.
 // These are fixed values (not using iota) for version compatibility.
 // Type codes 1-20 are reserved for built-in types.
 const (
-	TypeCodeInteger  = 1
-	TypeCodeFloat    = 2
-	TypeCodeString   = 3
-	TypeCodeBoolean  = 4
-	TypeCodeNull     = 5
-	TypeCodeArray    = 6
-	TypeCodeMap      = 7
-	TypeCodeFunction = 8
-	TypeCodeBuiltin  = 9
-	TypeCodeError    = 10
-	TypeCodeReturn   = 11
-	TypeCodeClosure  = 12
-	TypeCodeByte     = 13
-	TypeCodeChar     = 14
-	TypeCodeBytes    = 15
-	TypeCodeChars    = 16
-	TypeCodeTime     = 17
-	TypeCodeFile     = 18
+	TypeCodeInteger   = 1
+	TypeCodeFloat     = 2
+	TypeCodeString    = 3
+	TypeCodeBoolean   = 4
+	TypeCodeNull      = 5
+	TypeCodeArray     = 6
+	TypeCodeMap       = 7
+	TypeCodeFunction  = 8
+	TypeCodeBuiltin   = 9
+	TypeCodeError     = 10
+	TypeCodeReturn    = 11
+	TypeCodeClosure   = 12
+	TypeCodeByte      = 13
+	TypeCodeChar      = 14
+	TypeCodeBytes     = 15
+	TypeCodeChars     = 16
+	TypeCodeTime      = 17
+	TypeCodeFile      = 18
+	TypeCodeBigInt    = 19
+	TypeCodeBigFloat  = 20
 )
 
 // typeNameMap maps type codes to their string names for fast lookup.
 var typeNameMap = map[int]string{
-	TypeCodeInteger:  "int",
-	TypeCodeFloat:    "float",
-	TypeCodeString:   "string",
-	TypeCodeBoolean:  "bool",
-	TypeCodeNull:     "null",
-	TypeCodeArray:    "array",
-	TypeCodeMap:      "map",
-	TypeCodeFunction: "function",
-	TypeCodeBuiltin:  "builtin",
-	TypeCodeError:    "error",
-	TypeCodeReturn:   "return",
-	TypeCodeClosure:  "closure",
-	TypeCodeByte:     "byte",
-	TypeCodeChar:     "char",
-	TypeCodeBytes:    "bytes",
-	TypeCodeChars:    "chars",
-	TypeCodeTime:     "time",
-	TypeCodeFile:     "file",
+	TypeCodeInteger:   "int",
+	TypeCodeFloat:     "float",
+	TypeCodeString:    "string",
+	TypeCodeBoolean:   "bool",
+	TypeCodeNull:      "null",
+	TypeCodeArray:     "array",
+	TypeCodeMap:       "map",
+	TypeCodeFunction:  "function",
+	TypeCodeBuiltin:   "builtin",
+	TypeCodeError:     "error",
+	TypeCodeReturn:    "return",
+	TypeCodeClosure:   "closure",
+	TypeCodeByte:      "byte",
+	TypeCodeChar:      "char",
+	TypeCodeBytes:     "bytes",
+	TypeCodeChars:     "chars",
+	TypeCodeTime:      "time",
+	TypeCodeFile:      "file",
+	TypeCodeBigInt:    "bigInt",
+	TypeCodeBigFloat:  "bigFloat",
 }
 
 // GetTypeName returns the string name for a given type code.

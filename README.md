@@ -19,6 +19,8 @@ Sflang is a bytecode VM-based interpreted language designed for simplicity and s
 
 - Integer (64-bit)
 - Float (64-bit)
+- BigInt (arbitrary precision, suffix `n`)
+- BigFloat (arbitrary precision, suffix `m`)
 - String (UTF-8)
 - Boolean
 - Array
