@@ -25,6 +25,7 @@ Sflang is a bytecode VM-based interpreted language designed for simplicity and s
 - Map (Object)
 - Null
 - Function
+- Error
 - Byte (uint8)
 - Char (rune)
 - Bytes (byte array)
