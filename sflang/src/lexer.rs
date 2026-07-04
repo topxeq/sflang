@@ -169,15 +169,6 @@ impl Lexer {
                 Some(b' ') | Some(b'\t') | Some(b'\r') | Some(b'\n') => {
                     self.advance();
                 }
-                Some(b'#') => {
-                    // 行注释 #
-                    while let Some(b) = self.peek_byte() {
-                        if b == b'\n' {
-                            break;
-                        }
-                        self.advance();
-                    }
-                }
                 Some(b'/') if self.peek_byte_at(1) == Some(b'/') => {
                     // 行注释 //
                     while let Some(b) = self.peek_byte() {
