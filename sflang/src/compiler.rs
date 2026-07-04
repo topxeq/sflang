@@ -1067,10 +1067,12 @@ impl Compiler {
             index: fv.index,
         }).collect();
 
-        Ok(Function::new(
+        Ok(Function::new_closure(
             func.name.clone(),
             func.params.clone(),
             Arc::new(sub.code),
+            Vec::new(),
+            func.variadic,
         ))
     }
 }

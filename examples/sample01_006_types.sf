@@ -1,0 +1,31 @@
+// 示例 01.006：获取数据类型的编码与名称
+// ================================
+// Sflang 内置 typeCode() 和 typeName() 用于查询任意值的数据类型。
+// 每种类型有固定的数字编码（便于版本兼容）和字符串名称。
+
+// typeCode 返回类型编码（整数），typeName 返回类型名（字符串）
+pln("=== 基础类型 ===")
+pl("typeCode(42) = %d, typeName(42) = %s\n", typeCode(42), typeName(42))
+pl("typeCode(3.14) = %d, typeName(3.14) = %s\n", typeCode(3.14), typeName(3.14))
+pl("typeCode(true) = %d, typeName(true) = %s\n", typeCode(true), typeName(true))
+pl("typeCode(\"hello\") = %d, typeName(\"hello\") = %s\n", typeCode("hello"), typeName("hello"))
+
+pln("\n=== 容器类型 ===")
+pl("typeCode([1,2,3]) = %d, typeName = %s\n", typeCode([1,2,3]), typeName([1,2,3]))
+pl("typeCode({\"k\":\"v\"}) = %d, typeName = %s\n", typeCode({"k":"v"}), typeName({"k":"v"}))
+
+pln("\n=== 特殊类型 ===")
+pl("typeCode(undefined) = %d, typeName = %s\n", typeCode(undefined), typeName(undefined))
+
+pln("\n=== 类型判断谓词 ===")
+// 用 isXxx 系列函数判断类型
+pln("isInt(42):", isInt(42))
+pln("isFloat(3.14):", isFloat(3.14))
+pln("isString(\"hi\"):", isString("hi"))
+pln("isArray([]):", isArray([]))
+pln("isObject({}):", isObject({}))
+pln("isUndefined(undefined):", isUndefined(undefined))
+pln("isFunction(println):", isFunction(println))
+pln("isNumber(42):", isNumber(42))
+pln("isNumber(3.14):", isNumber(3.14))
+pln("isNumber(\"42\"):", isNumber("42"))

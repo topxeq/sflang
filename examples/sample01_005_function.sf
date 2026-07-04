@@ -1,0 +1,57 @@
+// 示例 01.005：函数的声明与使用（递归法计算斐波那契数列）
+// ================================
+// Sflang 用 func 关键字声明函数，参数无需指定类型。
+// 函数可以递归调用，也可以作为值传递（一等公民）。
+
+// 方式一：用 func 关键字直接声明命名函数
+func fib(x) {
+    if x < 2 {
+        return x
+    }
+    return fib(x - 1) + fib(x - 2)
+}
+
+// 输出斐波那契数列前几项
+pln("fib(0) =", fib(0))
+pln("fib(1) =", fib(1))
+pln("fib(10) =", fib(10))
+pln("fib(20) =", fib(20))
+
+// 方式二：将匿名函数赋值给变量
+var double = func(n) {
+    return n * 2
+}
+pln("double(21) =", double(21))
+
+// 方式三：函数作为参数传递（高阶函数）
+func apply(fn, x) {
+    return fn(x)
+}
+pln("apply(double, 50) =", apply(double, 50))
+
+// 方式四：闭包——函数捕获外部变量
+func makeAdder(base) {
+    return func(n) {
+        return base + n
+    }
+}
+var add10 = makeAdder(10)
+var add20 = makeAdder(20)
+pln("add10(5) =", add10(5))
+pln("add20(5) =", add20(5))
+
+// 函数没有 return 时返回 undefined
+func noReturn() {
+    var x = 1
+}
+pln("noReturn() =", noReturn())
+
+// 支持可变参数（* 标记最后一个参数）
+func sumAll(*nums) {
+    var total = 0
+    for n in nums {
+        total += n
+    }
+    return total
+}
+pln("sumAll(1,2,3,4,5) =", sumAll(1, 2, 3, 4, 5))
