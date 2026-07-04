@@ -57,7 +57,7 @@ fn run_repl() -> ExitCode {
     println!("sf - Sflang REPL (Rust implementation, 0.1.0)");
     println!("输入 .help 查看帮助，.exit 退出");
     let mut sf = Sflang::new();
-    sf.set_output(io::stdout());
+    sf.set_output(sflang::ConsoleWriter::stdout());
     // REPL 模式不设置 argsG/scriptPathG
     let stdin = io::stdin();
     let mut buf = String::new();
@@ -194,7 +194,7 @@ fn run_file(path: &str, script_args: Vec<String>) -> ExitCode {
 /// run_string 执行代码字符串，设置 argsG/scriptPathG 全局变量。
 fn run_string(src: &str, file: &str, script_args: Vec<String>) -> ExitCode {
     let mut sf = Sflang::new();
-    sf.set_output(io::stdout());
+    sf.set_output(sflang::ConsoleWriter::stdout());
     // 设置预定义全局变量
     let args_val = Value::Array(std::sync::Arc::new(std::sync::Mutex::new(
         script_args.iter().map(|s| Value::str(s)).collect(),

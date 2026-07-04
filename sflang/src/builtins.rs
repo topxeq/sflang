@@ -131,8 +131,16 @@ fn sprintf(args: &[Value]) -> Result<String, Value> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] != b'%' {
-            out.push(bytes[i] as char);
-            i += 1;
+            // 正确处理多字节 UTF-8：取完整字符而非单字节
+            // 找到当前字符的 UTF-8 边界
+            let ch_len = utf8_char_len(bytes[i]);
+            let end = (i + ch_len).min(bytes.len());
+            if let Ok(s) = std::str::from_utf8(&bytes[i..end]) {
+                out.push_str(s);
+            } else {
+                out.push(bytes[i] as char); // 回退
+            }
+            i = end;
             continue;
         }
         // 遇到 %，解析格式说明
@@ -623,6 +631,15 @@ fn bi_explain_undef(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
     msg.push_str(" 可用 isUndefined(x) 判空；default(x, d) / defaultUndef(x, d) 提供默认值。");
     Ok(Value::str_from(msg))
+}
+
+/// utf8_char_len 根据 UTF-8 首字节返回字符长度。
+fn utf8_char_len(b: u8) -> usize {
+    if b < 0x80 { 1 }
+    else if b < 0xC0 { 1 }
+    else if b < 0xE0 { 2 }
+    else if b < 0xF0 { 3 }
+    else { 4 }
 }
 
 /// lev 计算两字符串的 Levenshtein 编辑距离（用于相似名字提示）。

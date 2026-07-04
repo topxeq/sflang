@@ -1,0 +1,23 @@
+// 示例 01.001：Hello World
+// ================================
+// 这是 Sflang 的第一个示例。
+// Sflang 是一种轻量级、快速的脚本语言，用 Rust 实现，采用字节码 VM 架构。
+//
+// println（简称 pln）是最常用的输出函数，在控制台打印一行文字。
+// 多个参数之间用空格分隔。
+
+println("Hello, World!")
+
+// pln 是 println 的简写别名，效果完全一样
+pln("Hello", "Sflang!", 2024)
+
+// print（简称 pr）不换行
+pr("同一行")
+pr("继续")
+println()  // 手动换行
+
+// printf（简称 prf）支持格式化输出（Go 风格占位符）
+printf("姓名: %s, 年龄: %d\n", "Alice", 30)
+
+// printfln（简称 pl）= printf + 自动换行
+pl("圆周率 ≈ %.2f", piG)

@@ -20,8 +20,9 @@ repository = "https://github.com/topxeq/sflang"
 # workspace 依赖（第三方库在此统一声明版本）
 [workspace.dependencies]
 # regex：rust-lang 官方正则库（MIT OR Apache-2.0），用于 reg* 内置函数。
-# 选择官方 regex 而非 fancy-regex：线性时间保证（防 ReDoS）、官方维护、对标 Go regexp（Go 也不支持前后向断言）。
 regex = "1"
+# windows-sys：Windows API 绑定（仅 Windows 编译，用于控制台编码转换）。
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation", "Win32_Globalization"] }
 
 # 编译优化配置：release 模式启用 LTO 与单代码生成单元，最大化优化
 [profile.release]

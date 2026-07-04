@@ -17,3 +17,6 @@ path = "src/lib.rs"
 [dependencies]
 # 正则库（rust-lang 官方，workspace 统一管理版本）
 regex = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
