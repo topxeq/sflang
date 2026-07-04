@@ -103,6 +103,8 @@ fn encode_value(v: &Value, out: &mut String) {
         Value::DateTime(dt) => {
             encode_string(&dt.format("2006-01-02T15:04:05"), out);
         }
+        // File 句柄无 JSON 表示，编码为 null
+        Value::File(_) => out.push_str("null"),
     }
 }
 

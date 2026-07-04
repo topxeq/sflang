@@ -50,6 +50,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("isObject", bi_is_object);
     vm.register_builtin("isByteArray", bi_is_byte_array);
     vm.register_builtin("isBytes", bi_is_bytes);
+    vm.register_builtin("isFile", bi_is_file);
     vm.register_builtin("isBigInt", bi_is_big_int_pred);
     vm.register_builtin("isBigFloat", bi_is_big_float_pred);
     vm.register_builtin("isNumber", bi_is_number);
@@ -487,6 +488,11 @@ fn bi_is_byte_array(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// bi_is_bytes 判断是否为不可变字节序列 bytes。
 fn bi_is_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Bool(matches!(args.get(0), Some(Value::Bytes(_)))))
+}
+
+/// bi_is_file 判断是否为文件句柄 file。
+fn bi_is_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    Ok(Value::Bool(matches!(args.get(0), Some(Value::File(_)))))
 }
 
 /// bi_is_big_int_pred 判断是否为任意精度整数 bigInt。

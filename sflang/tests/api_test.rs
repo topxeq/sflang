@@ -481,6 +481,85 @@ fn test_slice_syntax() {
 }
 
 #[test]
+fn test_file_handle() {
+    let path = std::env::temp_dir().join("sflang_file_handle_test.txt");
+    let path_str = path.to_str().unwrap();
+
+    let mut sf = Sflang::new();
+    sf.set_global("__p", Value::str(path_str));
+
+    // 写入（流式）
+    sf.run_string(r#"
+        var f = openFile(__p, "w")
+        defer closeFile(f)
+        writeLine(f, "hello")
+        writeLine(f, "world")
+        writeBytes(f, bytes("raw"))
+    "#).unwrap();
+
+    // 类型判断
+    let mut sf2 = Sflang::new();
+    sf2.set_global("__p", Value::str(path_str));
+    assert_eq!(sf2.run_string("return typeName(openFile(__p, \"r\"))").unwrap(), Value::str("file"));
+    assert_eq!(sf2.run_string("return isFile(openFile(__p, \"r\"))").unwrap(), Value::Bool(true));
+
+    // 逐行读取
+    let mut sf3 = Sflang::new();
+    sf3.set_global("__p", Value::str(path_str));
+    let r = sf3.run_string(r#"
+        var f = openFile(__p, "r")
+        defer closeFile(f)
+        var lines = []
+        var line = readLine(f)
+        while not isUndefined(line) {
+            push(lines, line)
+            line = readLine(f)
+        }
+        return lines
+    "#).unwrap();
+    match r {
+        Value::Array(a) => {
+            let arr = a.lock().unwrap();
+            assert_eq!(arr.len(), 3);   // "hello", "world", "raw"（raw 无换行符但 readLine 在 EOF 前返回）
+        }
+        _ => panic!("expected Array"),
+    }
+
+    // readAll + seek
+    let mut sf4 = Sflang::new();
+    sf4.set_global("__p", Value::str(path_str));
+    let r = sf4.run_string(r#"
+        var f = openFile(__p, "r")
+        defer closeFile(f)
+        var first5 = readN(f, 5)
+        seek(f, 0, 0)
+        var all = readAll(f)
+        return [len(first5), len(all), tell(f) == len(all)]
+    "#).unwrap();
+    match r {
+        Value::Array(a) => {
+            let arr = a.lock().unwrap();
+            assert_eq!(arr[0], Value::Int(5));       // 前5字节
+            assert_eq!(arr[2], Value::Bool(true));   // tell 在末尾
+        }
+        _ => panic!("expected Array"),
+    }
+
+    // EOF 返回 undefined
+    let mut sf5 = Sflang::new();
+    sf5.set_global("__p", Value::str(path_str));
+    let r = sf5.run_string(r#"
+        var f = openFile(__p, "r")
+        defer closeFile(f)
+        readAll(f)        // 读到底
+        return readLine(f) // 再读 → undefined
+    "#).unwrap();
+    assert_eq!(r, Value::Undefined);
+
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
 fn test_oop_methods() {
     // 构造函数 + 自动 self 绑定
     let src = r#"

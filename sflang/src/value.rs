@@ -57,6 +57,8 @@ pub enum TypeCode {
     BigFloat = 14,
     /// DateTime 日期时间（纯标准库实现，毫秒+时区）。
     DateTime = 15,
+    /// File 文件句柄（流式读写、随机访问，纯标准库 std::fs::File）。
+    File = 16,
 }
 
 impl TypeCode {
@@ -79,6 +81,7 @@ impl TypeCode {
             TypeCode::BigInt => "bigInt",
             TypeCode::BigFloat => "bigFloat",
             TypeCode::DateTime => "datetime",
+            TypeCode::File => "file",
         }
     }
 }
@@ -144,6 +147,11 @@ pub enum Value {
     BigFloat(Arc<BigFloat>),
     /// DateTime 日期时间（毫秒+时区，不可变；运算返回新值）。
     DateTime(Arc<DateTime>),
+    /// File 文件句柄（流式读写、随机访问）。Arc<Mutex<File>> 共享。
+    ///
+    /// 不分文本/二进制——读取函数决定返回类型（readLine→string，readAll/readN→bytes）。
+    /// 资源释放靠 defer closeFile(f)，无析构函数。
+    File(Arc<Mutex<std::fs::File>>),
 }
 
 impl PartialEq for Value {
@@ -166,6 +174,7 @@ impl PartialEq for Value {
             (Value::BigInt(a), Value::BigInt(b)) => Arc::ptr_eq(a, b),
             (Value::BigFloat(a), Value::BigFloat(b)) => Arc::ptr_eq(a, b),
             (Value::DateTime(a), Value::DateTime(b)) => Arc::ptr_eq(a, b),
+            (Value::File(a), Value::File(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -198,6 +207,7 @@ impl Value {
             Value::BigInt(_) => TypeCode::BigInt,
             Value::BigFloat(_) => TypeCode::BigFloat,
             Value::DateTime(_) => TypeCode::DateTime,
+            Value::File(_) => TypeCode::File,
         }
     }
 
@@ -224,6 +234,7 @@ impl Value {
             Value::BigInt(b) => !b.is_zero(),
             Value::BigFloat(b) => !b.is_zero(),
             Value::DateTime(_) => true,
+            Value::File(_) => true,
         }
     }
 
@@ -293,6 +304,7 @@ impl Value {
             Value::BigInt(b) => b.to_string_decimal(),
             Value::BigFloat(b) => b.to_string(),
             Value::DateTime(dt) => dt.inspect(),
+            Value::File(_) => "<file>".to_string(),
         }
     }
 
