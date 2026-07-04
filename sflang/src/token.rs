@@ -88,6 +88,7 @@ pub enum TokenKind {
     Semicolon,     // ;
     Colon,         // :
     Dot,           // .
+    Ellipsis,      // ...（可变参数标记 / 展开调用）
     Arrow,         // ->
 
     EOF,

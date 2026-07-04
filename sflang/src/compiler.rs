@@ -930,7 +930,6 @@ impl Compiler {
             Expr::CallExpr { callee, args, tok } => {
                 self.set_line(tok.line);
                 // 方法调用检测：callee 是 MemberExpr → obj.name(args)
-                // 编译为 MethodCall，自动注入 obj 作为隐式 self（首参）
                 if let Expr::MemberExpr { obj, name, .. } = callee.as_ref() {
                     self.compile_expr(obj)?;
                     for a in args {
@@ -943,7 +942,25 @@ impl Compiler {
                     self.code.emit_u8_u8(Opcode::MethodCall, name_idx as u8, args.len() as u8);
                     return Ok(());
                 }
-                // 普通调用：编译 callee 留栈，再依次编译 args，最后 OpCall
+                // 检测是否有 Spread 参数
+                let has_spread = args.iter().any(|a| matches!(a, Expr::Spread { .. }));
+                if has_spread {
+                    // 带展开的调用：编译 callee + 所有参数（Spread 编译为内部表达式），发 SpreadCall
+                    self.compile_expr(callee)?;
+                    let mut spread_mask: u8 = 0;
+                    for (i, a) in args.iter().enumerate() {
+                        match a {
+                            Expr::Spread { expr, .. } => {
+                                self.compile_expr(expr)?;
+                                spread_mask |= 1 << i;
+                            }
+                            other => { self.compile_expr(other)?; }
+                        }
+                    }
+                    self.code.emit_u8_u8(Opcode::SpreadCall, args.len() as u8, spread_mask);
+                    return Ok(());
+                }
+                // 普通调用
                 self.compile_expr(callee)?;
                 for a in args {
                     self.compile_expr(a)?;
@@ -1037,11 +1054,13 @@ impl Compiler {
                     }
                 }
             }
+            // Spread 不应独立出现（只在 CallExpr 内处理），报错
+            Expr::Spread { tok, .. } => {
+                return Err(self.err(tok.line, "... 展开只能在函数调用参数中使用"));
+            }
         }
         Ok(())
     }
-
-    /// compile_func_lit 编译函数字面量。
     /// 创建子编译器，克隆父作用域链用于 free_vars 解析。
     fn compile_func_lit(&mut self, func: &FuncLit) -> Result<Function, CompileError> {
         let mut sub = Compiler::new(&self.file, &func.name);

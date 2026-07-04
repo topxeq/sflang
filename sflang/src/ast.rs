@@ -51,8 +51,9 @@ pub enum Expr {
     /// prefix=true 为前缀（返回新值），false 为后缀（返回旧值）。
     IncDec { tok: Token, target: AssignTarget, op: IncDecOp, prefix: bool },
     /// CompoundAssign 复合赋值 `target op= value`（如 a[i] += 1）。
-    /// 编译期记录 op，VM 一次性完成"读-改-写"（地址只求值一次）。
     CompoundAssign { tok: Token, target: AssignTarget, op: BinaryOp, value: Box<Expr> },
+    /// Spread 展开表达式 `...expr`（用于可变参数调用的展开：f(...arr)）。
+    Spread { tok: Token, expr: Box<Expr> },
 }
 
 impl Expr {
@@ -78,6 +79,7 @@ impl Expr {
             Expr::Ternary { tok, .. } => tok,
             Expr::IncDec { tok, .. } => tok,
             Expr::CompoundAssign { tok, .. } => tok,
+            Expr::Spread { tok, .. } => tok,
         }
     }
 }

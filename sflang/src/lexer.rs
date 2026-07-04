@@ -187,6 +187,34 @@ impl Lexer {
                         self.advance();
                     }
                 }
+                Some(b'/') if self.peek_byte_at(1) == Some(b'*') => {
+                    // 块注释 /* ... */（支持嵌套）
+                    self.advance();  // 消费 /
+                    self.advance();  // 消费 *
+                    let mut depth = 1;
+                    while depth > 0 {
+                        match self.peek_byte() {
+                            None => {
+                                return Err(LexError {
+                                    msg: "unterminated block comment (块注释未闭合；可能原因：缺少 */)".into(),
+                                    line: self.line,
+                                    col: self.col,
+                                });
+                            }
+                            Some(b'/') if self.peek_byte_at(1) == Some(b'*') => {
+                                self.advance();
+                                self.advance();
+                                depth += 1;  // 嵌套
+                            }
+                            Some(b'*') if self.peek_byte_at(1) == Some(b'/') => {
+                                self.advance();
+                                self.advance();
+                                depth -= 1;
+                            }
+                            Some(_) => { self.advance(); }
+                        }
+                    }
+                }
                 _ => break,
             }
         }
@@ -605,7 +633,15 @@ impl Lexer {
             b',' => { self.advance(); TokenKind::Comma }
             b';' => { self.advance(); TokenKind::Semicolon }
             b':' => { self.advance(); TokenKind::Colon }
-            b'.' => { self.advance(); TokenKind::Dot }
+            b'.' => {
+                // ... → Ellipsis，否则 Dot
+                if self.peek_byte_at(1) == Some(b'.') && self.peek_byte_at(2) == Some(b'.') {
+                    self.advance(); self.advance(); self.advance();
+                    TokenKind::Ellipsis
+                } else {
+                    self.advance(); TokenKind::Dot
+                }
+            }
             _ => {
                 return Err(LexError {
                     msg: format!("unexpected character '{}' (0x{:02x}) (可能原因：非法字符；Sflang 不支持此字符)", b as char, b),

@@ -46,8 +46,8 @@ func noReturn() {
 }
 pln("noReturn() =", noReturn())
 
-// 支持可变参数（* 标记最后一个参数）
-func sumAll(*nums) {
+// 支持可变参数（... 标记最后一个参数，对标 Go/JS/Python）
+func sumAll(...nums) {
     var total = 0
     for n in nums {
         total += n
@@ -55,3 +55,10 @@ func sumAll(*nums) {
     return total
 }
 pln("sumAll(1,2,3,4,5) =", sumAll(1, 2, 3, 4, 5))
+
+// 展开调用：...arr 把数组展开为多个参数
+var nums = [10, 20, 30]
+pln("sumAll(...nums) =", sumAll(...nums))
+
+// 混合使用：普通参数 + 展开参数
+pln("sumAll(1, ...nums, 100) =", sumAll(1, ...nums, 100))

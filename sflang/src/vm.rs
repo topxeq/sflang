@@ -574,6 +574,49 @@ impl VM {
                         return self.handle_throw(frame, res.value);
                     }
                 }
+                Opcode::SpreadCall => {
+                    // 带展开的调用：u8 argc, u8 spread_mask
+                    // 栈：[callee, arg0, arg1, ...]（标记为 spread 的 arg 是 array）
+                    let argc = insts[frame.ip + 1] as usize;
+                    let spread_mask = insts[frame.ip + 2];
+                    frame.ip += 3;
+                    // 弹出所有参数，展开标记为 spread 的数组
+                    let mut all_args: Vec<Value> = Vec::new();
+                    // 从后往前弹（栈顶是最后一个参数）
+                    for i in (0..argc).rev() {
+                        let v = self.pop();
+                        if spread_mask & (1 << i) != 0 {
+                            // 展开数组：插入到 all_args 前面（保持顺序）
+                            match &v {
+                                Value::Array(a) => {
+                                    let elements = a.lock().unwrap().clone();
+                                    for e in elements.into_iter().rev() {
+                                        all_args.insert(0, e);
+                                    }
+                                }
+                                _ => {
+                                    // 非数组无法展开，报错
+                                    return self.handle_throw(frame, error_value(format!(
+                                        "无法展开非数组类型 {} (可能原因：... 只能用于数组)", v.type_name(),
+                                    )));
+                                }
+                            }
+                        } else {
+                            all_args.insert(0, v);
+                        }
+                    }
+                    let callee = self.pop();
+                    // 重新压栈：callee + 展开后的参数
+                    self.push(callee);
+                    for a in &all_args {
+                        self.push(a.clone());
+                    }
+                    let total_argc = all_args.len();
+                    let res = self.do_call(&mut frame, total_argc);
+                    if res.kind != FlowKind::Normal {
+                        return self.handle_throw(frame, res.value);
+                    }
+                }
                 Opcode::Call => {
                     let argc = insts[frame.ip + 1] as usize;
                     frame.ip += 2;

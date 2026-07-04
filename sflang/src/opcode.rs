@@ -116,9 +116,9 @@ pub enum Opcode {
     /// low/high 缺省时压 undefined（表示到边界）。无操作数。
     Slice = 58,
     /// OpMethodCall 方法调用 obj.name(args)，自动注入 obj 作为隐式 self。
-    /// 操作数：u8 name_idx, u8 argc。栈：[obj, arg1, ...] → [result]。
-    /// VM 从 obj 读取 name（沿原型链），以 obj 为首参调用。
     MethodCall = 59,
+    /// OpSpreadCall 带展开的调用。u8 argc, u8 spread_mask。
+    SpreadCall = 64,
 
     // ---- 函数调用 ----
     /// OpCall 调用函数。u8 实参数量。
@@ -215,6 +215,7 @@ impl Opcode {
             57 => Some(Opcode::IncDecMember),
             58 => Some(Opcode::Slice),
             59 => Some(Opcode::MethodCall),
+            64 => Some(Opcode::SpreadCall),
             60 => Some(Opcode::Call),
             61 => Some(Opcode::Return),
             62 => Some(Opcode::ReturnVoid),

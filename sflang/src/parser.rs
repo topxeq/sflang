@@ -158,7 +158,7 @@ impl Parser {
         let mut defaults = Vec::new();
         let mut variadic = false;
         while !self.check(TokenKind::RParen) {
-            if self.match_token(TokenKind::Star) { variadic = true; }
+            if self.match_token(TokenKind::Ellipsis) { variadic = true; }
             let p = self.expect(TokenKind::Ident, "参数名")?.value;
             params.push(p.clone());
             if self.match_token(TokenKind::Assign) {
@@ -563,7 +563,14 @@ impl Parser {
                     let tok = self.advance();
                     let mut args = Vec::new();
                     while !self.check(TokenKind::RParen) {
-                        args.push(self.parse_expr()?);
+                        // 支持 ...arr 展开调用
+                        if self.check(TokenKind::Ellipsis) {
+                            let spread_tok = self.advance();
+                            let inner = self.parse_expr()?;
+                            args.push(Expr::Spread { tok: spread_tok, expr: Box::new(inner) });
+                        } else {
+                            args.push(self.parse_expr()?);
+                        }
                         if !self.match_token(TokenKind::Comma) { break; }
                     }
                     self.expect(TokenKind::RParen, "')'")?;
