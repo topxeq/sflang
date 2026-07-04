@@ -31,6 +31,7 @@ fn encode_value(v: &Value, out: &mut String) {
         Value::Undefined => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Int(i) => out.push_str(&i.to_string()),
+        Value::Byte(b) => out.push_str(&b.to_string()),
         Value::Float(f) => {
             if f.is_nan() || f.is_infinite() {
                 out.push_str("null"); // JSON 无 NaN/Infinity

@@ -955,15 +955,15 @@ fn test_string_byte_functions() {
     assert_eq!(eval("return lenBytes(\"ABC\")"), Value::Int(3));
     assert_eq!(eval("return lenBytes(\"中\")"), Value::Int(3));   // 中文 3 字节
     assert_eq!(eval("return len(\"中\")"), Value::Int(1));        // 但字符数是 1
-    // bytesAt：取字节
-    assert_eq!(eval("return bytesAt(\"AB\", 0)"), Value::Int(65));
-    assert_eq!(eval("return bytesAt(\"AB\", 1)"), Value::Int(66));
-    assert_eq!(eval("return bytesAt(\"中\", 0)"), Value::Int(0xE4)); // 首字节
+    // bytesAt：取字节（返回 byte 类型）
+    assert_eq!(eval("return bytesAt(\"AB\", 0)"), Value::Byte(65));
+    assert_eq!(eval("return bytesAt(\"AB\", 1)"), Value::Byte(66));
+    assert_eq!(eval("return bytesAt(\"中\", 0)"), Value::Byte(0xE4)); // 首字节
     // bytesSlice：按字节切
     assert_eq!(eval("return bytesHex(bytesSlice(\"ABC\", 0, 2))"), Value::str("4142"));
     assert_eq!(eval("return bytesHex(bytesSlice(\"中\", 0, 3))"), Value::str("e4b8ad")); // 完整 UTF-8
     // 负索引
-    assert_eq!(eval("return bytesAt(\"AB\", -1)"), Value::Int(66));
+    assert_eq!(eval("return bytesAt(\"AB\", -1)"), Value::Byte(66));
 }
 
 #[test]
@@ -1050,6 +1050,48 @@ fn test_big_float() {
 }
 
 #[test]
+fn test_byte_type() {
+    // 构造与类型
+    assert_eq!(eval("return typeName(byte(65))"), Value::str("byte"));
+    assert_eq!(eval("return isByte(byte(65))"), Value::Bool(true));
+    assert_eq!(eval("return isByte(65)"), Value::Bool(false));
+    // byte == int 跨类型相等
+    assert_eq!(eval("return byte(65) == 65"), Value::Bool(true));
+    assert_eq!(eval("return byte(0) == 0"), Value::Bool(true));
+    // byte 范围校验
+    assert!(run("return byte(256)").is_err());
+    assert!(run("return byte(-1)").is_err());
+    // byte 算术（mod 256 环绕）
+    assert_eq!(eval("return typeName(byte(255) + byte(1))"), Value::str("byte"));  // 结果仍为 byte
+    assert_eq!(eval("return byte(255) + byte(1)"), Value::Byte(0));   // 环绕
+    assert_eq!(eval("return byte(0) - byte(1)"), Value::Byte(255));   // 环绕
+    assert_eq!(eval("return byte(200) * byte(2)"), Value::Byte(144)); // 环绕
+    // byte + int → int
+    assert_eq!(eval("return typeName(byte(65) + 1)"), Value::str("int"));
+    assert_eq!(eval("return byte(65) + 1"), Value::Int(66));
+    // byte 位运算
+    assert_eq!(eval("return byte(0xF0) & byte(0x0F)"), Value::Byte(0));
+    assert_eq!(eval("return byte(0xF0) | byte(0x0F)"), Value::Byte(255));
+    assert_eq!(eval("return byte(0xFF) ^ byte(0xAA)"), Value::Byte(0x55));
+    assert_eq!(eval("return ~byte(0)"), Value::Byte(255));
+    // byte 比较
+    assert_eq!(eval("return byte(100) > byte(50)"), Value::Bool(true));
+    assert_eq!(eval("return byte(50) < 100"), Value::Bool(true));  // 跨类型
+    // byteArray 索引返回 byte
+    assert_eq!(eval("return typeName(byteArray(1, 0x41)[0])"), Value::str("byte"));
+    // bytesXor 加解密往返
+    assert_eq!(eval("return strFromBytes(bytesXor(bytesXor(bytes(\"test\"), byte(0xFF)), byte(0xFF)))"), Value::str("test"));
+    // bytesXorInPlace 原地
+    let r = eval(r#"
+        var ba = byteArrayFromBytes(bytes("ABC"))
+        bytesXorInPlace(ba, byte(0x20))
+        bytesXorInPlace(ba, byte(0x20))
+        return strFromBytes(ba)
+    "#);
+    assert_eq!(r, Value::str("ABC"));
+}
+
+#[test]
 fn test_byte_array_basics() {
     // 构造与类型
     assert!(eval("return byteArray(4)").type_name() == "byteArray".to_string());
@@ -1058,12 +1100,12 @@ fn test_byte_array_basics() {
     assert_eq!(eval("return isByteArray(bytes(\"ab\"))"), Value::Bool(false));
     // 长度与填充
     assert_eq!(eval("return len(byteArray(8))"), Value::Int(8));
-    assert_eq!(eval("return byteArray(3, 0xFF)[0]"), Value::Int(255));
-    assert_eq!(eval("return byteArray(3, 0x41)[2]"), Value::Int(65));
+    assert_eq!(eval("return byteArray(3, 0xFF)[0]"), Value::Byte(255));
+    assert_eq!(eval("return byteArray(3, 0x41)[2]"), Value::Byte(65));
     // 索引读写（就地修改）
-    assert_eq!(eval("var ba = byteArray(3); ba[0] = 65; ba[1] = 66; ba[2] = 67; return ba[1]"), Value::Int(66));
+    assert_eq!(eval("var ba = byteArray(3); ba[0] = 65; ba[1] = 66; ba[2] = 67; return ba[1]"), Value::Byte(66));
     // 负索引
-    assert_eq!(eval("var ba = byteArray(3, 0x41); return ba[-1]"), Value::Int(65));
+    assert_eq!(eval("var ba = byteArray(3, 0x41); return ba[-1]"), Value::Byte(65));
     // .len 成员
     assert_eq!(eval("return byteArray(5).len"), Value::Int(5));
     // 越界与非法值报错
@@ -1122,8 +1164,8 @@ fn test_byte_array_conversions() {
     match r {
         Value::Array(a) => {
             let arr = a.lock().unwrap();
-            assert_eq!(arr[0], Value::Int(65));  // 原 bytes 不变
-            assert_eq!(arr[1], Value::Int(90));  // byteArray 已改
+            assert_eq!(arr[0], Value::Byte(65));  // 原 bytes 不变（bytes 索引返回 byte）
+            assert_eq!(arr[1], Value::Byte(90));  // byteArray 已改（返回 byte）
         }
         _ => panic!("expected Array"),
     }

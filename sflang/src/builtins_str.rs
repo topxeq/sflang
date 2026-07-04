@@ -238,7 +238,7 @@ fn bi_bytes_at(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             "bytesAt() 索引 {} 越界 (len={}); 可能原因：索引超出字节数", i, n,
         )));
     }
-    Ok(Value::Int(bytes[i as usize] as i64))
+    Ok(Value::Byte(bytes[i as usize]))
 }
 
 /// bi_len_bytes 返回 string 的 UTF-8 字节数。

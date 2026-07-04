@@ -370,13 +370,14 @@ impl VM {
                     frame.ip += 1;
                 }
                 Opcode::BitNot => {
-                    // 按位取反 ~（仅整数）
+                    // 按位取反 ~（整数或字节）
                     let a = self.pop();
                     match a {
                         Value::Int(i) => self.push(Value::Int(!i)),
+                        Value::Byte(b) => self.push(Value::Byte(!b)),
                         _ => {
                             return self.handle_throw(frame, error_value(format!(
-                                "cannot bitwise-not {} (可能原因：~ 仅支持整数 int)", a.type_name(),
+                                "cannot bitwise-not {} (可能原因：~ 仅支持整数/字节)", a.type_name(),
                             )));
                         }
                     }
@@ -1123,7 +1124,44 @@ fn arith_op(op: Opcode, a: Value, b: Value) -> Result<Value, String> {
         }
         _ => {}
     }
-    // 数值运算
+    // ---- byte 运算 ----
+    // Byte op Byte → Byte（算术 mod 256 环绕；位运算结果必在 0-255）
+    match (&a, &b) {
+        (Value::Byte(x), Value::Byte(y)) => {
+            let r: u8 = match op {
+                Opcode::Add => x.wrapping_add(*y),
+                Opcode::Sub => x.wrapping_sub(*y),
+                Opcode::Mul => x.wrapping_mul(*y),
+                // 除法/取模结果可能不在 byte 范围语义内，提升为 int
+                Opcode::Div => {
+                    if *y == 0 { return Err("division by zero (除零错误)".into()); }
+                    return Ok(Value::Int((*x / *y) as i64));
+                }
+                Opcode::Mod => {
+                    if *y == 0 { return Err("modulo by zero".into()); }
+                    return Ok(Value::Int((*x % *y) as i64));
+                }
+                _ => unreachable!(),
+            };
+            return Ok(Value::Byte(r));
+        }
+        // Byte + Int → Int（byte 提升为 int）
+        (Value::Byte(x), Value::Int(y)) => {
+            return arith_op(op, Value::Int(*x as i64), Value::Int(*y));
+        }
+        (Value::Int(x), Value::Byte(y)) => {
+            return arith_op(op, Value::Int(*x), Value::Int(*y as i64));
+        }
+        // Byte + Float → Float（byte 提升为 float）
+        (Value::Byte(x), Value::Float(y)) => {
+            return arith_op(op, Value::Float(*x as f64), Value::Float(*y));
+        }
+        (Value::Float(x), Value::Byte(y)) => {
+            return arith_op(op, Value::Float(*x), Value::Float(*y as f64));
+        }
+        _ => {}
+    }
+    // ---- 原有数值运算 ----
     match (&a, &b) {
         (Value::Int(x), Value::Int(y)) => {
             let r = match op {
@@ -1198,19 +1236,32 @@ fn bit_op(op: Opcode, a: &Value, b: &Value) -> Result<Value, String> {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => {
             let r = match op {
-                // 位逻辑
                 Opcode::BitAnd => x & y,
                 Opcode::BitOr => x | y,
                 Opcode::BitXor => x ^ y,
-                // 移位：移位量按无符号解释，负值或过大由 wrapping 语义处理
                 Opcode::BitShl => x.wrapping_shl(*y as u32),
                 Opcode::BitShr => x.wrapping_shr(*y as u32),
                 _ => unreachable!(),
             };
             Ok(Value::Int(r))
         }
+        // Byte op Byte 位运算 → Byte（& | ^ 结果必在 0-255；移位提升为 int）
+        (Value::Byte(x), Value::Byte(y)) => {
+            match op {
+                Opcode::BitAnd => Ok(Value::Byte(x & y)),
+                Opcode::BitOr => Ok(Value::Byte(x | y)),
+                Opcode::BitXor => Ok(Value::Byte(x ^ y)),
+                // 移位可能超出 byte 范围，提升为 int
+                Opcode::BitShl => Ok(Value::Int((*x as i64).wrapping_shl(*y as u32))),
+                Opcode::BitShr => Ok(Value::Int((*x as i64).wrapping_shr(*y as u32))),
+                _ => unreachable!(),
+            }
+        }
+        // Byte op Int / Int op Byte 位运算 → Int（byte 提升）
+        (Value::Byte(x), Value::Int(y)) => bit_op(op, &Value::Int(*x as i64), &Value::Int(*y)),
+        (Value::Int(x), Value::Byte(y)) => bit_op(op, &Value::Int(*x), &Value::Int(*y as i64)),
         _ => Err(format!(
-            "cannot {:?} {} and {} (可能原因：位运算仅支持整数 int；浮点/其他类型不兼容)",
+            "cannot {:?} {} and {} (可能原因：位运算仅支持整数/字节；浮点/其他类型不兼容)",
             op, a.type_name(), b.type_name(),
         )),
     }
@@ -1280,6 +1331,10 @@ fn cmp_op(op: Opcode, a: Value, b: Value) -> Result<Value, String> {
             Opcode::GE => x >= y,
             _ => unreachable!(),
         },
+        // Byte 比较（Byte-Byte / Byte-Int / Int-Byte，跨类型按值）
+        (Value::Byte(x), Value::Byte(y)) => cmp_apply(op, (*x as i64).cmp(&(*y as i64))),
+        (Value::Byte(x), Value::Int(y)) => cmp_apply(op, (*x as i64).cmp(y)),
+        (Value::Int(x), Value::Byte(y)) => cmp_apply(op, x.cmp(&(*y as i64))),
         (Value::Float(x), Value::Float(y)) => match op {
             Opcode::LT => x < y,
             Opcode::LE => x <= y,
@@ -1357,17 +1412,17 @@ fn index_get(obj: &Value, idx: &Value) -> Result<Value, String> {
             if i < 0 || i >= n {
                 return Err(format!("bytes index out of range: {}", i));
             }
-            Ok(Value::Int(arr[i as usize] as i64))
+            Ok(Value::Byte(arr[i as usize]))
         }
         (Value::ByteArray(b), Value::Int(i)) => {
-            // 可变字节序列读：返回 Int(0-255)
+            // 可变字节序列读：返回 Byte
             let arr = b.lock().unwrap();
             let n = arr.len() as i64;
             let i = if *i < 0 { *i + n } else { *i };
             if i < 0 || i >= n {
                 return Err(format!("byteArray index out of range: {} (len={}); 可能原因：索引越界", i, n));
             }
-            Ok(Value::Int(arr[i as usize] as i64))
+            Ok(Value::Byte(arr[i as usize]))
         }
         _ => Err(format!("cannot index {} with {} (可能原因：类型不匹配；数组用整数索引，对象用字符串键)", obj.type_name(), idx.type_name())),
     }
@@ -1393,6 +1448,7 @@ fn index_set(obj: &Value, idx: &Value, v: Value) -> Result<(), String> {
         (Value::ByteArray(b), Value::Int(i)) => {
             // 可变字节序列写：就地修改。值须为 Int 且 0-255。
             let byte_val = match v {
+                Value::Byte(x) => x,
                 Value::Int(x) => {
                     if x < 0 || x > 255 {
                         return Err(format!(
@@ -1403,7 +1459,7 @@ fn index_set(obj: &Value, idx: &Value, v: Value) -> Result<(), String> {
                     x as u8
                 }
                 _ => return Err(format!(
-                    "byteArray 赋值需要 int 字节值 (0-255)，得到 {} (可能原因：类型不匹配)",
+                    "byteArray 赋值需要 byte 或 int 字节值 (0-255)，得到 {} (可能原因：类型不匹配)",
                     v.type_name(),
                 )),
             };

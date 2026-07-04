@@ -59,6 +59,9 @@ pub enum TypeCode {
     DateTime = 15,
     /// File 文件句柄（流式读写、随机访问，纯标准库 std::fs::File）。
     File = 16,
+    /// Byte 字节（0-255），用于字节级操作（加密、协议解析等）。
+    /// byte 运算自动环绕（255+1=0），与 int 区分但可互转。
+    Byte = 17,
 }
 
 impl TypeCode {
@@ -82,6 +85,7 @@ impl TypeCode {
             TypeCode::BigFloat => "bigFloat",
             TypeCode::DateTime => "datetime",
             TypeCode::File => "file",
+            TypeCode::Byte => "byte",
         }
     }
 }
@@ -148,10 +152,10 @@ pub enum Value {
     /// DateTime 日期时间（毫秒+时区，不可变；运算返回新值）。
     DateTime(Arc<DateTime>),
     /// File 文件句柄（流式读写、随机访问）。Arc<Mutex<File>> 共享。
-    ///
-    /// 不分文本/二进制——读取函数决定返回类型（readLine→string，readAll/readN→bytes）。
-    /// 资源释放靠 defer closeFile(f)，无析构函数。
     File(Arc<Mutex<std::fs::File>>),
+    /// Byte 字节值（0-255），用于字节级操作。
+    /// byte 算术自动环绕 mod 256；与 int 可互转但类型不同。
+    Byte(u8),
 }
 
 impl PartialEq for Value {
@@ -175,6 +179,7 @@ impl PartialEq for Value {
             (Value::BigFloat(a), Value::BigFloat(b)) => Arc::ptr_eq(a, b),
             (Value::DateTime(a), Value::DateTime(b)) => Arc::ptr_eq(a, b),
             (Value::File(a), Value::File(b)) => Arc::ptr_eq(a, b),
+            (Value::Byte(a), Value::Byte(b)) => a == b,
             _ => false,
         }
     }
@@ -208,6 +213,7 @@ impl Value {
             Value::BigFloat(_) => TypeCode::BigFloat,
             Value::DateTime(_) => TypeCode::DateTime,
             Value::File(_) => TypeCode::File,
+            Value::Byte(_) => TypeCode::Byte,
         }
     }
 
@@ -235,6 +241,7 @@ impl Value {
             Value::BigFloat(b) => !b.is_zero(),
             Value::DateTime(_) => true,
             Value::File(_) => true,
+            Value::Byte(b) => *b != 0,
         }
     }
 
@@ -305,6 +312,7 @@ impl Value {
             Value::BigFloat(b) => b.to_string(),
             Value::DateTime(dt) => dt.inspect(),
             Value::File(_) => "<file>".to_string(),
+            Value::Byte(b) => b.to_string(),
         }
     }
 
@@ -350,6 +358,10 @@ impl Value {
             }
             (Func(a), Func(b)) => Arc::ptr_eq(a, b),
             (Builtin(a), Builtin(b)) => a.name == b.name,
+            // Byte：自身按值比；与 Int/Float 跨类型按值可比
+            (Byte(a), Byte(b)) => a == b,
+            (Byte(a), Int(b)) | (Int(b), Byte(a)) => *a as i64 == *b,
+            (Byte(a), Float(b)) | (Float(b), Byte(a)) => (*a as f64) == *b,
             (Error(a), Error(b)) => a.message == b.message,
             // BigInt：自身按值比；与 Int 跨类型可比
             (BigInt(a), BigInt(b)) => a.cmp(b) == std::cmp::Ordering::Equal,
@@ -369,7 +381,7 @@ impl Value {
 
     /// is_number 判断是否为数值类型。
     pub fn is_number(&self) -> bool {
-        matches!(self, Value::Int(_) | Value::Float(_))
+        matches!(self, Value::Int(_) | Value::Float(_) | Value::Byte(_))
     }
 
     /// to_f64 转为 f64（非数值返回 None）。
@@ -377,6 +389,7 @@ impl Value {
         match self {
             Value::Int(i) => Some(*i as f64),
             Value::Float(f) => Some(*f),
+            Value::Byte(b) => Some(*b as f64),
             _ => None,
         }
     }
@@ -386,6 +399,7 @@ impl Value {
         match self {
             Value::Int(i) => Some(*i),
             Value::Float(f) => Some(*f as i64),
+            Value::Byte(b) => Some(*b as i64),
             _ => None,
         }
     }
@@ -410,6 +424,11 @@ impl Value {
     /// int 从 i64 构造 Int 值。
     pub fn int(i: i64) -> Value {
         Value::Int(i)
+    }
+
+    /// byte 从 u8 构造 Byte 值。
+    pub fn byte(b: u8) -> Value {
+        Value::Byte(b)
     }
 
     /// float 从 f64 构造 Float 值。

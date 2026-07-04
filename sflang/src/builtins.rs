@@ -53,6 +53,10 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("isByteArray", bi_is_byte_array);
     vm.register_builtin("isBytes", bi_is_bytes);
     vm.register_builtin("isFile", bi_is_file);
+    vm.register_builtin("byte", bi_byte);
+    vm.register_builtin("isByte", bi_is_byte);
+    vm.register_builtin("bytesXor", bi_bytes_xor);
+    vm.register_builtin("bytesXorInPlace", bi_bytes_xor_in_place);
     vm.register_builtin("isBigInt", bi_is_big_int_pred);
     vm.register_builtin("isBigFloat", bi_is_big_float_pred);
     vm.register_builtin("isNumber", bi_is_number);
@@ -504,6 +508,80 @@ fn bi_is_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// bi_is_file 判断是否为文件句柄 file。
 fn bi_is_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Bool(matches!(args.get(0), Some(Value::File(_)))))
+}
+
+/// bi_byte 构造 byte 值（0-255）。
+///
+/// byte(65) → Byte(65)。超出 0-255 报错。
+fn bi_byte(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    let v = bh::as_int(args, 0, "byte")?;
+    if v < 0 || v > 255 {
+        return Err(crate::value::error_value(format!(
+            "byte() 值 {} 超出范围 (0-255; 可能原因：传入了非字节整数)", v,
+        )));
+    }
+    Ok(Value::Byte(v as u8))
+}
+
+/// bi_is_byte 判断是否为 byte 类型。
+fn bi_is_byte(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    Ok(Value::Bool(matches!(args.get(0), Some(Value::Byte(_)))))
+}
+
+/// bi_bytes_xor 批量 XOR：data 的每个字节与 key 的对应字节异或。
+///
+/// data 可以是 bytes 或 byteArray。key 可以是 bytes/byteArray/int(byte)。
+/// 返回新的 bytes（不可变）。适合高效加密/解密。
+fn bi_bytes_xor(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "bytesXor")?;
+    bh::require_arg(args, 1, "bytesXor")?;
+    let data = to_byte_vec(&args[0]).map_err(crate::value::error_value)?;
+    let key = to_byte_vec(&args[1]).map_err(crate::value::error_value)?;
+    if key.is_empty() {
+        return Err(crate::value::error_value("bytesXor() key 不能为空"));
+    }
+    let result: Vec<u8> = data.iter().enumerate()
+        .map(|(i, &b)| b ^ key[i % key.len()])
+        .collect();
+    Ok(Value::Bytes(std::sync::Arc::new(result)))
+}
+
+/// bi_bytes_xor_in_place 原地 XOR（修改 byteArray，不创建新对象）。
+fn bi_bytes_xor_in_place(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "bytesXorInPlace")?;
+    bh::require_arg(args, 1, "bytesXorInPlace")?;
+    let key = to_byte_vec(&args[1]).map_err(crate::value::error_value)?;
+    if key.is_empty() {
+        return Err(crate::value::error_value("bytesXorInPlace() key 不能为空"));
+    }
+    match &args[0] {
+        Value::ByteArray(b) => {
+            let mut guard = b.lock().map_err(|e| crate::value::error_value(format!("锁异常: {}", e)))?;
+            for (i, byte) in guard.iter_mut().enumerate() {
+                *byte ^= key[i % key.len()];
+            }
+            Ok(args[0].clone())
+        }
+        _ => Err(crate::value::error_value("bytesXorInPlace() 第一个参数须为 byteArray")),
+    }
+}
+
+/// to_byte_vec 将 Value 转为字节 Vec（bytes/byteArray/string/int）。
+fn to_byte_vec(v: &Value) -> Result<Vec<u8>, String> {
+    match v {
+        Value::Bytes(b) => Ok(b.as_ref().to_vec()),
+        Value::ByteArray(b) => Ok(b.lock().unwrap().clone()),
+        Value::Str(s) => Ok(s.as_bytes().to_vec()),
+        Value::Int(x) => {
+            if *x < 0 || *x > 255 { return Err(format!("值 {} 超出字节范围 0-255", x)); }
+            Ok(vec![*x as u8])
+        }
+        Value::Byte(x) => Ok(vec![*x]),
+        _ => Err(format!("无法将 {} 转为字节", v.type_name())),
+    }
 }
 
 /// bi_is_big_int_pred 判断是否为任意精度整数 bigInt。
