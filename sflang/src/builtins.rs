@@ -44,6 +44,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("filter", bi_filter);
     vm.register_builtin("map", bi_map);
     vm.register_builtin("sprintf", bi_sprintf);
+    vm.register_builtin("spr", bi_sprintf);
+    vm.register_builtin("fpr", bi_printf);
     // 类型判断谓词
     vm.register_builtin("isArray", bi_is_array);
     vm.register_builtin("isString", bi_is_string);
