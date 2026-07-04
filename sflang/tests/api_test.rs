@@ -586,6 +586,34 @@ fn test_read_str_bytes() {
 }
 
 #[test]
+fn test_read_chars_and_n() {
+    // readChars：按字符读（含多字节字符）
+    assert_eq!(eval("return readChars(\"Hello World\", 5)"), Value::str("Hello"));
+    assert_eq!(eval("return readChars(\"中文测试\", 2)"), Value::str("中文"));
+    assert_eq!(eval("return readChars(\"ab\", 10)"), Value::str("ab"));  // 不足返回实际
+    assert_eq!(eval("return readChars(\"\", 5)"), Value::str(""));       // 空串
+    // readChars 从 bytes/byteArray
+    assert_eq!(eval("return readChars(bytes(\"ABC\"), 2)"), Value::str("AB"));
+    assert_eq!(eval("return readChars(byteArrayFromBytes(bytes(\"XYZ\")), 2)"), Value::str("XY"));
+    // readBytes 带数量参数
+    assert_eq!(eval("return bytesHex(readBytes(bytes(\"ABCDE\"), 3))"), Value::str("414243"));
+    assert_eq!(eval("return bytesHex(readBytes(\"ABCDE\", 2))"), Value::str("4142"));
+    assert_eq!(eval("return bytesHex(readBytes(byteArrayFromBytes(bytes(\"XYZ\")), 2))"), Value::str("5859"));
+    // 不足 n
+    assert_eq!(eval("return bytesHex(readBytes(bytes(\"AB\"), 10))"), Value::str("4142"));
+    // readChars 从 file
+    let path = std::env::temp_dir().join("sflang_readchars_test.txt");
+    std::fs::write(&path, "Hello你好").unwrap();
+    let mut sf = Sflang::new();
+    sf.set_global("__p", Value::str(path.to_str().unwrap()));
+    assert_eq!(sf.run_string("var f = openFile(__p, \"r\"); defer closeFile(f); return readChars(f, 7)").unwrap(), Value::str("Hello你好"));
+    std::fs::remove_file(path).ok();
+    // 负数报错
+    assert!(run("return readChars(\"abc\", -1)").is_err());
+    assert!(run("return readBytes(bytes(\"abc\"), -1)").is_err());
+}
+
+#[test]
 fn test_oop_methods() {
     // 构造函数 + 自动 self 绑定
     let src = r#"

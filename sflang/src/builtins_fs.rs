@@ -61,6 +61,7 @@ pub fn register(vm: &mut VM) {
     // 通用读取（file 句柄或基础类型）
     vm.register_builtin("readStr", bi_read_str);
     vm.register_builtin("readBytes", bi_read_bytes);
+    vm.register_builtin("readChars", bi_read_chars);
 }
 
 /// io_err 将 std::io::Error 转为 AI 友好错误值，附加常见原因提示。
@@ -417,31 +418,128 @@ fn bi_read_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_read_bytes 从各种源读取为 bytes。
 ///
-/// - file 句柄：读取全部剩余内容为 bytes
-/// - bytes：原样返回
-/// - byteArray：拷贝为不可变 bytes
-/// - string：UTF-8 编码为 bytes
+/// 用法：
+///   readBytes(source)       — 读全部
+///   readBytes(source, n)    — 读 n 字节
+///
+/// - file 句柄：流式读（全量或前 n 字节，从当前位置）
+/// - bytes：原样返回（或取前 n 字节切片）
+/// - byteArray：拷贝为 bytes（或取前 n 字节）
+/// - string：UTF-8 编码为 bytes（或取前 n 字节）
 fn bi_read_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     bh::require_arg(args, 0, "readBytes")?;
+    let n_opt: Option<usize> = if args.len() > 1 {
+        let n = bh::as_int(args, 1, "readBytes")?;
+        if n < 0 { return Err(crate::value::error_value("readBytes() n 不能为负")); }
+        Some(n as usize)
+    } else { None };
+    let read_n = |data: &[u8]| -> Vec<u8> {
+        match n_opt {
+            Some(n) => data[..n.min(data.len())].to_vec(),
+            None => data.to_vec(),
+        }
+    };
     match &args[0] {
         Value::File(f) => {
             let mut guard = f.lock().map_err(|e| crate::value::error_value(format!(
                 "readBytes() 文件锁异常: {}", e,
             )))?;
-            let mut buf = Vec::new();
-            guard.read_to_end(&mut buf).map_err(|e| crate::value::error_value(format!(
-                "readBytes() 读取失败: {}", e,
-            )))?;
+            let buf: Vec<u8> = match n_opt {
+                Some(n) => {
+                    let mut b = vec![0u8; n];
+                    let read = guard.read(&mut b).map_err(|e| crate::value::error_value(format!(
+                        "readBytes() 读取失败: {}", e,
+                    )))?;
+                    b.truncate(read);
+                    b
+                }
+                None => {
+                    let mut b = Vec::new();
+                    guard.read_to_end(&mut b).map_err(|e| crate::value::error_value(format!(
+                        "readBytes() 读取失败: {}", e,
+                    )))?;
+                    b
+                }
+            };
             Ok(Value::Bytes(Arc::new(buf)))
         }
-        Value::Bytes(b) => Ok(Value::Bytes(b.clone())),
+        Value::Bytes(b) => Ok(Value::Bytes(Arc::new(read_n(b)))),
         Value::ByteArray(b) => {
             let snap = b.lock().unwrap().clone();
-            Ok(Value::Bytes(Arc::new(snap)))
+            Ok(Value::Bytes(Arc::new(read_n(&snap))))
         }
-        Value::Str(s) => Ok(Value::Bytes(Arc::new(s.as_bytes().to_vec()))),
+        Value::Str(s) => Ok(Value::Bytes(Arc::new(read_n(s.as_bytes())))),
         v => Err(crate::value::error_value(format!(
             "readBytes() 不支持类型 {} (可能原因：应为 file/bytes/byteArray/string)", v.type_name(),
+        ))),
+    }
+}
+
+/// bi_read_chars 从各种源读取 n 个 Unicode 字符为 string。
+///
+/// - file 句柄：从当前位置流式读 n 个 UTF-8 字符（处理多字节边界，不足返回实际）
+/// - string：取前 n 个字符（按字符，非字节）
+/// - bytes/byteArray：UTF-8 解码后取前 n 个字符
+///
+/// 不足 n 个字符时返回实际读到的（可能短于 n）。EOF 且未读到任何字符返回 undefined（file）。
+fn bi_read_chars(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "readChars")?;
+    let n = bh::as_int(args, 1, "readChars")?;
+    if n < 0 { return Err(crate::value::error_value("readChars() n 不能为负")); }
+    let n = n as usize;
+    match &args[0] {
+        Value::File(f) => {
+            // 流式按字符读：逐字节读到 buf，检查是否构成 n 个完整 UTF-8 字符
+            let mut guard = f.lock().map_err(|e| crate::value::error_value(format!(
+                "readChars() 文件锁异常: {}", e,
+            )))?;
+            let mut buf = Vec::new();
+            let mut char_count = 0usize;
+            let mut byte = [0u8; 1];
+            while char_count < n {
+                match guard.read(&mut byte) {
+                    Ok(0) => break, // EOF
+                    Ok(_) => {
+                        buf.push(byte[0]);
+                        // 检查 buf 末尾是否构成一个完整 UTF-8 字符
+                        if let Ok(s) = std::str::from_utf8(&buf) {
+                            let new_count = s.chars().count();
+                            if new_count > char_count {
+                                char_count = new_count;
+                            }
+                        }
+                        // 不完整 UTF-8 序列继续读
+                    }
+                    Err(e) => return Err(crate::value::error_value(format!(
+                        "readChars() 读取失败: {}", e,
+                    ))),
+                }
+            }
+            if buf.is_empty() {
+                return Ok(Value::Undefined);
+            }
+            // 截取前 n 个字符（防止多读了部分字节）
+            let s = String::from_utf8_lossy(&buf);
+            let result: String = s.chars().take(n).collect();
+            Ok(Value::str_from(result))
+        }
+        Value::Str(s) => {
+            let result: String = s.chars().take(n).collect();
+            Ok(Value::str_from(result))
+        }
+        Value::Bytes(b) => {
+            let s = String::from_utf8_lossy(b);
+            let result: String = s.chars().take(n).collect();
+            Ok(Value::str_from(result))
+        }
+        Value::ByteArray(b) => {
+            let snap = b.lock().unwrap().clone();
+            let s = String::from_utf8_lossy(&snap);
+            let result: String = s.chars().take(n).collect();
+            Ok(Value::str_from(result))
+        }
+        v => Err(crate::value::error_value(format!(
+            "readChars() 不支持类型 {} (可能原因：应为 file/string/bytes/byteArray)", v.type_name(),
         ))),
     }
 }
