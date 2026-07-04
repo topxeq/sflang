@@ -368,11 +368,12 @@ impl Code {
     }
 
     /// add_const 添加常量（自动去重），返回索引。
+    ///
+    /// 去重用 PartialEq（严格类型+值匹配），不用 equals（跨数值类型判等）。
+    /// 否则 Int(7) 和 Float(7.0) 会被误判为同一常量，导致类型被"污染"。
     pub fn add_const(&mut self, v: Value) -> usize {
-        // 简单去重：线性查找。常量池通常不大，O(n) 可接受。
-        // 注：Value 的比较用 equals，但 Int/Float 等基础类型可直接比较。
         for (i, c) in self.constants.iter().enumerate() {
-            if c.equals(&v) {
+            if *c == v {
                 return i;
             }
         }
