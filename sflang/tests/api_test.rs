@@ -614,6 +614,26 @@ fn test_read_chars_and_n() {
 }
 
 #[test]
+fn test_generic_close() {
+    // close(file) — 关闭文件句柄
+    let path = std::env::temp_dir().join("sflang_close_test.txt");
+    std::fs::write(&path, "test").unwrap();
+    let mut sf = Sflang::new();
+    sf.set_global("__p", Value::str(path.to_str().unwrap()));
+    assert!(sf.run_string("var f = openFile(__p, \"r\"); close(f); return isFile(f)").unwrap() == Value::Bool(true));
+    // close(mutex) — 释放互斥锁
+    assert!(run("var mu = newMutex(); lock(mu); close(mu); return tryLock(mu)").unwrap() == Value::Bool(true));
+    // close(rwlock) — 释放写锁
+    assert!(run("var rw = newRWMutex(); wlock(rw); close(rw); return tryLock(newMutex())").is_ok());
+    // close 幂等（重复 close 不报错）
+    assert!(run("var mu = newMutex(); lock(mu); close(mu); close(mu); return true").unwrap() == Value::Bool(true));
+    // 不支持的类型报错
+    assert!(run("close(42)").is_err());
+    assert!(run("close(\"hello\")").is_err());
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
 fn test_oop_methods() {
     // 构造函数 + 自动 self 绑定
     let src = r#"

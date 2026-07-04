@@ -50,6 +50,7 @@ pub fn register(vm: &mut VM) {
     // file 句柄（流式/随机访问）
     vm.register_builtin("openFile", bi_open_file);
     vm.register_builtin("closeFile", bi_close_file);
+    vm.register_builtin("close", bi_close_generic);
     vm.register_builtin("readLine", bi_read_line);
     vm.register_builtin("readAll", bi_read_all);
     vm.register_builtin("readN", bi_read_n);
@@ -227,6 +228,42 @@ fn bi_close_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     // 注：Arc 可能多引用，这里只释放当前引用。
     // 真正关闭靠所有引用消失（Arc drop）。简化处理。
     Ok(Value::Undefined)
+}
+
+/// bi_close_generic 通用关闭：按资源类型分发（file/mutex/rwlock/channel）。
+///
+/// 让 defer close(x) 能统一关闭各类资源，不必记忆 closeFile/unlock/runlock。
+/// - file：关闭文件（等同 closeFile）
+/// - mutex（Native<MutexT>）：释放锁（等同 unlock）
+/// - rwlock（Native<RWMutexT>）：释放写锁（等同 wunlock；读锁需手动 runlock）
+/// - 其他：报错
+fn bi_close_generic(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "close")?;
+    match &args[0] {
+        Value::File(_) => {
+            // file：走 closeFile 逻辑
+            let _f = as_file(args, 0, "close")?;
+            Ok(Value::Undefined)
+        }
+        Value::Native(n) => {
+            // 尝试 downcast 各种同步原语
+            use crate::concurrency::{MutexT, RWMutexT};
+            if let Some(mu) = n.downcast_ref::<std::sync::Arc<MutexT>>() {
+                mu.release();
+                return Ok(Value::Undefined);
+            }
+            if let Some(rw) = n.downcast_ref::<std::sync::Arc<RWMutexT>>() {
+                rw.release();
+                return Ok(Value::Undefined);
+            }
+            Err(crate::value::error_value(format!(
+                "close() 不支持此 native 类型 (可能原因：不是 file/mutex/rwlock)",
+            )))
+        }
+        v => Err(crate::value::error_value(format!(
+            "close() 不支持类型 {} (可能原因：应为 file/mutex/rwlock)", v.type_name(),
+        ))),
+    }
 }
 
 /// bi_read_line 从 file 读取一行（到 \n，不含换行符）。

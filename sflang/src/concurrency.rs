@@ -144,6 +144,17 @@ pub struct MutexT {
     cv: Condvar,
 }
 
+impl MutexT {
+    /// release 释放锁（供通用 close 函数复用）。已释放则无操作（幂等）。
+    pub fn release(&self) {
+        let mut g = self.held.lock().unwrap();
+        if *g {
+            *g = false;
+            self.cv.notify_one();
+        }
+    }
+}
+
 fn bi_new_mutex(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Native(Arc::new(Arc::new(MutexT {
         held: Mutex::new(false),
@@ -208,6 +219,28 @@ pub struct RWMutexT {
     readers: Mutex<i64>,
     writer: Mutex<bool>,
     cv: Condvar,
+}
+
+impl RWMutexT {
+    /// release 释放锁（写锁优先，无写锁则释放一个读锁）。供通用 close 复用。
+    pub fn release(&self) {
+        // 先尝试释放写锁
+        let mut w = self.writer.lock().unwrap();
+        if *w {
+            *w = false;
+            self.cv.notify_all();
+            return;
+        }
+        drop(w);
+        // 无写锁，释放一个读锁
+        let mut r = self.readers.lock().unwrap();
+        if *r > 0 {
+            *r -= 1;
+            if *r == 0 {
+                self.cv.notify_all();
+            }
+        }
+    }
 }
 
 fn bi_new_rwmutex(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
