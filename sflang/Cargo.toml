@@ -1,0 +1,19 @@
+[package]
+name = "sflang"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A lightweight, fast interpreted programming language"
+keywords = ["language", "interpreter", "bytecode", "vm"]
+categories = ["compilers", "development-tools"]
+
+[lib]
+name = "sflang"
+path = "src/lib.rs"
+
+[dependencies]
+# 正则库（rust-lang 官方，workspace 统一管理版本）
+regex = { workspace = true }

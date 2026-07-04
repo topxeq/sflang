@@ -1,0 +1,17 @@
+# Rust 构建产物
+/target/
+**/*.rs.bk
+
+# 错误/临时文件
+err.txt
+*.bac
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
