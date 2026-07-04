@@ -52,3 +52,44 @@ pln("n-- →", n)
 var s1 = "Hello"
 var s2 = "Sflang"
 pln("字符串拼接:", s1 + ", " + s2 + "!")
+
+// ---- 未定义变量（对标 Charlang 的宽容策略）----
+// Sflang 中，读取一个从未声明/赋值的变量不会报错，而是返回 undefined。
+// 这是对标 Charlang 的设计：脚本语言应宽容，不应因变量未定义就崩溃。
+// 注意：这与 Go/Java 等编译型语言不同（它们会编译报错）。
+
+// 读取一个从未出现的变量名，直接得到 undefined
+pln("未定义变量 notDefined:", notDefined, "类型:", typeName(notDefined))
+
+// 未定义变量参与运算会怎样？
+// undefined 参与 + - * / 等算术运算会报错（类型不兼容）
+// undefined 参与 == 比较返回 false（除非对方也是 undefined）
+pln("notDefined == undefined:", notDefined == undefined)
+pln("notDefined == 0:", notDefined == 0)
+pln("notDefined == \"\":", notDefined == "")
+
+// undefined 参与逻辑运算按 falsy 处理（不报错）
+pln("notDefined or 99:", notDefined or 99)       // undefined falsy -> 取 99
+pln("notDefined and 99:", notDefined and 99)      // undefined falsy -> false
+
+// 用 ?? 提供默认值（最常见的用法）
+var val = notDefined ?? "默认值"
+pln("notDefined ?? 默认值 ->", val)
+
+// 用 defaultUndef 提供默认值（仅 undefined 触发）
+var val2 = defaultUndef(notDefined, 42)
+pln("defaultUndef(notDefined, 42) ->", val2)
+
+// 判断是否未定义
+pln("isUndefined(notDefined):", isUndefined(notDefined))
+
+// 诊断为什么是 undefined（AI 友好）
+pln("explainUndef:", explainUndef("notDefined"))
+
+// ---- 预定义全局变量也可能未定义 ----
+// 例如 argsG 在 REPL 模式下未设置，读取返回 undefined（不报错）
+pln("argsG:", argsG, "类型:", typeName(argsG))
+
+// 赋值后即可正常使用
+notDefined = "现在有值了"
+pln("赋值后 notDefined:", notDefined)
