@@ -166,3 +166,22 @@ pln("0 == 0.0 ->", 0 == 0.0)
 pln("0 == false ->", 0 == false)
 pln("1000000 * 1000000 ->", 1000000 * 1000000)
 pln("1 << 62 ->", 1 << 62)
+
+// ==================
+// byte 运算（mod 256 环绕）
+// ==================
+pln("byte(255) + byte(1) ->", byte(255) + byte(1))   // 0（环绕）
+pln("byte(0) - byte(1) ->", byte(0) - byte(1))       // 255（环绕）
+pln("byte(200) * byte(2) ->", byte(200) * byte(2))   // 144（环绕）
+pln("byte(0xF0) ^ byte(0x0F) ->", byte(0xF0) ^ byte(0x0F))  // 255
+pln("byte(0xF0) & byte(0x3C) ->", byte(0xF0) & byte(0x3C))  // 48
+pln("~byte(0) ->", ~byte(0))                         // 255
+pln("byte(100) > byte(50) ->", byte(100) > byte(50)) // true
+pln("byte(65) + 1 ->", byte(65) + 1)                 // 66（byte+int=int）
+
+// byte 与 byteArray 配合
+var ba = byteArray(4, 0x41)
+pln("ba[0] 类型 ->", typeName(ba[0]))                 // byte
+pln("ba[0] ^ byte(0x20) ->", ba[0] ^ byte(0x20))     // 0x61（保持 byte 类型）
+ba[0] = byte(0x42)
+pln("ba[0] after set ->", ba[0])                      // 66
