@@ -1,0 +1,73 @@
+// 示例 02.04：字符串（string）
+// ==================================================
+// Sflang 字符串是 UTF-8 编码的不可变文本，内部用 Arc<str> 共享。
+
+// ---- 字符串字面量 ----
+var s1 = "普通字符串"
+var s2 = `Raw 字符串（反引号，不转义 \n \t）`
+var s3 = """
+多行字符串
+第二行
+第三行
+"""
+pln("s1:", s1)
+pln("s2:", s2)
+pln("s3:", s3)
+
+// ---- 基本操作 ----
+pln("len(\"hello\"):", len("hello"))               // 5（字符数）
+pln("len(\"中文\"):", len("中文"))                   // 2（字符数，不是字节数）
+pln("lenBytes(\"中文\"):", lenBytes("中文"))         // 6（UTF-8 字节数）
+
+// ---- 索引与切片 ----
+// s[i] 返回 Unicode 码点（int），不是子串
+pln("\"ABC\"[0]:", "ABC"[0])                       // 65（'A' 的码点）
+pln("\"中文\"[0]:", "中文"[0])                      // 20013（'中' 的码点）
+
+// 切片 s[i:j] 按字符（不切断多字节）
+pln("\"Hello\"[1:3]:", "Hello"[1:3])               // "el"
+pln("\"Hello\"[:2]:", "Hello"[:2])                 // "He"
+pln("\"Hello\"[3:]:", "Hello"[3:])                 // "lo"
+pln("\"中文测试\"[1:3]:", "中文测试"[1:3])           // "文测"
+
+// 码点 ↔ 字符转换
+pln("charFromCode(65):", charFromCode(65))          // "A"
+pln("charFromCode(20013):", charFromCode(20013))    // "中"
+pln("codeOf(\"A\"):", codeOf("A"))                  // 65
+
+// ---- 字符串函数 ----
+pln("upper:", upper("hello world"))
+pln("lower:", lower("Hello WORLD"))
+pln("trim:", trim("  hi  "))
+pln("replace:", replace("a-b-c", "-", "+"))
+pln("find:", find("hello", "ll"))                   // 2（字符索引）
+pln("startsWith:", startsWith("hello", "he"))
+pln("endsWith:", endsWith("hello", "lo"))
+pln("contains:", contains("hello", "ell"))
+pln("substring:", substring("hello", 1, 3))         // "el"
+pln("repeat:", repeat("ab", 3))                     // "ababab"
+pln("reverse:", reverse("abc"))                     // "cba"
+
+// ---- 分割与拼接 ----
+var parts = split("a,b,c,d", ",")
+pln("split:", parts)                                // ["a","b","c","d"]
+pln("join:", join(parts, "-"))                      // "a-b-c-d"
+
+// ---- 字节级访问（UTF-8 字节，非字符）----
+pln("bytesAt(\"AB\", 0):", bytesAt("AB", 0))        // byte(65)
+pln("bytesSlice hex:", bytesHex(bytesSlice("AB", 0, 1)))  // "41"
+
+// ---- 字符串拼接 ----
+var name = "World"
+pln("拼接:", "Hello, " + name + "!")
+pln("sprintf:", sprintf("%s = %d", "age", 25))
+
+// ---- 字符串与数值转换 ----
+pln("string(42):", string(42))
+pln("string(3.14):", string(3.14))
+pln("int(\"42\"):", int("42"))
+pln("float(\"3.14\"):", float("3.14"))
+
+// ---- 字符串比较 ----
+pln("\"abc\" == \"abc\":", "abc" == "abc")
+pln("\"abc\" < \"abd\":", "abc" < "abd")

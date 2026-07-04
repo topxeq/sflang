@@ -1,0 +1,128 @@
+// 示例 02.05：数组与对象（array / object）
+// ==================================================
+// array 是可变的有序序列，object 是键值映射（也是对象/OOP 载体）。
+
+// ==================
+// 数组 array
+// ==================
+var arr = [1, 2, 3, 4, 5]
+pln("数组:", arr)
+pln("len:", len(arr))
+pln("typeName:", typeName(arr))
+
+// 索引（支持负索引）
+pln("arr[0]:", arr[0])
+pln("arr[-1]:", arr[-1])
+
+// 切片
+pln("arr[1:3]:", arr[1:3])       // [2, 3]
+pln("arr[:2]:", arr[:2])         // [1, 2]
+pln("arr[3:]:", arr[3:])         // [4, 5]
+
+// 修改元素
+arr[0] = 99
+pln("arr[0]=99 后:", arr)
+
+// 追加与弹出
+push(arr, 6)
+pln("push 6 后:", arr)
+var last = pop(arr)
+pln("pop:", last, "arr:", arr)
+
+// 数组函数
+pln("contains([1,2,3], 2):", contains([1,2,3], 2))
+pln("indexOf([1,2,3], 2):", indexOf([1,2,3], 2))
+pln("concat:", concat([1,2], [3,4]))
+pln("insert:", insert([1,3], 1, 2))       // 在索引1处插入2
+
+// 排序（原地）
+var nums = [3, 1, 4, 1, 5, 9, 2, 6]
+sort(nums)
+pln("sort:", nums)
+sort(nums, true)    // 降序
+pln("sort desc:", nums)
+reverse(nums)
+pln("reverse:", nums)
+
+// 遍历
+var fruits = ["apple", "banana", "cherry"]
+for i, fruit in fruits {
+    pl("  [%d] %s\n", i, fruit)
+}
+
+// 函数式：filter / map
+var nums2 = [1, 2, 3, 4, 5, 6]
+var evens = filter(nums2, func(x) { return x % 2 == 0 })
+pln("filter 偶数:", evens)
+var doubled = map(nums2, func(x) { return x * 2 })
+pln("map *2:", doubled)
+
+// 数组可存任意类型
+var mixed = [1, "hello", true, 3.14, [1, 2]]
+pln("混合类型:", mixed)
+
+// ==================
+// 对象 object（映射 + OOP 载体）
+// ==================
+var person = {
+    name: "Alice",
+    age: 30,
+    email: "alice@example.com"
+}
+pln("对象:", person)
+pln("typeName:", typeName(person))
+
+// 成员访问
+pln("person.name:", person.name)
+pln("person[\"age\"]:", person["age"])
+
+// 修改/新增成员
+person.age = 31
+person.phone = "12345"
+pln("修改后 age:", person.age, "phone:", person.phone)
+
+// 判断键
+pln("hasKey person \"name\":", hasKey(person, "name"))
+pln("hasKey person \"xxx\":", hasKey(person, "xxx"))
+
+// keys / values
+pln("keys:", keys(person))
+pln("values:", values(person))
+
+// 不存在的键返回 undefined
+pln("缺失的键:", person["missing"])
+
+// 遍历（用 keys + 索引访问）
+var personKeys = keys(person)
+for k in personKeys {
+    pl("  %s = %v\n", k, person[k])
+}
+
+// ==================
+// bytes / byteArray / byte（字节操作）
+// ==================
+var b = bytes("Hello")
+pln("\nbytes:", b, "typeName:", typeName(b))
+pln("bytes hex:", bytesHex(b))
+pln("b[0]:", b[0], "typeName:", typeName(b[0]))   // byte 类型
+
+var ba = byteArray(5, 0x41)
+pln("byteArray:", ba)
+ba[0] = byte(0x48)
+pln("ba[0] = byte(0x48):", ba[0])
+pln("byteArray hex:", bytesHex(ba))
+
+// 互转
+pln("bytes(ba):", bytes(ba))
+pln("byteArrayFromBytes:", byteArrayFromBytes(b))
+
+// 十六进制编解码
+var hex = bytesFromHex("48656c6c6f")
+pln("hex decode:", strFromBytes(hex))
+
+// XOR 加解密
+var data = bytes("Secret")
+var enc = bytesXor(data, byte(0xFF))
+pln("XOR 加密 hex:", bytesHex(enc))
+var dec = bytesXor(enc, byte(0xFF))
+pln("XOR 解密:", strFromBytes(dec))

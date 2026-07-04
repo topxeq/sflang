@@ -1,0 +1,66 @@
+// 示例 02.01：undefined 数据类型
+// ================================
+// Sflang 用 undefined 表示"没有值"——未定义的变量、缺失的键、
+// 无返回值的函数等场景。对标 Charlang 的 undefined。
+// （nil 是 undefined 的兼容别名，两者完全等价）
+
+// ---- 未赋值的变量 ----
+var v1                  // 声明后未赋值 → undefined
+var v2 = undefined      // 显式赋值 undefined
+pln("v1:", v1, "v2:", v2)    // 都是 undefined
+
+// ---- 无返回值的函数 ----
+func doSomething() {
+    var x = 1           // 没有 return 语句
+}
+pln("无返回值的函数:", doSomething())   // undefined
+
+// return; 不带值也返回 undefined
+func earlyExit() {
+    return
+}
+pln("return; 无值:", earlyExit())       // undefined
+
+// ---- 对象缺失的键 ----
+var m = {"name": "Alice", "age": 30}
+pln("存在的键:", m["name"])             // "Alice"
+pln("不存在的键:", m["email"])          // undefined（不报错）
+
+// ---- undefined 的判断 ----
+pln("isUndefined(v1):", isUndefined(v1))
+pln("isUndefined(0):", isUndefined(0))          // false（0 不是 undefined）
+pln("isUndefined(\"\"):", isUndefined(""))      // false（空串不是 undefined）
+
+// ---- undefined 参与运算 ----
+// 比较：仅与自身相等
+pln("undefined == undefined:", undefined == undefined)   // true
+pln("undefined == 0:", undefined == 0)                   // false
+pln("undefined == nil:", undefined == nil)               // true（别名）
+
+// 逻辑运算：按 falsy 处理（不报错）
+pln("undefined or 99:", undefined or 99)                 // true（undefined falsy → or 返回 true）
+pln("undefined and 99:", undefined and 99)               // false
+pln("!undefined:", !undefined)                           // true
+
+// 算术运算：报错（类型不兼容）
+// pln(undefined + 1)  // 这会报错
+
+// ---- 用 ?? 和 defaultUndef 提供默认值 ----
+var name = m["nickname"] ?? "匿名"
+pln("nickname 缺失，默认值:", name)
+
+var email = defaultUndef(m["email"], "未设置")
+pln("email 缺失，defaultUndef:", email)
+
+// defaultUndef 只对 undefined 触发，0 和 "" 不触发
+pln("defaultUndef(0, 99):", defaultUndef(0, 99))         // 0（不触发）
+pln("defaultUndef(\"\", 99):", defaultUndef("", 99))     // ""（不触发）
+
+// ---- 与空值的区别 ----
+// undefined ≠ false ≠ 0 ≠ ""（它们都是 falsy，但互不相等）
+pln("undefined == false:", undefined == false)   // false
+pln("undefined == \"\":", undefined == "")       // false
+pln("undefined == 0:", undefined == 0)           // false
+
+// ---- 诊断工具（AI 友好）----
+pln("explainUndef(\"nonExistentVar\"):", explainUndef("nonExistentVar"))

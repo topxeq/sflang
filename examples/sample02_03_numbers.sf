@@ -1,0 +1,80 @@
+// 示例 02.03：数值类型（int / float / byte / bigInt / bigFloat）
+// ==================================================
+// Sflang 有 5 种数值类型，按精度/用途分工。
+
+// ==================
+// int（64 位有符号整数，默认数值类型）
+// ==================
+var i1 = 42
+var i2 = 0xFF          // 十六进制 = 255
+var i3 = 0b1010        // 二进制 = 10
+var i4 = 0o77          // 八进制 = 63
+var i5 = 1_000_000     // 下划线分隔
+pln("int 字面量:", i1, i2, i3, i4, i5)
+pln("typeName(42):", typeName(42))
+pln("7 / 2 =", 7 / 2)                  // 整数除法 = 3
+pln("7 % 3 =", 7 % 3)                  // 取模 = 1
+
+// ==================
+// float（64 位双精度浮点）
+// ==================
+var f1 = 3.14
+var f2 = 2.5e10        // 科学计数法
+pln("float 字面量:", f1, f2)
+pln("typeName(3.14):", typeName(3.14))
+pln("7.0 / 2 =", 7.0 / 2)              // 浮点除法 = 3.5
+
+// int 与 float 自动转换
+pln("1 + 2.5 =", 1 + 2.5)              // → float 3.5
+pln("typeName(1 + 2.5):", typeName(1 + 2.5))
+pln("1 == 1.0:", 1 == 1.0)             // 跨类型值相等
+
+// float 的精度问题（与 bigFloat 对比）
+pln("0.1 + 0.2:", 0.1 + 0.2)           // 0.30000000000000004（float 不精确）
+pln("0.1 + 0.2 == 0.3:", 0.1 + 0.2 == 0.3)  // false
+
+// ==================
+// byte（0-255，mod 256 环绕）
+// ==================
+var by1 = byte(65)
+var by2 = byte(255)
+pln("byte(65):", by1, "typeName:", typeName(by1))
+pln("byte(255) + byte(1):", by2 + byte(1))     // 0（环绕）
+pln("byte(0) - byte(1):", byte(0) - byte(1))   // 255（环绕）
+pln("byte ^ int:", typeName(byte(65) + 1))      // int（byte 提升）
+pln("byte == int:", byte(65) == 65)             // true（跨类型）
+
+// ==================
+// bigInt（任意精度整数）
+// ==================
+var bi = bigInt("999999999999999999999")        // 超出 i64 范围
+pln("bigInt:", bi)
+pln("typeName:", typeName(bi))
+pln("bigInt + 1:", bi + 1)
+pln("bigInt * bigInt:", bigInt("999") * bigInt("999"))
+// 阶乘 25!（超出 i64）
+var fact = bigInt(1)
+for n in range(1, 26) { fact = fact * bigInt(n) }
+pln("25! =", fact)
+// int + bigInt 自动互通（小结果降级为 int，大结果保持 bigInt）
+pln("1 + bigInt(2):", typeName(1 + bigInt(2)))           // int（结果 3 装回 i64）
+pln("1 + bigInt(\"999...\"):", typeName(1 + bigInt("99999999999999999999")))  // bigInt
+
+// ==================
+// bigFloat（任意精度十进制浮点，精确）
+// ==================
+var bf1 = bigFloat("0.1")
+var bf2 = bigFloat("0.2")
+pln("bigFloat 0.1 + 0.2:", bf1 + bf2)           // 0.3（精确！）
+pln("== 0.3:", bf1 + bf2 == bigFloat("0.3"))    // true
+pln("bigFloat 1/3:", bigFloat("1") / bigFloat("3"))  // 0.333...（20位）
+pln("typeName:", typeName(bf1))
+
+// ==================
+// 类型转换
+// ==================
+pln("int(3.7):", int(3.7))                       // 3（截断）
+pln("float(42):", float(42))                     // 42
+pln("int(\"123\"):", int("123"))                 // 字符串解析
+pln("float(\"3.14\"):", float("3.14"))
+pln("string(42):", string(42))                   // 转字符串
