@@ -54,8 +54,7 @@ fn main() -> ExitCode {
 
 /// run_repl 启动交互式 REPL。
 fn run_repl() -> ExitCode {
-    println!("sf - Sflang REPL 0.1.0");
-    println!("输入 .help 查看帮助，.exit 退出");
+    println!("Sflang REPL 0.1.0");
     let mut sf = Sflang::new();
     sf.set_output(sflang::ConsoleWriter::stdout());
     // REPL 模式不设置 argsG/scriptPathG
