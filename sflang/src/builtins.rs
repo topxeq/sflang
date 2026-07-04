@@ -233,6 +233,7 @@ fn format_value(verb: char, v: &Value, flags: &str, width: &str, precision: Opti
             Value::Bool(b) => b.to_string(),
             _ => v.is_truthy().to_string(),
         },
+        'T' => v.type_name().to_string(),
         'x' => match v {
             Value::Int(x) => format!("{:x}", x),
             Value::BigInt(b) => {
