@@ -1,17 +1,19 @@
-//! console_writer.rs — 跨平台控制台输出（Windows 自动编码转换）
+//! console_writer.rs — 跨平台控制台输出（Windows 用 WriteConsoleW 直接写 UTF-16）
 //!
 //! 设计要点：
 //!   - Windows 下控制台默认使用系统代码页（中文系统为 GBK/936），
-//!     而 Sflang 内部统一用 UTF-8。直接写 UTF-8 字节到控制台会乱码。
-//!   - 本模块检测输出目标是否为控制台（Console），若是则将 UTF-8 转为
-//!     系统代码页再输出（对标 Go 的行为）；若为文件/管道则保持 UTF-8。
-//!   - Linux/Mac 终端默认 UTF-8，无需转换，直接输出。
+//!     而 Sflang 内部统一用 UTF-8。
+//!   - Rust 1.70+ 的 std::io::stdout() 在 Windows 上会自动启用 UTF-8 控制台模式，
+//!     但写入非 UTF-8 字节会报错；且旧版 Windows（如 Win10 早期）不一定支持 UTF-8 模式。
+//!   - 最可靠方案：检测是否为控制台，若是则用 Windows API WriteConsoleW 直接写 UTF-16，
+//!     绕过 Rust stdout 层的编码限制（对标 Go 的 WriteConsoleW 策略）。
+//!   - 非 Windows 或非控制台（文件/管道）：走正常 stdout，输出 UTF-8。
 
 use std::io::{self, Write};
 
-/// ConsoleWriter 自动检测控制台并做编码转换的输出封装。
+/// ConsoleWriter 自动检测控制台并选择写入方式的输出封装。
 pub struct ConsoleWriter {
-    /// is_console 是否输出到控制台（Windows 下需编码转换）。
+    /// is_console 是否输出到控制台。
     is_console: bool,
 }
 
@@ -29,13 +31,10 @@ impl Write for ConsoleWriter {
         #[cfg(windows)]
         {
             if self.is_console {
-                let converted = utf8_to_console_encoding(buf);
-                let mut stdout = io::stdout().lock();
-                stdout.write_all(&converted)?;
-                stdout.flush()?;
-                return Ok(buf.len());
+                return write_console_w(buf);
             }
         }
+        // 非控制台（文件/管道）或非 Windows：直接输出 UTF-8
         let mut stdout = io::stdout().lock();
         stdout.write(buf)?;
         stdout.flush()?;
@@ -51,11 +50,9 @@ impl Write for ConsoleWriter {
 
 #[cfg(windows)]
 mod win {
-    use std::io;
-    use std::os::windows::io::AsRawHandle;
-
     /// 检测 stdout 是否为控制台句柄。
     pub fn is_stdout_console() -> bool {
+        use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::Console::GetConsoleMode;
         let handle = io::stdout().as_raw_handle();
         unsafe {
@@ -64,53 +61,41 @@ mod win {
         }
     }
 
-    /// 将 UTF-8 字节转为控制台当前代码页编码。
-    pub fn utf8_to_console_encoding(utf8: &[u8]) -> Vec<u8> {
+    /// write_console_w 用 WriteConsoleW 直接写 UTF-16 到控制台。
+    ///
+    /// 绕过 Rust stdout 的编码限制。UTF-8 → UTF-16 → WriteConsoleW。
+    pub fn write_console_w(utf8: &[u8]) -> std::io::Result<usize> {
+        use std::io::Write;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::Console::WriteConsoleW;
+        // UTF-8 → UTF-16
         let s = match std::str::from_utf8(utf8) {
             Ok(s) => s,
-            Err(_) => return utf8.to_vec(),
+            Err(_) => return Ok(utf8.len()),  // 非 UTF-8，丢弃避免崩溃
         };
-        let cp = get_console_output_cp();
-        if cp == 65001 {
-            return utf8.to_vec();  // 已是 UTF-8 代码页
-        }
-        string_to_codepage(s, cp)
-    }
-
-    fn get_console_output_cp() -> u32 {
-        use windows_sys::Win32::System::Console::GetConsoleOutputCP;
-        unsafe { GetConsoleOutputCP() }
-    }
-
-    fn string_to_codepage(s: &str, cp: u32) -> Vec<u8> {
-        use windows_sys::Win32::Globalization::WideCharToMultiByte;
         let wide: Vec<u16> = s.encode_utf16().collect();
-        if wide.is_empty() { return Vec::new(); }
-        let needed = unsafe {
-            WideCharToMultiByte(
-                cp, 0,
-                wide.as_ptr(), wide.len() as i32,
-                std::ptr::null_mut(), 0,
-                std::ptr::null(), std::ptr::null_mut(),
+        if wide.is_empty() { return Ok(utf8.len()); }
+        let handle = io::stdout().as_raw_handle();
+        let mut written: u32 = 0;
+        let result = unsafe {
+            WriteConsoleW(
+                handle,
+                wide.as_ptr(),
+                wide.len() as u32,
+                &mut written,
+                std::ptr::null(),
             )
         };
-        if needed <= 0 { return s.as_bytes().to_vec(); }
-        let mut buf = vec![0u8; needed as usize];
-        let written = unsafe {
-            WideCharToMultiByte(
-                cp, 0,
-                wide.as_ptr(), wide.len() as i32,
-                buf.as_mut_ptr(), needed,
-                std::ptr::null(), std::ptr::null_mut(),
-            )
-        };
-        if written > 0 {
-            buf.truncate(written as usize);
-            buf
-        } else {
-            s.as_bytes().to_vec()
+        if result == 0 {
+            // WriteConsoleW 失败，回退到普通 stdout
+            let mut stdout = io::stdout().lock();
+            stdout.write_all(utf8)?;
+            stdout.flush()?;
         }
+        Ok(utf8.len())
     }
+
+    use std::io;
 }
 
 // ---- 非 Windows 平台 ----
