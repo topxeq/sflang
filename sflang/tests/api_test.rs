@@ -560,6 +560,32 @@ fn test_file_handle() {
 }
 
 #[test]
+fn test_read_str_bytes() {
+    // readStr/readBytes 从各种源统一读取
+    // string
+    assert_eq!(eval("return readStr(\"hello\")"), Value::str("hello"));
+    // bytes
+    assert_eq!(eval("return readStr(bytes(\"world\"))"), Value::str("world"));
+    // byteArray
+    assert_eq!(eval("return bytesHex(readBytes(byteArrayFromBytes(bytes(\"AB\"))))"), Value::str("4142"));
+    // string → bytes
+    assert_eq!(eval("return bytesHex(readBytes(\"AB\"))"), Value::str("4142"));
+    // bytes → bytes
+    assert_eq!(eval("return bytesHex(readBytes(bytes(\"CD\")))"), Value::str("4344"));
+    // file 句柄
+    let path = std::env::temp_dir().join("sflang_readstr_test.txt");
+    std::fs::write(&path, "file content").unwrap();
+    let mut sf = Sflang::new();
+    sf.set_global("__p", Value::str(path.to_str().unwrap()));
+    assert_eq!(sf.run_string("var f = openFile(__p, \"r\"); defer closeFile(f); return readStr(f)").unwrap(), Value::str("file content"));
+    assert_eq!(sf.run_string("var f = openFile(__p, \"r\"); defer closeFile(f); return bytesHex(readBytes(f))").unwrap(), Value::str("66696c6520636f6e74656e74"));
+    std::fs::remove_file(path).ok();
+    // 不支持的类型报错
+    assert!(run("return readStr(42)").is_err());
+    assert!(run("return readBytes(true)").is_err());
+}
+
+#[test]
 fn test_oop_methods() {
     // 构造函数 + 自动 self 绑定
     let src = r#"

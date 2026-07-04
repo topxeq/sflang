@@ -58,6 +58,9 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("writeLine", bi_write_line);
     vm.register_builtin("seek", bi_seek);
     vm.register_builtin("tell", bi_tell);
+    // 通用读取（file 句柄或基础类型）
+    vm.register_builtin("readStr", bi_read_str);
+    vm.register_builtin("readBytes", bi_read_bytes);
 }
 
 /// io_err 将 std::io::Error 转为 AI 友好错误值，附加常见原因提示。
@@ -375,4 +378,70 @@ fn bi_tell(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         "tell() 获取位置失败: {}", e,
     )))?;
     Ok(Value::Int(pos as i64))
+}
+
+// ---- 通用读取（file 句柄或基础类型）----
+//
+// 对标用户需求：readStr/readBytes 能从 file/string/bytes/byteArray 统一读取。
+// file 句柄 → readAll 后转换；基础类型 → 直接转换。
+
+/// bi_read_str 从各种源读取为字符串。
+///
+/// - file 句柄：读取全部剩余内容，UTF-8 解码为 string
+/// - string：直接返回
+/// - bytes/byteArray：UTF-8 解码为 string
+fn bi_read_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "readStr")?;
+    match &args[0] {
+        Value::File(f) => {
+            let mut guard = f.lock().map_err(|e| crate::value::error_value(format!(
+                "readStr() 文件锁异常: {}", e,
+            )))?;
+            let mut buf = Vec::new();
+            guard.read_to_end(&mut buf).map_err(|e| crate::value::error_value(format!(
+                "readStr() 读取失败: {}", e,
+            )))?;
+            Ok(Value::str_from(String::from_utf8_lossy(&buf).into_owned()))
+        }
+        Value::Str(s) => Ok(Value::str_from(s.to_string())),
+        Value::Bytes(b) => Ok(Value::str_from(String::from_utf8_lossy(b).into_owned())),
+        Value::ByteArray(b) => {
+            let snap = b.lock().unwrap().clone();
+            Ok(Value::str_from(String::from_utf8_lossy(&snap).into_owned()))
+        }
+        v => Err(crate::value::error_value(format!(
+            "readStr() 不支持类型 {} (可能原因：应为 file/string/bytes/byteArray)", v.type_name(),
+        ))),
+    }
+}
+
+/// bi_read_bytes 从各种源读取为 bytes。
+///
+/// - file 句柄：读取全部剩余内容为 bytes
+/// - bytes：原样返回
+/// - byteArray：拷贝为不可变 bytes
+/// - string：UTF-8 编码为 bytes
+fn bi_read_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "readBytes")?;
+    match &args[0] {
+        Value::File(f) => {
+            let mut guard = f.lock().map_err(|e| crate::value::error_value(format!(
+                "readBytes() 文件锁异常: {}", e,
+            )))?;
+            let mut buf = Vec::new();
+            guard.read_to_end(&mut buf).map_err(|e| crate::value::error_value(format!(
+                "readBytes() 读取失败: {}", e,
+            )))?;
+            Ok(Value::Bytes(Arc::new(buf)))
+        }
+        Value::Bytes(b) => Ok(Value::Bytes(b.clone())),
+        Value::ByteArray(b) => {
+            let snap = b.lock().unwrap().clone();
+            Ok(Value::Bytes(Arc::new(snap)))
+        }
+        Value::Str(s) => Ok(Value::Bytes(Arc::new(s.as_bytes().to_vec()))),
+        v => Err(crate::value::error_value(format!(
+            "readBytes() 不支持类型 {} (可能原因：应为 file/bytes/byteArray/string)", v.type_name(),
+        ))),
+    }
 }
