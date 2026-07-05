@@ -17,6 +17,7 @@ use crate::vm::VM;
 /// register 注册所有数组内置函数到 VM。
 pub fn register(vm: &mut VM) {
     vm.register_builtin("sort", bi_sort);
+    vm.register_builtin("sortByFunc", bi_sort_by_func);
     vm.register_builtin("reverse", bi_reverse);
     vm.register_builtin("contains", bi_contains);
     vm.register_builtin("indexOf", bi_index_of);
@@ -77,7 +78,49 @@ fn bi_sort(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(args[0].clone())
 }
 
-/// bi_reverse 反转。多态：数组原地反转并返回；字符串返回反转副本。
+/// bi_sort_by_func 用自定义比较函数排序（原地）。
+///
+/// 比较函数接收两个参数 (a, b)，返回 int：
+///   负数 → a 排在 b 前面
+///   0   → 相等
+///   正数 → a 排在 b 后面
+///
+/// 用法：sortByFunc(arr, func(a, b) { return a - b })  // 升序
+fn bi_sort_by_func(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let arr = bh::as_array(args, 0, "sortByFunc")?;
+    bh::require_arg(args, 1, "sortByFunc")?;
+    let cmp_fn = args[1].clone();
+    // 先克隆快照，逐对调用比较函数，再排序
+    // 不能在持锁状态下回调 VM（死锁风险），所以先取快照索引排序
+    let snapshot: Vec<Value> = arr.lock().unwrap().clone();
+    let n = snapshot.len();
+    // 用索引排序避免频繁 clone
+    let mut indices: Vec<usize> = (0..n).collect();
+    let result = indices.sort_by(|&i, &j| {
+        let a = snapshot[i].clone();
+        let b = snapshot[j].clone();
+        match vm.call_function_value(cmp_fn.clone(), vec![a, b]) {
+            Ok(v) => {
+                let r = match v {
+                    Value::Int(x) => x,
+                    Value::Float(f) => f as i64,
+                    Value::Byte(b) => b as i64,
+                    _ => 0,
+                };
+                if r < 0 { std::cmp::Ordering::Less }
+                else if r > 0 { std::cmp::Ordering::Greater }
+                else { std::cmp::Ordering::Equal }
+            }
+            Err(_) => std::cmp::Ordering::Equal,
+        }
+    });
+    let _ = result;  // sort_by 返回 ()
+    // 按排序后的索引重排数组
+    let sorted: Vec<Value> = indices.iter().map(|&i| snapshot[i].clone()).collect();
+    let mut guard = arr.lock().unwrap();
+    *guard = sorted;
+    Ok(args[0].clone())
+}
 fn bi_reverse(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     match args.get(0) {
         Some(Value::Array(_)) => {

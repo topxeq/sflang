@@ -44,6 +44,24 @@ pln("sort desc:", nums)
 reverse(nums)
 pln("reverse:", nums)
 
+// 自定义比较函数排序
+// 比较函数返回 int：负数=a在前，0=相等，正数=b在前
+var nums3 = [3, 1, 4, 1, 5, 9, 2, 6]
+sortByFunc(nums3, func(a, b) { return b - a })    // 降序（b-a 正数时 b 在前）
+pln("sortByFunc 降序:", nums3)
+
+// 按对象字段排序
+var people = [
+    {name: "Bob", age: 30},
+    {name: "Alice", age: 25},
+    {name: "Charlie", age: 35}
+]
+sortByFunc(people, func(a, b) { return a.age - b.age })   // 按 age 升序
+pln("按 age 排序:")
+for p in people {
+    pln("  ", p.name, p.age)
+}
+
 // 遍历
 var fruits = ["apple", "banana", "cherry"]
 for i, fruit in fruits {
@@ -96,6 +114,55 @@ pln("缺失的键:", person["missing"])
 for k, v in person {
     pl("  %s = %v\n", k, v)
 }
+
+// ==================
+// Object 加方法（OOP）
+// ==================
+// Object 的值可以是函数——这就是"方法"。
+// 用 obj.method(args) 调用时，编译器自动注入 obj 作为隐式首参 self。
+
+pln("\n--- Object 方法 ---")
+
+// 方式一：构造函数模式（最常用）
+func Counter(startA) {
+    var self = {value: startA}
+    // 方法：self 是隐式首参，调用时自动注入
+    self.inc = func(self, n) { self.value += n; return self.value }
+    self.get = func(self) { return self.value }
+    return self
+}
+var c = Counter(10)
+pln("c.inc(5):", c.inc(5))     // 15
+pln("c.get():", c.get())       // 15
+
+// 方式二：直接给已有 object 挂方法
+var animal = {name: "Cat"}
+animal.speak = func(self) { return self.name + " says meow" }
+pln("animal.speak():", animal.speak())
+
+// 方式三：原型链共享方法（省内存，多实例共享同一方法表）
+var pointProto = {
+    distance: func(self) { return sqrt(self.x * self.x + self.y * self.y) }
+}
+func Point(xA, yA) {
+    var self = newObject(pointProto)   // 继承原型方法
+    self.x = xA
+    self.y = yA
+    return self
+}
+var p1 = Point(3, 4)
+pln("p1.distance():", p1.distance())   // 5（沿原型链找到 distance）
+
+// 继承：构造函数组合
+func Dog(nameA, breedA) {
+    var self = Point(0, 0)   // 复用其他构造（这里仅为演示）
+    self.name = nameA
+    self.breed = breedA
+    self.bark = func(self) { return self.name + " (" + self.breed + ")" }
+    return self
+}
+var d = Dog("Rex", "Lab")
+pln("d.bark():", d.bark())
 
 // ==================
 // bytes / byteArray / byte（字节操作）
