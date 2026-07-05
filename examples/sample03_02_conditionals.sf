@@ -1,0 +1,141 @@
+// 示例 03.02：条件判断分支
+// ==================================
+// Sflang 支持 if / elif / else 条件分支，以及三元表达式。
+
+// ==================
+// 基本 if
+// ==================
+var age = 18
+if age >= 18 {
+    pln("成年人")
+}
+
+// ==================
+// if ... else
+// ==================
+var score = 55
+if score >= 60 {
+    pln("及格")
+} else {
+    pln("不及格")
+}
+
+// ==================
+// if ... elif ... else
+// ==================
+var temp = 25
+if temp > 30 {
+    pln("炎热")
+} elif temp > 20 {
+    pln("舒适")
+} elif temp > 10 {
+    pln("凉爽")
+} else {
+    pln("寒冷")
+}
+
+// ==================
+// 条件中的 falsy 值
+// ==================
+// 以下值在条件中被视为"假"：undefined / false / 0 / 0.0 / "" / [] / {}
+var input = ""
+if input {
+    pln("有输入")
+} else {
+    pln("空输入（空串 falsy）")
+}
+
+var data = []
+if data {
+    pln("有数据")
+} else {
+    pln("空数组 falsy")
+}
+
+var val = undefined
+if val {
+    pln("有值")
+} else {
+    pln("undefined falsy")
+}
+
+// ==================
+// 三元表达式 ?:
+// ==================
+var n = 7
+var even = n % 2 == 0 ? "偶数" : "奇数"
+pln(n, "是", even)
+
+// 嵌套三元（右结合）
+var grade = score >= 90 ? "A" : score >= 80 ? "B" : score >= 60 ? "C" : "D"
+pln("成绩", score, "等级:", grade)
+
+// ==================
+// 条件中的逻辑组合
+// ==================
+var username = "admin"
+var password = "123456"
+if username == "admin" and password == "123456" {
+    pln("登录成功")
+} else {
+    pln("登录失败")
+}
+
+// not 取反
+var isAdmin = false
+if not isAdmin {
+    pln("非管理员")
+}
+
+// ==================
+// 条中使用 && 和 ||（等价 and/or）
+// ==================
+if username == "admin" && password == "123456" {
+    pln("符号版登录成功")
+}
+
+// ==================
+// 多条件判断（用 || 连接）
+// ==================
+var day = "Saturday"
+if day == "Saturday" or day == "Sunday" {
+    pln("周末")
+} else {
+    pln("工作日")
+}
+
+// ==================
+// 实用：FizzBuzz
+// ==================
+pln("\n--- FizzBuzz ---")
+for i in range(1, 16) {
+    if i % 15 == 0 {
+        pln("  FizzBuzz")
+    } elif i % 3 == 0 {
+        pln("  Fizz")
+    } elif i % 5 == 0 {
+        pln("  Buzz")
+    } else {
+        pln("  ", i)
+    }
+}
+
+// ==================
+// 实用：判断闰年
+// ==================
+pln("\n--- 闰年判断 ---")
+func isLeapYear(year) {
+    if year % 400 == 0 {
+        return true
+    } elif year % 100 == 0 {
+        return false
+    } elif year % 4 == 0 {
+        return true
+    } else {
+        return false
+    }
+}
+pln("2000:", isLeapYear(2000))   // true（400倍数）
+pln("1900:", isLeapYear(1900))   // false（100倍数非400）
+pln("2024:", isLeapYear(2024))   // true（4倍数）
+pln("2023:", isLeapYear(2023))   // false

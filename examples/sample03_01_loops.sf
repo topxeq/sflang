@@ -1,0 +1,130 @@
+// 示例 03.01：循环与跳转
+// ==================================
+// Sflang 支持多种循环：for-in、while、C 风格 for，以及 break/continue。
+
+// ==================
+// for-in（最常用）
+// ==================
+// 遍历数组
+pln("--- for-in 数组 ---")
+for i in range(3) {
+    pln("  i =", i)
+}
+
+// 遍历数组带索引
+pln("\n--- for-in 带索引 ---")
+var fruits = ["apple", "banana", "cherry"]
+for idx, fruit in fruits {
+    pln("  [%d] %s", idx, fruit)
+}
+
+// 遍历字符串
+pln("\n--- for-in 字符串 ---")
+for i, ch in "abc" {
+    pl("  %d: %s(code=%d)\n", i, charFromCode(ch), ch)
+}
+
+// 遍历对象
+pln("\n--- for-in 对象 ---")
+var config = {host: "localhost", port: 8080, debug: true}
+for k, v in config {
+    pln("  ", k, "=", v)
+}
+
+// ==================
+// while 循环
+// ==================
+pln("\n--- while ---")
+var n = 0
+while n < 5 {
+    pln("  n =", n)
+    n++
+}
+
+// ==================
+// C 风格 for 循环
+// ==================
+pln("\n--- C 风格 for ---")
+var sum = 0
+for var i = 1; i <= 5; i++ {
+    sum += i
+}
+pln("  1+2+3+4+5 =", sum)
+
+// 无括号的 C 风格 for
+for var j = 0; j < 3; j++ {
+    pln("  j =", j)
+}
+
+// ==================
+// break（中断循环）
+// ==================
+pln("\n--- break ---")
+for i in range(100) {
+    if i >= 3 { break }
+    pln("  i =", i)
+}
+
+// ==================
+// continue（跳过本次）
+// ==================
+pln("\n--- continue（跳过偶数）---")
+for i in range(6) {
+    if i % 2 == 0 { continue }
+    pln("  奇数:", i)
+}
+
+// ==================
+// 嵌套循环 + break（break 只中断最内层）
+// ==================
+pln("\n--- 嵌套循环 ---")
+for i in range(3) {
+    for j in range(3) {
+        if j == 2 { break }
+        pln("  i=%d j=%d", i, j)
+    }
+}
+
+// ==================
+// 无限循环 + break（常用模式，用 while true）
+// ==================
+pln("\n--- 无限循环 + break ---")
+var count = 0
+while true {
+    count++
+    if count >= 3 { break }
+}
+pln("  count =", count)
+
+// ==================
+// while true + break
+// ==================
+pln("\n--- while true + break ---")
+var x = 10
+while true {
+    x -= 3
+    if x <= 0 { break }
+}
+pln("  x =", x)
+
+// ==================
+// 实用示例：累加求和
+// ==================
+pln("\n--- 实用：1 到 100 求和 ---")
+var total = 0
+for i in range(1, 101) {
+    total += i
+}
+pln("  1+2+...+100 =", total)
+
+// ==================
+// 实用示例：九九乘法表
+// ==================
+pln("\n--- 九九乘法表 ---")
+for i in range(1, 4) {
+    var line = ""
+    for j in range(1, i + 1) {
+        line += sprintf("%dx%d=%d ", j, i, i * j)
+    }
+    pln("  ", line)
+}
