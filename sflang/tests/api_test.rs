@@ -296,10 +296,10 @@ fn test_undefined_var_returns_undefined() {
     // 显式 undefined 字面量
     assert_eq!(eval("return undefined"), Value::Undefined);
     // nil 作为 undefined 的兼容别名
-    assert_eq!(eval("return nil"), Value::Undefined);
+    assert_eq!(eval("return undefined"), Value::Undefined);
     // undefined == undefined
     assert_eq!(eval("return undefined == undefined"), Value::Bool(true));
-    assert_eq!(eval("return undefined == nil"), Value::Bool(true));
+    assert_eq!(eval("return undefined == undefined"), Value::Bool(true));
 }
 
 #[test]
@@ -326,8 +326,8 @@ fn test_undefined_sources() {
     // var 无初值 → undefined
     assert_eq!(eval("var x; return x"), Value::Undefined);
     // undefined 在逻辑运算中按 falsy 参与（不抛错）
-    assert_eq!(eval("return undefined or 5"), Value::Bool(true));
-    assert_eq!(eval("return undefined and 5"), Value::Bool(false));
+    assert_eq!(eval("return undefined || 5"), Value::Bool(true));
+    assert_eq!(eval("return undefined && 5"), Value::Bool(false));
     // undefined 取成员 / 索引 → 抛异常（类型不兼容）
     assert!(run("var x = undefined; return x.foo").is_err());
     assert!(run("var x = undefined; return x[0]").is_err());
@@ -348,14 +348,14 @@ fn test_undefined_sources() {
 
 #[test]
 fn test_symbol_logic_operators() {
-    // && || ! 作为 and or not 的等价符号别名
+    // && || ! 作为 && || not 的等价符号别名
     assert_eq!(eval("return true && false"), Value::Bool(false));
     assert_eq!(eval("return true || false"), Value::Bool(true));
     assert_eq!(eval("return !true"), Value::Bool(false));
     assert_eq!(eval("return !0"), Value::Bool(true));
     // 与关键字混用等价
-    assert_eq!(eval("return (1 < 2) && (3 > 2) or (1 > 5)"), Value::Bool(true));
-    assert_eq!(eval("return (1 < 2) and (3 > 2) || false"), Value::Bool(true));
+    assert_eq!(eval("return (1 < 2) && (3 > 2) || (1 > 5)"), Value::Bool(true));
+    assert_eq!(eval("return (1 < 2) && (3 > 2) || false"), Value::Bool(true));
     // 短路仍成立：&& 左假不求右（右含除零也不报错）
     assert_eq!(eval("return false && (1/0 == 0)"), Value::Bool(false));
     assert_eq!(eval("return true || (1/0 == 0)"), Value::Bool(true));
@@ -511,7 +511,7 @@ fn test_file_handle() {
         defer closeFile(f)
         var lines = []
         var line = readLine(f)
-        while not isUndefined(line) {
+        while !isUndefined(line) {
             push(lines, line)
             line = readLine(f)
         }
@@ -1301,13 +1301,13 @@ fn test_null_coalesce() {
     assert_eq!(eval("var m = {\"a\": 1}; return m[\"missing\"] ?? 99"), Value::Int(99));
     assert_eq!(eval("var m = {\"a\": 0}; return m[\"a\"] ?? 99"), Value::Int(0));
     // nil 别名也视为 undefined，触发兜底
-    assert_eq!(eval("return nil ?? 7"), Value::Int(7));
+    assert_eq!(eval("return undefined ?? 7"), Value::Int(7));
     // 嵌套（左结合）
     assert_eq!(eval("return undefined ?? (undefined ?? 7)"), Value::Int(7));
     assert_eq!(eval("return undefined ?? undefined ?? 8"), Value::Int(8));
-    // 与 or 混用：?? 优先级低于 or → (undefined or 0) ?? 99
-    //   undefined or 0 → false（falsy），false 非 undefined → 取左值 false
-    assert_eq!(eval("return undefined or 0 ?? 99"), Value::Bool(false));
+    // 与 || 混用：?? 优先级低于 || → (undefined || 0) ?? 99
+    //   undefined || 0 → false（falsy），false 非 undefined → 取左值 false
+    assert_eq!(eval("return undefined || 0 ?? 99"), Value::Bool(false));
     // 短路求值：左值非 undefined 时不求右（右含除零也不报错）
     assert_eq!(eval("return 42 ?? (1/0 == 0)"), Value::Int(42));
 }
@@ -1315,7 +1315,7 @@ fn test_null_coalesce() {
 #[test]
 fn test_type_error_suggestion() {
     // undefined 参与算术属类型不兼容 → 抛异常（nil 是 undefined 的别名）
-    let r = run("var __r = 1 + nil").unwrap_err();
+    let r = run("var __r = 1 + undefined").unwrap_err();
     match r {
         Value::Error(e) => {
             // 错误信息含类型名 undefined（便于 AI 定位）
@@ -1330,26 +1330,26 @@ fn test_type_error_suggestion() {
 #[test]
 fn test_logical_and_or() {
     // 结果规范化为布尔值（短路求值）。
-    assert_eq!(eval("var r = 5; return r >= 1 and r <= 10"), Value::Bool(true));
-    assert_eq!(eval("var r = 5; return r > 10 or r == 5"), Value::Bool(true));
-    assert_eq!(eval("var r = 5; return r > 10 and r == 5"), Value::Bool(false));
+    assert_eq!(eval("var r = 5; return r >= 1 && r <= 10"), Value::Bool(true));
+    assert_eq!(eval("var r = 5; return r > 10 || r == 5"), Value::Bool(true));
+    assert_eq!(eval("var r = 5; return r > 10 && r == 5"), Value::Bool(false));
     // 短路：and 左假时不求右（右为 1/0 不会除零）
-    assert_eq!(eval("return false and 1/0 == 0"), Value::Bool(false));
+    assert_eq!(eval("return false && 1/0 == 0"), Value::Bool(false));
     // 短路：or 左真时不求右
-    assert_eq!(eval("return true or 1/0 == 0"), Value::Bool(true));
+    assert_eq!(eval("return true || 1/0 == 0"), Value::Bool(true));
     // 嵌套
-    assert_eq!(eval("return (1 < 2) and (3 > 2) or (1 > 5)"), Value::Bool(true));
+    assert_eq!(eval("return (1 < 2) && (3 > 2) || (1 > 5)"), Value::Bool(true));
     // 非布尔操作数的真值判断
-    assert_eq!(eval("return 0 and 1"), Value::Bool(false));
-    assert_eq!(eval("return 1 and 2"), Value::Bool(true));
+    assert_eq!(eval("return 0 && 1"), Value::Bool(false));
+    assert_eq!(eval("return 1 && 2"), Value::Bool(true));
 }
 
 // ---- 字符串内置函数 ----
 
 #[test]
 fn test_str_case_trim() {
-    assert_eq!(eval("return upper(\"abc\")"), Value::str("ABC"));
-    assert_eq!(eval("return lower(\"AbC\")"), Value::str("abc"));
+    assert_eq!(eval("return strToUpper(\"abc\")"), Value::str("ABC"));
+    assert_eq!(eval("return strToLower(\"AbC\")"), Value::str("abc"));
     assert_eq!(eval("return trim(\"  hi  \")"), Value::str("hi"));
     assert_eq!(eval("return strTrimPrefix(\"hello.txt\", \"hello.\")"), Value::str("txt"));
     assert_eq!(eval("return strTrimSuffix(\"hello.txt\", \".txt\")"), Value::str("hello"));
@@ -1357,35 +1357,35 @@ fn test_str_case_trim() {
 
 #[test]
 fn test_str_find_contains() {
-    assert_eq!(eval("return find(\"hello\", \"ll\")"), Value::Int(2));
-    assert_eq!(eval("return find(\"hello\", \"z\")"), Value::Int(-1));
+    assert_eq!(eval("return strFind(\"hello\", \"ll\")"), Value::Int(2));
+    assert_eq!(eval("return strFind(\"hello\", \"z\")"), Value::Int(-1));
     assert_eq!(eval("return contains(\"hello\", \"ell\")"), Value::Bool(true));
-    assert_eq!(eval("return startsWith(\"hello\", \"he\")"), Value::Bool(true));
-    assert_eq!(eval("return endsWith(\"hello\", \"lo\")"), Value::Bool(true));
+    assert_eq!(eval("return strStartsWith(\"hello\", \"he\")"), Value::Bool(true));
+    assert_eq!(eval("return strEndsWith(\"hello\", \"lo\")"), Value::Bool(true));
 }
 
 #[test]
 fn test_str_replace_split_join() {
-    assert_eq!(eval("return replace(\"a-b-c\", \"-\", \"+\")"), Value::str("a+b+c"));
-    let r = eval("return join(split(\"a,b,c\", \",\"), \"-\")");
+    assert_eq!(eval("return strReplace(\"a-b-c\", \"-\", \"+\")"), Value::str("a+b+c"));
+    let r = eval("return strJoin(strSplit(\"a,b,c\", \",\"), \"-\")");
     assert_eq!(r, Value::str("a-b-c"));
 }
 
 #[test]
 fn test_str_substring_repeat_reverse() {
-    assert_eq!(eval("return substring(\"hello\", 1, 3)"), Value::str("el"));
-    assert_eq!(eval("return substring(\"hello\", 2)"), Value::str("llo"));
-    assert_eq!(eval("return substring(\"hello\", -2)"), Value::str("lo"));
-    assert_eq!(eval("return repeat(\"ab\", 3)"), Value::str("ababab"));
+    assert_eq!(eval("return strSub(\"hello\", 1, 3)"), Value::str("el"));
+    assert_eq!(eval("return strSub(\"hello\", 2)"), Value::str("llo"));
+    assert_eq!(eval("return strSub(\"hello\", -2)"), Value::str("lo"));
+    assert_eq!(eval("return strRepeat(\"ab\", 3)"), Value::str("ababab"));
     assert_eq!(eval("return reverse(\"abc\")"), Value::str("cba"));
 }
 
 #[test]
 fn test_str_error_message() {
-    let r = run("return upper(123)").unwrap_err();
+    let r = run("return strToUpper(123)").unwrap_err();
     match r {
         Value::Error(e) => {
-            assert!(e.message.contains("upper"));
+            assert!(e.message.contains("strToUpper"));
             assert!(e.message.contains("string"));
             assert!(e.message.contains("可能原因"));
         }
@@ -1511,9 +1511,9 @@ fn test_type_predicates() {
     assert_eq!(eval("return isInt(3)"), Value::Bool(true));
     assert_eq!(eval("return isFloat(3.0)"), Value::Bool(true));
     assert_eq!(eval("return isBool(true)"), Value::Bool(true));
-    assert_eq!(eval("return isNil(nil)"), Value::Bool(true));
     assert_eq!(eval("return isUndefined(undefined)"), Value::Bool(true));
-    assert_eq!(eval("return isUndefined(nil)"), Value::Bool(true));
+    assert_eq!(eval("return isUndefined(undefined)"), Value::Bool(true));
+    assert_eq!(eval("return isUndefined(undefined)"), Value::Bool(true));
     assert_eq!(eval("return isUndefined(0)"), Value::Bool(false));
     assert_eq!(eval("return isNumber(\"x\")"), Value::Bool(false));
     assert_eq!(eval("return isFunction(println)"), Value::Bool(true));
@@ -1584,7 +1584,7 @@ fn test_fs_read_notfound_error() {
 
 #[test]
 fn test_json_encode() {
-    assert_eq!(eval("return jsonEncode(nil)"), Value::str("null"));
+    assert_eq!(eval("return jsonEncode(undefined)"), Value::str("null"));
     assert_eq!(eval("return jsonEncode(undefined)"), Value::str("null"));
     assert_eq!(eval("return jsonEncode(true)"), Value::str("true"));
     assert_eq!(eval("return jsonEncode(42)"), Value::str("42"));
@@ -1805,7 +1805,7 @@ fn test_import_retry_after_error() {
     let bad = dir.join("sflang_retry_mod.sf");
     // 第一版：含运行时错误（除零）
     std::fs::write(&bad, "var retryVal = 10 / 0").unwrap();
-    let main_src = "var __e = nil\ntry { import \"sflang_retry_mod.sf\" } catch(e) { __e = e }\nassert(retryVal == 10)";
+    let main_src = "var __e = undefined\ntry { import \"sflang_retry_mod.sf\" } catch(e) { __e = e }\nassert(retryVal == 10)";
     let main_path = dir.join("sflang_retry_main.sf");
     std::fs::write(&main_path, main_src).unwrap();
 

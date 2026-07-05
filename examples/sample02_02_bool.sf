@@ -10,11 +10,11 @@ pln("b1:", b1, "b2:", b2)
 pln("typeName(true):", typeName(true))
 
 // ---- 布尔运算 ----
-pln("true and false:", true and false)       // false
-pln("true or false:", true or false)         // true
-pln("not true:", not true)                   // false
+pln("true && false:", true && false)       // false
+pln("true || false:", true || false)         // true
+pln("!true:", !true)                   // false
 pln("!false:", !false)                       // true
-// 符号别名（与 and/or/not 等价）
+// 符号别名（与 and/or/!等价）
 pln("true && false:", true && false)
 pln("true || false:", true || false)
 
@@ -23,22 +23,22 @@ pln("true || false:", true || false)
 //   undefined / false / 0 / 0.0 / "" / [] / {} / byte(0)
 
 pln("--- falsy 值 ---")
-pln("truthy(undefined):", !!undefined)       // false
-pln("truthy(false):", !!false)               // false
-pln("truthy(0):", !!0)                       // false
-pln("truthy(0.0):", !!0.0)                   // false
+pln("truthy(undefined):", !undefined)       // false
+pln("truthy(false):", !false)               // false
+pln("truthy(0):", !0)                       // false
+pln("truthy(0.0):", !0.0)                   // false
 var emptyStr = ""
-pln("truthy(\"\"):", !!emptyStr)             // false（空串）
-pln("truthy([]):", !![])                      // false（空数组）
+pln("truthy(\"\"):", !emptyStr)             // false（空串）
+pln("truthy([]):", ![])                      // false（空数组）
 var emptyObj = {}
-pln("truthy({}):", !!emptyObj)                // false（空对象）
+pln("truthy({}):", !emptyObj)                // false（空对象）
 
 pln("--- truthy 值 ---")
-pln("truthy(1):", !!1)                       // true
-pln("truthy(-1):", !!(-1))                   // true（负数非零为真）
-pln("truthy(0.001):", !!0.001)              // true
-pln("truthy(\"a\"):", !!("a"))               // true（非空串）
-pln("truthy([0]):", !![0])                   // true（非空数组）
+pln("truthy(1):", !1)                       // true
+pln("truthy(-1):", !(-1))                   // true（负数非零为真）
+pln("truthy(0.001):", !0.001)              // true
+pln("truthy(\"a\"):", !("a"))               // true（非空串）
+pln("truthy([0]):", ![0])                   // true（非空数组）
 
 // ---- 比较产生布尔值 ----
 pln("5 > 3:", 5 > 3)
@@ -50,8 +50,8 @@ pln("1 == 1.0:", 1 == 1.0)                   // 跨数值类型
 // Sflang 不像 C 那样隐式 int↔bool 转换
 // true == 1 为 false（类型不同），但参与算术时 true 当 1
 pln("true == 1:", true == 1)                  // false（类型不同）
-pln("true and 1:", true and 1)               // true（1 truthy）
-pln("false or 0:", false or 0)               // false（0 falsy）
+pln("true && 1:", true && 1)               // true（1 truthy）
+pln("false || 0:", false || 0)               // false（0 falsy）
 
 // ---- 三元表达式 ----
 var score = 85

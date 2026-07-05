@@ -23,38 +23,26 @@ use crate::vm::VM;
 pub fn register(vm: &mut VM) {
     // 字符串专有函数（加 str 前缀，对标 Charlang）
     vm.register_builtin("strToUpper", bi_upper);
-    vm.register_builtin("upper", bi_upper);              // 旧名别名
     vm.register_builtin("strToLower", bi_lower);
-    vm.register_builtin("lower", bi_lower);              // 旧名别名
-    vm.register_builtin("strTrim", bi_trim);             // 去两侧空白
-    vm.register_builtin("trim", bi_trim);                // 旧名别名
-    vm.register_builtin("strTrimPrefix", bi_trim_start); // 去头部子串（Go TrimPrefix 语义）
-    vm.register_builtin("strTrimSuffix", bi_trim_end);   // 去尾部子串（Go TrimSuffix 语义）
+    vm.register_builtin("strTrim", bi_trim);             // 去两侧空白（跨类型：undefined→空串）
+    vm.register_builtin("trim", bi_trim);                // trim 是跨类型函数，保留无前缀
+    vm.register_builtin("strTrimPrefix", bi_trim_start); // 去头部子串
+    vm.register_builtin("strTrimSuffix", bi_trim_end);   // 去尾部子串
     vm.register_builtin("strStartsWith", bi_starts_with);
-    vm.register_builtin("startsWith", bi_starts_with);   // 旧名别名
     vm.register_builtin("strEndsWith", bi_ends_with);
-    vm.register_builtin("endsWith", bi_ends_with);       // 旧名别名
     vm.register_builtin("strFind", bi_find);
-    vm.register_builtin("find", bi_find);                // 旧名别名
     vm.register_builtin("strReplace", bi_str_replace);   // 支持多对替换
-    vm.register_builtin("replace", bi_str_replace);      // 旧名别名
     vm.register_builtin("strSplit", bi_split);
-    vm.register_builtin("split", bi_split);              // 旧名别名
     vm.register_builtin("strJoin", bi_join);
-    vm.register_builtin("join", bi_join);               // 旧名别名
     vm.register_builtin("strSub", bi_substring);
-    vm.register_builtin("substring", bi_substring);     // 旧名别名
-    vm.register_builtin("strSubstring", bi_substring);  // 旧名别名
     vm.register_builtin("strSubBytes", bi_str_sub_bytes);
     vm.register_builtin("strRepeat", bi_repeat);
-    vm.register_builtin("repeat", bi_repeat);           // 旧名别名
-    // 按字符集裁剪（对标 Charlang strTrimLeft/Right）
+    // 按字符集裁剪
     vm.register_builtin("strTrimLeft", bi_str_trim_left);
     vm.register_builtin("strTrimRight", bi_str_trim_right);
     // 其他字符串函数
     vm.register_builtin("strCount", bi_str_count);
     vm.register_builtin("strLimit", bi_limit_str);
-    vm.register_builtin("limitStr", bi_limit_str);  // 旧名别名
     vm.register_builtin("strPad", bi_str_pad);
     vm.register_builtin("strSplitN", bi_str_split_n);
     vm.register_builtin("strReplaceN", bi_str_replace_n);
@@ -77,12 +65,12 @@ fn s_owned(t: String) -> Value {
 
 /// bi_upper 转大写。
 fn bi_upper(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(s_owned(bh::as_str(args, 0, "upper")?.to_uppercase()))
+    Ok(s_owned(bh::as_str(args, 0, "strToUpper")?.to_uppercase()))
 }
 
 /// bi_lower 转小写。
 fn bi_lower(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(s_owned(bh::as_str(args, 0, "lower")?.to_lowercase()))
+    Ok(s_owned(bh::as_str(args, 0, "strToLower")?.to_lowercase()))
 }
 
 /// bi_trim 去除两端空白，同时将 undefined 转为空字符串（跨类型，对标 Charlang trim）。

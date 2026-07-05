@@ -63,8 +63,8 @@ pub enum TokenKind {
     LE,            // <=
     GT,            // >
     GE,            // >=
-    AndAnd,        // &&
-    OrOr,          // ||
+    AndAnd,        // &&（逻辑与）
+    OrOr,          // ||（逻辑或）
     Amp,           // &（按位与）
     AmpAssign,     // &=
     Pipe,          // |（按位或）
@@ -121,9 +121,6 @@ impl TokenKind {
                 | TokenKind::True
                 | TokenKind::False
                 | TokenKind::Undefined
-                | TokenKind::And
-                | TokenKind::Or
-                | TokenKind::Not
         )
     }
 }
@@ -171,11 +168,7 @@ pub fn lookup_keyword(s: &str) -> Option<TokenKind> {
         "import" => Some(TokenKind::Import),
         "true" => Some(TokenKind::True),
         "false" => Some(TokenKind::False),
-        "nil" => Some(TokenKind::Undefined),
         "undefined" => Some(TokenKind::Undefined),
-        "and" => Some(TokenKind::And),
-        "or" => Some(TokenKind::Or),
-        "not" => Some(TokenKind::Not),
         _ => None,
     }
 }

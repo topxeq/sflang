@@ -65,8 +65,6 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("isFloat", bi_is_float);
     vm.register_builtin("isBool", bi_is_bool);
     vm.register_builtin("isUndefined", bi_is_undefined);
-    // 兼容别名：isNil 仍指向同一实现（nil 是 undefined 的旧称，二者等价）
-    vm.register_builtin("isNil", bi_is_undefined);
     vm.register_builtin("isFunction", bi_is_function);
     // ---- undefined 配套内置函数（对标 Charlang 的 nilToEmpty 等）----
     vm.register_builtin("undefToEmpty", bi_undef_to_empty);

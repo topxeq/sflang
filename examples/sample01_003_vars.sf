@@ -69,8 +69,8 @@ pln("notDefined == 0:", notDefined == 0)
 pln("notDefined == \"\":", notDefined == "")
 
 // undefined 参与逻辑运算按 falsy 处理（不报错）
-pln("notDefined or 99:", notDefined or 99)       // undefined falsy -> 取 99
-pln("notDefined and 99:", notDefined and 99)      // undefined falsy -> false
+pln("notDefined || 99:", notDefined || 99)       // undefined falsy -> 取 99
+pln("notDefined && 99:", notDefined && 99)      // undefined falsy -> false
 
 // 用 ?? 提供默认值（最常见的用法）
 var val = notDefined ?? "默认值"

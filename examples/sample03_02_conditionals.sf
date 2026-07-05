@@ -75,15 +75,15 @@ pln("成绩", score, "等级:", grade)
 // ==================
 var username = "admin"
 var password = "123456"
-if username == "admin" and password == "123456" {
+if username == "admin" && password == "123456" {
     pln("登录成功")
 } else {
     pln("登录失败")
 }
 
-// not 取反
+// !取反
 var isAdmin = false
-if not isAdmin {
+if !isAdmin {
     pln("非管理员")
 }
 
@@ -98,7 +98,7 @@ if username == "admin" && password == "123456" {
 // 多条件判断（用 || 连接）
 // ==================
 var day = "Saturday"
-if day == "Saturday" or day == "Sunday" {
+if day == "Saturday" || day == "Sunday" {
     pln("周末")
 } else {
     pln("工作日")

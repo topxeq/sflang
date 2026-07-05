@@ -389,8 +389,7 @@ impl Parser {
 
     fn parse_or(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_and()?;
-        // 同时接受关键字 or 与符号 ||（二者等价）
-        while self.check(TokenKind::Or) || self.check(TokenKind::OrOr) {
+        while self.check(TokenKind::OrOr) {
             let tok = self.advance();
             let right = self.parse_and()?;
             left = Expr::BinaryExpr { tok, op: BinaryOp::Or, left: Box::new(left), right: Box::new(right) };
@@ -400,8 +399,7 @@ impl Parser {
 
     fn parse_and(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_bitor()?;
-        // 同时接受关键字 and 与符号 &&（二者等价）
-        while self.check(TokenKind::And) || self.check(TokenKind::AndAnd) {
+        while self.check(TokenKind::AndAnd) {
             let tok = self.advance();
             let right = self.parse_bitor()?;
             left = Expr::BinaryExpr { tok, op: BinaryOp::And, left: Box::new(left), right: Box::new(right) };

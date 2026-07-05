@@ -2,7 +2,6 @@
 // ================================
 // Sflang 用 undefined 表示"没有值"——未定义的变量、缺失的键、
 // 无返回值的函数等场景。对标 Charlang 的 undefined。
-// （nil 是 undefined 的兼容别名，两者完全等价）
 
 // ---- 未赋值的变量 ----
 var v1                  // 声明后未赋值 → undefined
@@ -35,16 +34,16 @@ pln("isUndefined(\"\"):", isUndefined(""))      // false（空串不是 undefine
 // 比较：仅与自身相等
 pln("undefined == undefined:", undefined == undefined)   // true
 pln("undefined == 0:", undefined == 0)                   // false
-pln("undefined == nil:", undefined == nil)               // true（别名）
+pln("undefined == undefined:", undefined == undefined)   // true
 
 // 逻辑运算：按 falsy 处理（不报错）
 // Sflang 逻辑运算符有两种写法：and/&&、or/||、not/!，效果完全等价
-pln("undefined or 99:", undefined or 99)                 // true（undefined falsy → or 返回 true）
+pln("undefined || 99:", undefined || 99)                 // true（undefined falsy → || 返回 true）
 pln("undefined || 99:", undefined || 99)                 // true（同上，|| 等价 or）
-pln("undefined and 99:", undefined and 99)               // false
+pln("undefined && 99:", undefined && 99)               // false
 pln("undefined && 99:", undefined && 99)                 // false（同上，&& 等价 and）
 pln("!undefined:", !undefined)                           // true
-pln("not undefined:", not undefined)                     // true（同上，not 等价 !）
+pln("!undefined:", !undefined)                     // true（同上，!等价 !）
 
 // 算术运算：报错（类型不兼容）
 // pln(undefined + 1)  // 这会报错

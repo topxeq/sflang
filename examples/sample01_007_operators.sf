@@ -52,11 +52,11 @@ pln("\"\" ?? 99 ->", "" ?? 99)
 pln("false ?? 99 ->", false ?? 99)
 
 // ==================
-// 逻辑 or || and && not !
+// 逻辑 || && !
 // ==================
-pln("true and false ->", true and false)
-pln("true or false ->", true or false)
-pln("not true ->", not true)
+pln("true && false ->", true && false)
+pln("true || false ->", true || false)
+pln("!true ->", !true)
 pln("true && false ->", true && false)
 pln("true || false ->", true || false)
 pln("!true ->", !true)
@@ -64,8 +64,8 @@ pln("!true ->", !true)
 pln("false && (1/0==0) ->", false && (1/0==0))
 pln("true || (1/0==0) ->", true || (1/0==0))
 
-pln("true or false and false ->", true or false and false)
-pln("false or true and false ->", false or true and false)
+pln("true || false && false ->", true || false && false)
+pln("false || true && false ->", false || true && false)
 
 // ==================
 // 位运算 | ^ & ~ << >>
@@ -117,10 +117,10 @@ pln("6 / 3 ->", 6 / 3)
 pln("6.0 / 3.0 ->", 6.0 / 3.0)
 
 // ==================
-// 一元 - not ! ~ ++ --
+// 一元 - ! ~ ++ --
 // ==================
 pln("-5 ->", -5)
-pln("not 0 ->", not 0)
+pln("!0 ->", !0)
 pln("!0 ->", !0)
 pln("~0 ->", ~0)
 
@@ -153,9 +153,9 @@ pln("1 + 2 * 3 ->", 1 + 2 * 3)
 pln("(1 + 2) * 3 ->", (1 + 2) * 3)
 pln("2 + 3 * 4 - 6 / 2 ->", 2 + 3 * 4 - 6 / 2)
 pln("10 % 3 + 2 * 4 ->", 10 % 3 + 2 * 4)
-pln("5 > 3 and 2 < 4 ->", 5 > 3 and 2 < 4)
+pln("5 > 3 && 2 < 4 ->", 5 > 3 && 2 < 4)
 pln("1 + 2 > 2 ->", 1 + 2 > 2)
-pln("!false and true ->", !false and true)
+pln("!false && true ->", !false && true)
 
 // ==================
 // 边界值

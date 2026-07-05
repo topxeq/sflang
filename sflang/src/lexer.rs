@@ -525,7 +525,6 @@ impl Lexer {
                     self.advance();
                     TokenKind::Neq
                 } else {
-                    // 单 ! 作为 not 的符号别名（等价 TokenKind::Not）
                     self.advance();
                     TokenKind::Not
                 }
