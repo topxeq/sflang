@@ -48,23 +48,28 @@ pln("charFromCode(65):", charFromCode(65))          // "A"
 pln("charFromCode(20013):", charFromCode(20013))    // "中"
 pln("codeOf(\"A\"):", codeOf("A"))                  // 65
 
-// ---- 字符串函数 ----
-pln("upper:", upper("hello world"))
-pln("lower:", lower("Hello WORLD"))
-pln("trim:", trim("  hi  "))
-pln("replace:", replace("a-b-c", "-", "+"))
-pln("find:", find("hello", "ll"))                   // 2（字符索引）
-pln("startsWith:", startsWith("hello", "he"))
-pln("endsWith:", endsWith("hello", "lo"))
-pln("contains:", contains("hello", "ell"))
-pln("substring:", substring("hello", 1, 3))         // "el"
-pln("repeat:", repeat("ab", 3))                     // "ababab"
-pln("reverse:", reverse("abc"))                     // "cba"
+// ---- 字符串函数（str 前缀，对标 Charlang）----
+// 字符串专有函数加 str 前缀；跨类型函数（contains/reverse）不加前缀
+pln("strUpper:", strUpper("hello world"))
+pln("strLower:", strLower("Hello WORLD"))
+pln("strTrim:", strTrim("  hi  "))
+pln("strReplace:", strReplace("a-b-c", "-", "+"))
+pln("strFind:", strFind("hello", "ll"))                   // 2（字符索引）
+pln("strStartsWith:", strStartsWith("hello", "he"))
+pln("strEndsWith:", strEndsWith("hello", "lo"))
+pln("contains:", contains("hello", "ell"))               // 跨类型（数组+字符串）
+pln("strSubstring:", strSubstring("hello", 1, 3))        // "el"
+pln("strRepeat:", strRepeat("ab", 3))                    // "ababab"
+pln("reverse:", reverse("abc"))                          // 跨类型（数组+字符串）
+
+// 旧名仍可用（别名，向后兼容）
+pln("upper (旧名):", upper("hi"))
+pln("find (旧名):", find("hello", "ll"))
 
 // ---- 分割与拼接 ----
-var parts = split("a,b,c,d", ",")
-pln("split:", parts)                                // ["a","b","c","d"]
-pln("join:", join(parts, "-"))                      // "a-b-c-d"
+var parts = strSplit("a,b,c,d", ",")
+pln("strSplit:", parts)                                  // ["a","b","c","d"]
+pln("strJoin:", strJoin(parts, "-"))                     // "a-b-c-d"
 
 // ---- 字节级访问（UTF-8 字节，非字符）----
 pln("bytesAt(\"AB\", 0):", bytesAt("AB", 0))        // byte(65)

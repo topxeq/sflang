@@ -21,24 +21,39 @@ use crate::vm::VM;
 /// 注：contains / reverse 与数组模块重名，由数组模块注册为多态版本
 /// （同时支持 string 与 array），此处不重复注册。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("upper", bi_upper);
-    vm.register_builtin("lower", bi_lower);
-    vm.register_builtin("trim", bi_trim);
-    vm.register_builtin("trimStart", bi_trim_start);
-    vm.register_builtin("trimEnd", bi_trim_end);
-    vm.register_builtin("startsWith", bi_starts_with);
-    vm.register_builtin("endsWith", bi_ends_with);
-    vm.register_builtin("find", bi_find);
-    vm.register_builtin("replace", bi_replace);
-    vm.register_builtin("split", bi_split);
-    vm.register_builtin("join", bi_join);
-    vm.register_builtin("substring", bi_substring);
-    vm.register_builtin("repeat", bi_repeat);
-    // string 字节级访问（与按字符的 s[i]/s[i:j] 互补，用于 UTF-8 手动处理/协议解析）
+    // 字符串专有函数（加 str 前缀，对标 Charlang）
+    // 旧名保留为别名（向后兼容）
+    vm.register_builtin("strUpper", bi_upper);
+    vm.register_builtin("upper", bi_upper);              // 别名
+    vm.register_builtin("strLower", bi_lower);
+    vm.register_builtin("lower", bi_lower);              // 别名
+    vm.register_builtin("strTrim", bi_trim);
+    vm.register_builtin("trim", bi_trim);                // 别名（trim 也用于 nilToEmpty 语义）
+    vm.register_builtin("strTrimStart", bi_trim_start);
+    vm.register_builtin("trimStart", bi_trim_start);     // 别名
+    vm.register_builtin("strTrimEnd", bi_trim_end);
+    vm.register_builtin("trimEnd", bi_trim_end);         // 别名
+    vm.register_builtin("strStartsWith", bi_starts_with);
+    vm.register_builtin("startsWith", bi_starts_with);   // 别名
+    vm.register_builtin("strEndsWith", bi_ends_with);
+    vm.register_builtin("endsWith", bi_ends_with);       // 别名
+    vm.register_builtin("strFind", bi_find);
+    vm.register_builtin("find", bi_find);                // 别名
+    vm.register_builtin("strReplace", bi_replace);
+    vm.register_builtin("replace", bi_replace);          // 别名
+    vm.register_builtin("strSplit", bi_split);
+    vm.register_builtin("split", bi_split);              // 别名
+    vm.register_builtin("strJoin", bi_join);
+    vm.register_builtin("join", bi_join);               // 别名
+    vm.register_builtin("strSubstring", bi_substring);
+    vm.register_builtin("substring", bi_substring);     // 别名
+    vm.register_builtin("strRepeat", bi_repeat);
+    vm.register_builtin("repeat", bi_repeat);           // 别名
+    // string 字节级访问
     vm.register_builtin("bytesSlice", bi_bytes_slice);
     vm.register_builtin("bytesAt", bi_bytes_at);
     vm.register_builtin("lenBytes", bi_len_bytes);
-    // 码点 ↔ 字符转换（与 s[i] 返回码点 int 配对）
+    // 码点 ↔ 字符转换
     vm.register_builtin("charFromCode", bi_char_from_code);
     vm.register_builtin("codeOf", bi_code_of);
     // contains / reverse 由 builtins_arr 多态实现（同时支持 string 与 array）
