@@ -53,7 +53,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("strTrimRight", bi_str_trim_right);
     // 其他字符串函数
     vm.register_builtin("strCount", bi_str_count);
-    vm.register_builtin("limitStr", bi_limit_str);
+    vm.register_builtin("strLimit", bi_limit_str);
+    vm.register_builtin("limitStr", bi_limit_str);  // 旧名别名
     vm.register_builtin("strPad", bi_str_pad);
     vm.register_builtin("strSplitN", bi_str_split_n);
     vm.register_builtin("strReplaceN", bi_str_replace_n);
