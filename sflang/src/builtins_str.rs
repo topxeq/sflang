@@ -83,9 +83,16 @@ fn bi_lower(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(s_owned(bh::as_str(args, 0, "lower")?.to_lowercase()))
 }
 
-/// bi_trim 去除两端空白。
+/// bi_trim 去除两端空白，同时将 undefined 转为空字符串（跨类型，对标 Charlang trim）。
+///
+/// 这是常用的判空模式：trim(map["missing"]) → "" 而非报错。
 fn bi_trim(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(s_owned(bh::as_str(args, 0, "trim")?.trim().to_string()))
+    let s = match args.get(0) {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(Value::Undefined) | None => String::new(),
+        Some(v) => v.to_str(),
+    };
+    Ok(s_owned(s.trim().to_string()))
 }
 
 /// bi_trim_start 去除头部子串（Go TrimPrefix 语义，非去空白）。
