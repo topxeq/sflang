@@ -22,36 +22,35 @@ use crate::vm::VM;
 /// （同时支持 string 与 array），此处不重复注册。
 pub fn register(vm: &mut VM) {
     // 字符串专有函数（加 str 前缀，对标 Charlang）
-    // 旧名保留为别名（向后兼容）
-    vm.register_builtin("strUpper", bi_upper);
-    vm.register_builtin("upper", bi_upper);              // 别名
-    vm.register_builtin("strLower", bi_lower);
-    vm.register_builtin("lower", bi_lower);              // 别名
-    vm.register_builtin("strTrim", bi_trim);
-    vm.register_builtin("trim", bi_trim);                // 别名（trim 也用于 nilToEmpty 语义）
-    vm.register_builtin("strTrimStart", bi_trim_start);
-    vm.register_builtin("trimStart", bi_trim_start);     // 别名
-    vm.register_builtin("strTrimEnd", bi_trim_end);
-    vm.register_builtin("trimEnd", bi_trim_end);         // 别名
+    vm.register_builtin("strToUpper", bi_upper);
+    vm.register_builtin("upper", bi_upper);              // 旧名别名
+    vm.register_builtin("strToLower", bi_lower);
+    vm.register_builtin("lower", bi_lower);              // 旧名别名
+    vm.register_builtin("strTrim", bi_trim);             // 去两侧空白
+    vm.register_builtin("trim", bi_trim);                // 旧名别名
+    vm.register_builtin("strTrimPrefix", bi_trim_start); // 去头部子串（Go TrimPrefix 语义）
+    vm.register_builtin("strTrimSuffix", bi_trim_end);   // 去尾部子串（Go TrimSuffix 语义）
     vm.register_builtin("strStartsWith", bi_starts_with);
-    vm.register_builtin("startsWith", bi_starts_with);   // 别名
+    vm.register_builtin("startsWith", bi_starts_with);   // 旧名别名
     vm.register_builtin("strEndsWith", bi_ends_with);
-    vm.register_builtin("endsWith", bi_ends_with);       // 别名
+    vm.register_builtin("endsWith", bi_ends_with);       // 旧名别名
     vm.register_builtin("strFind", bi_find);
-    vm.register_builtin("find", bi_find);                // 别名
-    vm.register_builtin("strReplace", bi_replace);
-    vm.register_builtin("replace", bi_replace);          // 别名
+    vm.register_builtin("find", bi_find);                // 旧名别名
+    vm.register_builtin("strReplace", bi_str_replace);   // 支持多对替换
+    vm.register_builtin("replace", bi_str_replace);      // 旧名别名
     vm.register_builtin("strSplit", bi_split);
-    vm.register_builtin("split", bi_split);              // 别名
+    vm.register_builtin("split", bi_split);              // 旧名别名
     vm.register_builtin("strJoin", bi_join);
-    vm.register_builtin("join", bi_join);               // 别名
-    vm.register_builtin("strSubstring", bi_substring);
-    vm.register_builtin("substring", bi_substring);     // 别名
+    vm.register_builtin("join", bi_join);               // 旧名别名
+    vm.register_builtin("strSub", bi_substring);
+    vm.register_builtin("substring", bi_substring);     // 旧名别名
+    vm.register_builtin("strSubstring", bi_substring);  // 旧名别名
     vm.register_builtin("strRepeat", bi_repeat);
-    vm.register_builtin("repeat", bi_repeat);           // 别名
-    // 新增字符串函数（对标 Charlang）
+    vm.register_builtin("repeat", bi_repeat);           // 旧名别名
+    // 按字符集裁剪（对标 Charlang strTrimLeft/Right）
     vm.register_builtin("strTrimLeft", bi_str_trim_left);
     vm.register_builtin("strTrimRight", bi_str_trim_right);
+    // 其他字符串函数
     vm.register_builtin("strCount", bi_str_count);
     vm.register_builtin("strPad", bi_str_pad);
     vm.register_builtin("strSplitN", bi_str_split_n);
@@ -88,14 +87,31 @@ fn bi_trim(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(s_owned(bh::as_str(args, 0, "trim")?.trim().to_string()))
 }
 
-/// bi_trim_start 去除前端空白。
+/// bi_trim_start 去除头部子串（Go TrimPrefix 语义，非去空白）。
+///
+/// strTrimPrefix("hello.txt", "hello.") → "txt"
+/// strTrimPrefix("abc", "xyz") → "abc"（无匹配则原样返回）
 fn bi_trim_start(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(s_owned(bh::as_str(args, 0, "trimStart")?.trim_start().to_string()))
+    let s = bh::as_str(args, 0, "strTrimPrefix")?;
+    let prefix = bh::as_str(args, 1, "strTrimPrefix")?;
+    if let Some(rest) = s.strip_prefix(prefix) {
+        Ok(s_owned(rest.to_string()))
+    } else {
+        Ok(s_owned(s.to_string()))
+    }
 }
 
-/// bi_trim_end 去除末端空白。
+/// bi_trim_end 去除尾部子串（Go TrimSuffix 语义，非去空白）。
+///
+/// strTrimSuffix("hello.txt", ".txt") → "hello"
 fn bi_trim_end(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(s_owned(bh::as_str(args, 0, "trimEnd")?.trim_end().to_string()))
+    let s = bh::as_str(args, 0, "strTrimSuffix")?;
+    let suffix = bh::as_str(args, 1, "strTrimSuffix")?;
+    if let Some(rest) = s.strip_suffix(suffix) {
+        Ok(s_owned(rest.to_string()))
+    } else {
+        Ok(s_owned(s.to_string()))
+    }
 }
 
 /// bi_contains 判断字符串是否包含子串（pub(crate) 供数组模块多态分发）。
@@ -135,16 +151,27 @@ fn bi_find(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
 }
 
-/// bi_replace 替换所有匹配子串。
-fn bi_replace(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let src = bh::as_str(args, 0, "replace")?;
-    let from = bh::as_str(args, 1, "replace")?;
-    let to = bh::as_str(args, 2, "replace")?;
-    if from.is_empty() {
-        // 空模式替换会 panic 或无意义，直接返回原串。
-        return Ok(s_owned(src.to_string()));
+/// bi_str_replace 替换子串，支持多对替换。
+///
+/// 用法：
+///   strReplace(s, old, new)                      — 替换所有 old → new
+///   strReplace(s, old1, new1, old2, new2, ...)   — 多对替换（依次执行）
+fn bi_str_replace(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 3 {
+        return Err(crate::value::error_value("strReplace() 需要至少 3 个参数 (s, old, new)"));
     }
-    Ok(s_owned(src.replace(from, to)))
+    let mut result = bh::as_str(args, 0, "strReplace")?.to_string();
+    // 按对处理 (old, new)
+    let mut i = 1;
+    while i + 1 < args.len() {
+        let old = bh::as_str(args, i, "strReplace")?;
+        let new = bh::as_str(args, i + 1, "strReplace")?;
+        if !old.is_empty() {
+            result = result.replace(old, new);
+        }
+        i += 2;
+    }
+    Ok(s_owned(result))
 }
 
 /// bi_split 按分隔符切分为字符串数组。
@@ -350,8 +377,15 @@ fn bi_str_count(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_str_pad 字符串填充到指定长度。
 ///
-/// 用法：strPad(s, len) 或 strPad(s, len, fill) 或 strPad(s, len, fill, right)
-/// 默认 fill="0"，right=false（左填充）。
+/// 用法：
+///   strPad(s, len)                — 左填充 "0" 到 len 个字符
+///   strPad(s, len, fill)          — 左填充指定字符
+///   strPad(s, len, fill, true)    — 右填充（第 4 参数 true=右填充，false/省略=左填充）
+///
+/// 示例：
+///   strPad("42", 5)           → "00042"（左补零）
+///   strPad("42", 5, " ")      → "   42"（左补空格）
+///   strPad("42", 5, " ", true) → "42   "（右补空格）
 fn bi_str_pad(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let s = bh::as_str(args, 0, "strPad")?;
     let target_len = bh::as_int(args, 1, "strPad")? as usize;

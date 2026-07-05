@@ -1351,8 +1351,8 @@ fn test_str_case_trim() {
     assert_eq!(eval("return upper(\"abc\")"), Value::str("ABC"));
     assert_eq!(eval("return lower(\"AbC\")"), Value::str("abc"));
     assert_eq!(eval("return trim(\"  hi  \")"), Value::str("hi"));
-    assert_eq!(eval("return trimStart(\"  hi\")"), Value::str("hi"));
-    assert_eq!(eval("return trimEnd(\"hi  \")"), Value::str("hi"));
+    assert_eq!(eval("return strTrimPrefix(\"hello.txt\", \"hello.\")"), Value::str("txt"));
+    assert_eq!(eval("return strTrimSuffix(\"hello.txt\", \".txt\")"), Value::str("hello"));
 }
 
 #[test]

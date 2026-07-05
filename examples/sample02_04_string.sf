@@ -60,35 +60,45 @@ pln("codeOf(\"A\"):", codeOf("A"))                  // 65
 // ==================
 // 字符串函数（str 前缀，对标 Charlang）
 // ==================
-pln("\n--- 基础函数 ---")
-pln("strUpper:", strUpper("hello world"))
-pln("strLower:", strLower("Hello WORLD"))
-pln("strReplace:", strReplace("a-b-c", "-", "+"))
+pln("\n--- 大小写 ---")
+pln("strToUpper:", strToUpper("hello world"))
+pln("strToLower:", strToLower("Hello WORLD"))
+
+pln("\n--- 查找与判断 ---")
 pln("strFind:", strFind("hello", "ll"))                   // 2（字符索引）
 pln("strStartsWith:", strStartsWith("hello", "he"))
 pln("strEndsWith:", strEndsWith("hello", "lo"))
-pln("strSubstring:", strSubstring("hello", 1, 3))        // "el"
+pln("contains:", contains("hello", "ell"))               // 跨类型（数组+字符串）
+
+pln("\n--- 截取与重复 ---")
+pln("strSub:", strSub("hello", 1, 3))                    // "el"
+pln("strSub（无 end）:", strSub("hello", 2))              // "llo"
 pln("strRepeat:", strRepeat("ab", 3))                    // "ababab"
 
+pln("\n--- 替换（支持多对）---")
+pln("strReplace 单对:", strReplace("a-b-c", "-", "+"))           // "a+b+c"
+pln("strReplace 多对:", strReplace("a-b-c", "-", "+", "c", "C")) // "a+b+C"（先-→+，再c→C）
+pln("strReplaceN:", strReplaceN("a-b-c-d", "-", "+", 2))        // "a+b+c-d"（只替换 2 次）
+
 pln("\n--- trim 系列 ---")
-pln("strTrim:", strTrim("  hi  "))                       // 去空白 → "hi"
-pln("strTrimStart:", strTrimStart("  hi  "))             // 去左侧空白 → "hi  "
-pln("strTrimEnd:", strTrimEnd("  hi  "))                 // 去右侧空白 → "  hi"
-pln("strTrimLeft:", strTrimLeft("123abc", "0123456789")) // 去字符集 → "abc"
-pln("strTrimRight:", strTrimRight("abc000", "0"))        // 去字符集 → "abc"
+pln("strTrim:", strTrim("  hi  "))                       // 去两侧空白 → "hi"
+pln("strTrimLeft:", strTrimLeft("123abc", "0123456789")) // 去左侧字符集 → "abc"
+pln("strTrimRight:", strTrimRight("abc000", "0"))        // 去右侧字符集 → "abc"
+pln("strTrimPrefix:", strTrimPrefix("hello.txt", "hello.")) // 去头部子串 → "txt"
+pln("strTrimSuffix:", strTrimSuffix("hello.txt", ".txt"))   // 去尾部子串 → "hello"
 
 pln("\n--- 计数与填充 ---")
 pln("strCount:", strCount("a-b-c-d", "-"))               // 3
-pln("strPad 左填充:", strPad("42", 5))                   // "00042"
-pln("strPad 右填充:", strPad("42", 5, " ", true))        // "42   "
-pln("strPad 多字符:", strPad("7", 4, "ab"))              // "aba7"
+// strPad(s, len, fill, right)：第 4 参数 true=右填充，false/省略=左填充
+pln("strPad 左补零:", strPad("42", 5))                   // "00042"（默认左补"0"）
+pln("strPad 左补空格:", strPad("42", 5, " "))            // "   42"
+pln("strPad 右补空格:", strPad("42", 5, " ", true))      // "42   "（true=右填充）
 
 pln("\n--- 分割与拼接 ---")
 var parts = strSplit("a,b,c,d", ",")
 pln("strSplit:", parts)                                  // ["a","b","c","d"]
 pln("strJoin:", strJoin(parts, "-"))                     // "a-b-c-d"
-pln("strSplitN:", strSplitN("a,b,c,d", ",", 2))          // ["a","b,c,d"]
-pln("strReplaceN:", strReplaceN("a-b-c-d", "-", "+", 2)) // "a+b+c-d"
+pln("strSplitN:", strSplitN("a,b,c,d", ",", 2))          // ["a","b,c,d"]（限制 2 段）
 pln("strSplitLines:", strSplitLines("行1\n行2\n行3"))    // ["行1","行2","行3"]
 
 pln("\n--- 引号处理 ---")
@@ -96,13 +106,7 @@ pln("strQuote:", strQuote("hello"))                     // "\"hello\""
 pln("strUnquote:", strUnquote("\"world\""))             // "world"
 
 pln("\n--- 跨类型函数（不加 str 前缀）---")
-pln("contains:", contains("hello", "ell"))              // string + array 通用
 pln("reverse:", reverse("abc"))                         // string + array 通用
-
-// 旧名仍可用（别名，向后兼容）
-pln("\n--- 旧名兼容 ---")
-pln("upper:", upper("hi"))                              // 等价 strUpper
-pln("find:", find("hello", "ll"))                       // 等价 strFind
 
 // ==================
 // 字节级访问（UTF-8 字节，非字符）
