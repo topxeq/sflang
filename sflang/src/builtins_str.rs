@@ -45,6 +45,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("strSub", bi_substring);
     vm.register_builtin("substring", bi_substring);     // 旧名别名
     vm.register_builtin("strSubstring", bi_substring);  // 旧名别名
+    vm.register_builtin("strSubBytes", bi_str_sub_bytes);
     vm.register_builtin("strRepeat", bi_repeat);
     vm.register_builtin("repeat", bi_repeat);           // 旧名别名
     // 按字符集裁剪（对标 Charlang strTrimLeft/Right）
@@ -468,4 +469,31 @@ fn bi_str_unquote(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     } else {
         Ok(s_owned(s.to_string()))
     }
+}
+
+/// bi_str_sub_bytes 按字节截取子串（UTF-8 字节索引）。
+///
+/// 与 strSub（按字符）不同，strSubBytes 按 UTF-8 字节偏移截取。
+/// 可能切断多字节字符（类似 Go 的 s[start:end]），适合协议解析等场景。
+///
+/// 用法：strSubBytes(s, start) 或 strSubBytes(s, start, end)
+fn bi_str_sub_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let src = bh::as_str(args, 0, "strSubBytes")?;
+    let bytes = src.as_bytes();
+    let len = bytes.len() as i64;
+    let mut start = bh::as_int(args, 1, "strSubBytes")?;
+    let mut end = if args.len() > 2 {
+        bh::as_int(args, 2, "strSubBytes")?
+    } else {
+        len
+    };
+    if start < 0 { start += len; }
+    if end < 0 { end += len; }
+    if start < 0 { start = 0; }
+    if end > len { end = len; }
+    if start >= end {
+        return Ok(s_owned(String::new()));
+    }
+    let slice = &bytes[start as usize..end as usize];
+    Ok(s_owned(String::from_utf8_lossy(slice).into_owned()))
 }
