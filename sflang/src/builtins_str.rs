@@ -53,6 +53,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("strTrimRight", bi_str_trim_right);
     // 其他字符串函数
     vm.register_builtin("strCount", bi_str_count);
+    vm.register_builtin("limitStr", bi_limit_str);
     vm.register_builtin("strPad", bi_str_pad);
     vm.register_builtin("strSplitN", bi_str_split_n);
     vm.register_builtin("strReplaceN", bi_str_replace_n);
@@ -371,6 +372,31 @@ fn bi_str_trim_right(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let cutset_chars: std::collections::HashSet<char> = cutset.chars().collect();
     let trimmed: &str = s.trim_end_matches(|c| cutset_chars.contains(&c));
     Ok(s_owned(trimmed.to_string()))
+}
+
+/// bi_limit_str 截断字符串到指定长度，超出部分用后缀替代。
+///
+/// 用法：limitStr(s, maxLen) 或 limitStr(s, maxLen, suffix)
+/// 默认 suffix = "..."（省略号）。
+/// 按字符计算长度（非字节），不切断多字节字符。
+///
+/// 示例：
+///   limitStr("Hello World", 5)        → "He..."（截断到 5 字符，加省略号）
+///   limitStr("Hello World", 5, "...")  → "He..."（同上，显式指定后缀）
+///   limitStr("Hi", 10)                → "Hi"（未超长，原样返回）
+///   limitStr("中文测试", 3)             → "中..."（按字符截断）
+fn bi_limit_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "limitStr")?;
+    let max_len = bh::as_int(args, 1, "limitStr")? as usize;
+    let suffix = if args.len() > 2 { bh::as_str(args, 2, "limitStr")?.to_string() } else { "...".to_string() };
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max_len {
+        return Ok(s_owned(s.to_string()));
+    }
+    let suffix_len = suffix.chars().count();
+    let take = if max_len > suffix_len { max_len - suffix_len } else { 0 };
+    let result: String = chars[..take].iter().collect::<String>() + &suffix;
+    Ok(s_owned(result))
 }
 
 /// bi_str_count 统计子串出现次数。
