@@ -46,6 +46,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("sprintf", bi_sprintf);
     vm.register_builtin("spr", bi_sprintf);
     vm.register_builtin("fpr", bi_printf);
+    vm.register_builtin("adjustFloat", bi_adjust_float);
     // 类型判断谓词
     vm.register_builtin("isArray", bi_is_array);
     vm.register_builtin("isString", bi_is_string);
@@ -894,4 +895,24 @@ fn bi_map(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 fn bi_sprintf(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let s = sprintf(args)?;
     Ok(Value::str_from(s))
+}
+
+/// bi_adjust_float 消除浮点计算精度误差（如 0.1+0.2=0.30000000000000004 → 0.3）。
+///
+/// 用法：adjustFloat(x) 或 adjustFloat(x, precision)
+/// 默认 precision=10（保留 10 位小数，去除末尾精度噪声）。
+/// 算法：将浮点数格式化为 precision 位小数的字符串，再解析回来。
+fn bi_adjust_float(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    let x = bh::as_float(args, 0, "adjustFloat")?;
+    let prec = if args.len() > 1 {
+        bh::as_int(args, 1, "adjustFloat")? as usize
+    } else {
+        10
+    };
+    let formatted = format!("{:.*}", prec, x);
+    let result = formatted.parse::<f64>().map_err(|_| crate::value::error_value(
+        format!("adjustFloat() 解析失败: {}", formatted),
+    ))?;
+    Ok(Value::Float(result))
 }
