@@ -36,9 +36,7 @@ pub enum TokenKind {
     True,
     False,
     Undefined,
-    And,
-    Or,
-    Not,
+    Not,           // !（逻辑非，由 lexer 的 ! 生成）
 
     // 运算符
     Assign,        // =
