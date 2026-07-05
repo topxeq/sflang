@@ -49,6 +49,14 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("substring", bi_substring);     // 别名
     vm.register_builtin("strRepeat", bi_repeat);
     vm.register_builtin("repeat", bi_repeat);           // 别名
+    // 新增字符串函数（对标 Charlang）
+    vm.register_builtin("strCount", bi_str_count);
+    vm.register_builtin("strPad", bi_str_pad);
+    vm.register_builtin("strSplitN", bi_str_split_n);
+    vm.register_builtin("strReplaceN", bi_str_replace_n);
+    vm.register_builtin("strSplitLines", bi_str_split_lines);
+    vm.register_builtin("strQuote", bi_str_quote);
+    vm.register_builtin("strUnquote", bi_str_unquote);
     // string 字节级访问
     vm.register_builtin("bytesSlice", bi_bytes_slice);
     vm.register_builtin("bytesAt", bi_bytes_at);
@@ -302,5 +310,105 @@ fn bi_code_of(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         _ => Err(crate::value::error_value(
             "codeOf() 参数需为恰好 1 个字符的 string (可能原因：传入空串或多字符 string)",
         )),
+    }
+}
+
+// ---- 新增字符串函数（对标 Charlang）----
+
+/// bi_str_count 统计子串出现次数。
+fn bi_str_count(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "strCount")?;
+    let sub = bh::as_str(args, 1, "strCount")?;
+    if sub.is_empty() {
+        return Ok(Value::Int(0));
+    }
+    Ok(Value::Int(s.matches(sub).count() as i64))
+}
+
+/// bi_str_pad 字符串填充到指定长度。
+///
+/// 用法：strPad(s, len) 或 strPad(s, len, fill) 或 strPad(s, len, fill, right)
+/// 默认 fill="0"，right=false（左填充）。
+fn bi_str_pad(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "strPad")?;
+    let target_len = bh::as_int(args, 1, "strPad")? as usize;
+    let fill = if args.len() > 2 { bh::as_str(args, 2, "strPad")?.to_string() } else { "0".to_string() };
+    let right = if args.len() > 3 { args[3].is_truthy() } else { false };
+    let cur_len = s.chars().count();
+    if cur_len >= target_len || fill.is_empty() {
+        return Ok(s_owned(s.to_string()));
+    }
+    let need = target_len - cur_len;
+    let fill_chars: Vec<char> = fill.chars().collect();
+    let mut padding = String::new();
+    for i in 0..need {
+        padding.push(fill_chars[i % fill_chars.len()]);
+    }
+    if right {
+        Ok(s_owned(format!("{}{}", s, padding)))
+    } else {
+        Ok(s_owned(format!("{}{}", padding, s)))
+    }
+}
+
+/// bi_str_split_n 按分隔符分割，限制最多 n 段。
+fn bi_str_split_n(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let src = bh::as_str(args, 0, "strSplitN")?;
+    let sep = bh::as_str(args, 1, "strSplitN")?;
+    let n = bh::as_int(args, 2, "strSplitN")? as usize;
+    if n <= 0 || sep.is_empty() {
+        return Ok(Value::Array(Arc::new(Mutex::new(vec![s_owned(src.to_string())]))));
+    }
+    let parts: Vec<Value> = src.splitn(n, sep).map(|p| s_owned(p.to_string())).collect();
+    Ok(Value::Array(Arc::new(Mutex::new(parts))))
+}
+
+/// bi_str_replace_n 替换前 n 个匹配（n=-1 或省略表示全部）。
+fn bi_str_replace_n(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let src = bh::as_str(args, 0, "strReplaceN")?;
+    let old = bh::as_str(args, 1, "strReplaceN")?;
+    let new = bh::as_str(args, 2, "strReplaceN")?;
+    let count = if args.len() > 3 {
+        bh::as_int(args, 3, "strReplaceN")?
+    } else {
+        -1
+    };
+    if old.is_empty() {
+        return Ok(s_owned(src.to_string()));
+    }
+    if count < 0 {
+        return Ok(s_owned(src.replace(old, new)));
+    }
+    Ok(s_owned(src.replacen(old, new, count as usize)))
+}
+
+/// bi_str_split_lines 按行分割（兼容 \n 和 \r\n）。
+fn bi_str_split_lines(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let src = bh::as_str(args, 0, "strSplitLines")?;
+    let lines: Vec<Value> = src.lines().map(|l| s_owned(l.to_string())).collect();
+    Ok(Value::Array(Arc::new(Mutex::new(lines))))
+}
+
+/// bi_str_quote 给字符串加双引号并转义特殊字符。
+fn bi_str_quote(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "strQuote")?;
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\t', "\\t");
+    Ok(s_owned(format!("\"{}\"", escaped)))
+}
+
+/// bi_str_unquote 去除字符串的双引号并解转义。
+fn bi_str_unquote(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "strUnquote")?;
+    let s = s.trim();
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        let inner = &s[1..s.len()-1];
+        let unescaped = inner
+            .replace("\\n", "\n")
+            .replace("\\t", "\t")
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\");
+        Ok(s_owned(unescaped))
+    } else {
+        Ok(s_owned(s.to_string()))
     }
 }
