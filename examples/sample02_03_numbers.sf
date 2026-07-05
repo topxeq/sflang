@@ -29,9 +29,19 @@ pln("1 + 2.5 =", 1 + 2.5)              // → float 3.5
 pln("typeName(1 + 2.5):", typeName(1 + 2.5))
 pln("1 == 1.0:", 1 == 1.0)             // 跨类型值相等
 
-// float 的精度问题（与 bigFloat 对比）
+// float 的精度问题（三种解决方案）
 pln("0.1 + 0.2:", 0.1 + 0.2)           // 0.30000000000000004（float 不精确）
 pln("0.1 + 0.2 == 0.3:", 0.1 + 0.2 == 0.3)  // false
+
+// 方案一：adjustFloat 快速消除精度噪声（对标 Charlang）
+pln("adjustFloat(0.1+0.2):", adjustFloat(0.1 + 0.2))           // 0.3
+pln("adjustFloat == 0.3:", adjustFloat(0.1 + 0.2) == 0.3)      // true
+pln("adjustFloat(x, 6):", adjustFloat(1.0 / 3.0, 6))           // 0.333333
+pln("adjustFloat(0.65-0.6):", adjustFloat(0.65 - 0.6))         // 0.05
+
+// 方案二：bigFloat 完全精确（见下方 bigFloat 章节）
+// 方案三：round / floor / ceil 取整（适合整数结果场景）
+pln("round(3.7):", round(3.7))         // 4
 
 // ==================
 // byte（0-255，mod 256 环绕）
