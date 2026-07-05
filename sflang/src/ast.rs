@@ -27,6 +27,8 @@ pub enum Expr {
     ArrayLit { tok: Token, elems: Vec<Expr> },
     /// MapLit 对象字面量。
     MapLit { tok: Token, pairs: Vec<(String, Expr)> },
+    /// OrdMapLit 有序映射字面量 map{"k": v}。
+    OrdMapLit { tok: Token, pairs: Vec<(String, Expr)> },
     /// BinaryExpr 二元运算。
     BinaryExpr { tok: Token, op: BinaryOp, left: Box<Expr>, right: Box<Expr> },
     /// UnaryExpr 一元运算。
@@ -68,6 +70,7 @@ impl Expr {
             Expr::Ident { tok, .. } => tok,
             Expr::ArrayLit { tok, .. } => tok,
             Expr::MapLit { tok, .. } => tok,
+            Expr::OrdMapLit { tok, .. } => tok,
             Expr::BinaryExpr { tok, .. } => tok,
             Expr::UnaryExpr { tok, .. } => tok,
             Expr::IndexExpr { tok, .. } => tok,

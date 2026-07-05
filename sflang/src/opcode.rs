@@ -119,6 +119,8 @@ pub enum Opcode {
     MethodCall = 59,
     /// OpSpreadCall 带展开的调用。u8 argc, u8 spread_mask。
     SpreadCall = 64,
+    /// OpBuildOrdMap 构造有序映射。u16 键值对数量。
+    BuildOrdMap = 65,
 
     // ---- 函数调用 ----
     /// OpCall 调用函数。u8 实参数量。
@@ -216,6 +218,7 @@ impl Opcode {
             58 => Some(Opcode::Slice),
             59 => Some(Opcode::MethodCall),
             64 => Some(Opcode::SpreadCall),
+            65 => Some(Opcode::BuildOrdMap),
             60 => Some(Opcode::Call),
             61 => Some(Opcode::Return),
             62 => Some(Opcode::ReturnVoid),

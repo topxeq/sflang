@@ -693,6 +693,15 @@ impl Compiler {
                 }
                 self.code.emit_u16(Opcode::BuildMap, pairs.len() as u16);
             }
+            Expr::OrdMapLit { pairs, tok } => {
+                self.set_line(tok.line);
+                for (k, v) in pairs {
+                    let idx = self.code.add_const(Value::str(k));
+                    self.code.emit_u16(Opcode::Const, idx as u16);
+                    self.compile_expr(v)?;
+                }
+                self.code.emit_u16(Opcode::BuildOrdMap, pairs.len() as u16);
+            }
             // 三元条件表达式 cond ? then : else_（语法糖，编译为跳转）
             //   eval cond          ; [c]
             //   JumpIfFalse L_else ; 弹 c，假则跳 L_else

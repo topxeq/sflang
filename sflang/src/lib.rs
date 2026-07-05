@@ -22,6 +22,7 @@ pub mod bigint;
 pub mod bigfloat;
 pub mod datetime;
 pub mod hash;
+pub mod ord_map;
 pub mod console_writer;
 pub mod token;
 pub mod lexer;

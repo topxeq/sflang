@@ -56,6 +56,11 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("isFile", bi_is_file);
     vm.register_builtin("byte", bi_byte);
     vm.register_builtin("isByte", bi_is_byte);
+    vm.register_builtin("newMap", bi_new_map);
+    vm.register_builtin("isMap", bi_is_map);
+    vm.register_builtin("entries", bi_entries);
+    vm.register_builtin("dataKeys", bi_data_keys);
+    vm.register_builtin("dataValues", bi_data_values);
     vm.register_builtin("bytesXor", bi_bytes_xor);
     vm.register_builtin("bytesXorInPlace", bi_bytes_xor_in_place);
     vm.register_builtin("isBigInt", bi_is_big_int_pred);
@@ -308,6 +313,7 @@ fn bi_len(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         Value::ByteArray(b) => b.lock().unwrap().len() as i64,
         Value::Array(a) => a.lock().unwrap().len() as i64,
         Value::Object(o) => o.lock().unwrap().len() as i64,
+        Value::Map(m) => m.lock().unwrap().len() as i64,
         v => return Err(crate::value::error_value(format!("len() 不支持类型 {} (可能原因：参数类型错误)", v.type_name()))),
     };
     Ok(Value::Int(n))
@@ -320,6 +326,7 @@ fn bi_keys(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
     let keys: Vec<Value> = match &args[0] {
         Value::Object(o) => o.lock().unwrap().keys().into_iter().map(|k| Value::str(&k)).collect(),
+        Value::Map(m) => m.lock().unwrap().keys().into_iter().map(|k| Value::str(&k)).collect(),
         Value::Array(a) => {
             a.lock().unwrap().iter().enumerate().map(|(i, _)| Value::Int(i as i64)).collect()
         }
@@ -526,6 +533,78 @@ fn bi_byte(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// bi_is_byte 判断是否为 byte 类型。
 fn bi_is_byte(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Bool(matches!(args.get(0), Some(Value::Byte(_)))))
+}
+
+/// bi_new_map 创建空有序 Map。
+fn bi_new_map(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
+    Ok(Value::Map(std::sync::Arc::new(std::sync::Mutex::new(crate::ord_map::OrdMap::new()))))
+}
+
+/// bi_is_map 判断是否为有序 Map 类型。
+fn bi_is_map(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    Ok(Value::Bool(matches!(args.get(0), Some(Value::Map(_)))))
+}
+
+/// bi_entries 返回对象的非函数键值对（过滤方法），每对为 [key, value]。
+///
+/// 用法：entries(obj) → [["k1", v1], ["k2", v2], ...]
+/// 也支持 Map（不过滤，Map 本来就是纯数据）。
+fn bi_entries(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "entries")?;
+    let pairs: Vec<(String, Value)> = match &args[0] {
+        Value::Object(o) => {
+            o.lock().unwrap().snapshot().into_iter()
+                .filter(|(_, v)| !matches!(v, Value::Func(_) | Value::Builtin(_)))
+                .collect()
+        }
+        Value::Map(m) => m.lock().unwrap().snapshot(),
+        _ => return Err(crate::value::error_value(format!(
+            "entries() 需要 object 或 map，得到 {}", args[0].type_name(),
+        ))),
+    };
+    let result: Vec<Value> = pairs.into_iter().map(|(k, v)| {
+        Value::Array(std::sync::Arc::new(std::sync::Mutex::new(vec![Value::str(&k), v])))
+    }).collect();
+    Ok(Value::Array(std::sync::Arc::new(std::sync::Mutex::new(result))))
+}
+
+/// bi_data_keys 返回对象的非函数键（过滤方法）。
+fn bi_data_keys(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "dataKeys")?;
+    let keys: Vec<Value> = match &args[0] {
+        Value::Object(o) => {
+            o.lock().unwrap().snapshot().into_iter()
+                .filter(|(_, v)| !matches!(v, Value::Func(_) | Value::Builtin(_)))
+                .map(|(k, _)| Value::str(&k))
+                .collect()
+        }
+        Value::Map(m) => m.lock().unwrap().keys().into_iter().map(|k| Value::str(&k)).collect(),
+        _ => return Err(crate::value::error_value(format!(
+            "dataKeys() 需要 object 或 map，得到 {}", args[0].type_name(),
+        ))),
+    };
+    Ok(Value::Array(std::sync::Arc::new(std::sync::Mutex::new(keys))))
+}
+
+/// bi_data_values 返回对象的非函数值（过滤方法）。
+fn bi_data_values(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "dataValues")?;
+    let vals: Vec<Value> = match &args[0] {
+        Value::Object(o) => {
+            o.lock().unwrap().snapshot().into_iter()
+                .filter(|(_, v)| !matches!(v, Value::Func(_) | Value::Builtin(_)))
+                .map(|(_, v)| v)
+                .collect()
+        }
+        Value::Map(m) => m.lock().unwrap().values(),
+        _ => return Err(crate::value::error_value(format!(
+            "dataValues() 需要 object 或 map，得到 {}", args[0].type_name(),
+        ))),
+    };
+    Ok(Value::Array(std::sync::Arc::new(std::sync::Mutex::new(vals))))
 }
 
 /// bi_bytes_xor 批量 XOR：data 的每个字节与 key 的对应字节异或。

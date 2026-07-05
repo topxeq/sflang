@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 pub use crate::bigint::BigInt;
 pub use crate::bigfloat::BigFloat;
 pub use crate::datetime::DateTime;
+pub use crate::ord_map::OrdMap;
 pub use crate::function::{Builtin, BuiltinFn, Function};
 pub use crate::object_map::Map;
 
@@ -60,8 +61,9 @@ pub enum TypeCode {
     /// File 文件句柄（流式读写、随机访问，纯标准库 std::fs::File）。
     File = 16,
     /// Byte 字节（0-255），用于字节级操作（加密、协议解析等）。
-    /// byte 运算自动环绕（255+1=0），与 int 区分但可互转。
     Byte = 17,
+    /// Map 有序映射（插入顺序保持，纯数据容器，无原型链）。
+    Map = 18,
 }
 
 impl TypeCode {
@@ -86,6 +88,7 @@ impl TypeCode {
             TypeCode::DateTime => "datetime",
             TypeCode::File => "file",
             TypeCode::Byte => "byte",
+            TypeCode::Map => "map",
         }
     }
 }
@@ -154,8 +157,9 @@ pub enum Value {
     /// File 文件句柄（流式读写、随机访问）。Arc<Mutex<File>> 共享。
     File(Arc<Mutex<std::fs::File>>),
     /// Byte 字节值（0-255），用于字节级操作。
-    /// byte 算术自动环绕 mod 256；与 int 可互转但类型不同。
     Byte(u8),
+    /// Map 有序映射（插入顺序，纯数据容器）。
+    Map(Arc<Mutex<OrdMap>>),
 }
 
 impl PartialEq for Value {
@@ -180,6 +184,7 @@ impl PartialEq for Value {
             (Value::DateTime(a), Value::DateTime(b)) => Arc::ptr_eq(a, b),
             (Value::File(a), Value::File(b)) => Arc::ptr_eq(a, b),
             (Value::Byte(a), Value::Byte(b)) => a == b,
+            (Value::Map(a), Value::Map(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -214,6 +219,7 @@ impl Value {
             Value::DateTime(_) => TypeCode::DateTime,
             Value::File(_) => TypeCode::File,
             Value::Byte(_) => TypeCode::Byte,
+            Value::Map(_) => TypeCode::Map,
         }
     }
 
@@ -242,6 +248,7 @@ impl Value {
             Value::DateTime(_) => true,
             Value::File(_) => true,
             Value::Byte(b) => *b != 0,
+            Value::Map(m) => !m.lock().unwrap().is_empty(),
         }
     }
 
@@ -313,6 +320,17 @@ impl Value {
             Value::DateTime(dt) => dt.inspect(),
             Value::File(_) => "<file>".to_string(),
             Value::Byte(b) => b.to_string(),
+            Value::Map(m) => {
+                let snapshot: Vec<(String, Value)> = m.lock().unwrap().snapshot();
+                if snapshot.is_empty() {
+                    return "map{}".to_string();
+                }
+                let items: Vec<String> = snapshot
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", quote_str(k), repr_value(v)))
+                    .collect();
+                format!("map{{{}}}", items.join(", "))
+            }
         }
     }
 
@@ -362,6 +380,14 @@ impl Value {
             (Byte(a), Byte(b)) => a == b,
             (Byte(a), Int(b)) | (Int(b), Byte(a)) => *a as i64 == *b,
             (Byte(a), Float(b)) | (Float(b), Byte(a)) => (*a as f64) == *b,
+            // Map 按内容比较
+            (Map(a), Map(b)) => {
+                let sa = a.lock().unwrap().snapshot();
+                let sb = b.lock().unwrap().snapshot();
+                sa.len() == sb.len()
+                    && sa.iter().all(|(k, v)|
+                        sb.iter().any(|(bk, bv)| bk == k && v.equals(bv)))
+            }
             (Error(a), Error(b)) => a.message == b.message,
             // BigInt：自身按值比；与 Int 跨类型可比
             (BigInt(a), BigInt(b)) => a.cmp(b) == std::cmp::Ordering::Equal,

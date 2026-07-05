@@ -77,13 +77,23 @@ fn encode_value(v: &Value, out: &mut String) {
         }
         Value::Object(o) => {
             out.push('{');
-            // 克隆 (key, value) 快照后释放锁，再递归
             let snapshot: Vec<(String, Value)> = o.lock().unwrap().snapshot();
             let mut first = true;
             for (k, val) in snapshot.iter() {
-                if !first {
-                    out.push(',');
-                }
+                if !first { out.push(','); }
+                first = false;
+                encode_string(k, out);
+                out.push(':');
+                encode_value(val, out);
+            }
+            out.push('}');
+        }
+        Value::Map(m) => {
+            out.push('{');
+            let snapshot: Vec<(String, Value)> = m.lock().unwrap().snapshot();
+            let mut first = true;
+            for (k, val) in snapshot.iter() {
+                if !first { out.push(','); }
                 first = false;
                 encode_string(k, out);
                 out.push(':');

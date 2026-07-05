@@ -673,7 +673,28 @@ impl Parser {
             TokenKind::True => { self.advance(); Ok(Expr::BoolLit { tok, value: true }) }
             TokenKind::False => { self.advance(); Ok(Expr::BoolLit { tok, value: false }) }
             TokenKind::Undefined => { self.advance(); Ok(Expr::UndefinedLit { tok }) }
-            TokenKind::Ident => { self.advance(); let name = tok.value.clone(); Ok(Expr::Ident { tok, name }) }
+            TokenKind::Ident => {
+                // map{...} 有序映射字面量：map 后紧跟 { 时识别
+                if tok.value == "map" && self.peek_at(1).kind == TokenKind::LBrace {
+                    self.advance();  // 消费 map
+                    self.advance();  // 消费 {
+                    let mut pairs = Vec::new();
+                    while !self.check(TokenKind::RBrace) {
+                        let key = match self.peek().kind {
+                            TokenKind::Ident => self.advance().value,
+                            TokenKind::String => self.advance().value,
+                            _ => return Err(self.err("map 键必须是标识符或字符串")),
+                        };
+                        self.expect(TokenKind::Colon, "':'")?;
+                        let val = self.parse_expr()?;
+                        pairs.push((key, val));
+                        if !self.match_token(TokenKind::Comma) { break; }
+                    }
+                    self.expect(TokenKind::RBrace, "'}'")?;
+                    return Ok(Expr::OrdMapLit { tok, pairs });
+                }
+                self.advance(); let name = tok.value.clone(); Ok(Expr::Ident { tok, name })
+            }
             TokenKind::LParen => {
                 self.advance();
                 let expr = self.parse_expr()?;

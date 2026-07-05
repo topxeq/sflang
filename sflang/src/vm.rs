@@ -679,8 +679,6 @@ impl VM {
                 Opcode::BuildMap => {
                     let n = Code::read_u16(&insts, frame.ip + 1) as usize;
                     frame.ip += 3;
-                    // 栈顶为最后一个 value，往下依次：value, key, value, key, ...
-                    // 弹出 2n 个元素
                     let mut map = crate::object_map::Map::new();
                     for _ in 0..n {
                         let v = self.pop();
@@ -693,6 +691,28 @@ impl VM {
                         }
                     }
                     self.push(Value::Object(Arc::new(Mutex::new(map))));
+                }
+                Opcode::BuildOrdMap => {
+                    let n = Code::read_u16(&insts, frame.ip + 1) as usize;
+                    frame.ip += 3;
+                    // 栈顶为最后一对，弹出后逆序存放，再反转保持插入顺序
+                    let mut temp: Vec<(String, Value)> = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        let v = self.pop();
+                        let k = self.pop();
+                        match k {
+                            Value::Str(s) => temp.push(((*s).to_string(), v)),
+                            _ => {
+                                return self.handle_throw(frame, error_value(format!("map key must be string, got {}", k.type_name())));
+                            }
+                        }
+                    }
+                    temp.reverse();  // 恢复插入顺序
+                    let mut map = crate::ord_map::OrdMap::new();
+                    for (k, v) in temp {
+                        map.set(k, v);
+                    }
+                    self.push(Value::Map(Arc::new(Mutex::new(map))));
                 }
                 Opcode::IndexGet => {
                     frame.ip += 1;
@@ -1405,6 +1425,9 @@ fn index_get(obj: &Value, idx: &Value) -> Result<Value, String> {
         (Value::Object(o), Value::Str(k)) => {
             Ok(o.lock().unwrap().get_proto(k).unwrap_or(Value::Undefined))
         }
+        (Value::Map(m), Value::Str(k)) => {
+            Ok(m.lock().unwrap().get(k).unwrap_or(Value::Undefined))
+        }
         (Value::Bytes(b), Value::Int(i)) => {
             let arr = b.as_ref();
             let n = arr.len() as i64;
@@ -1443,6 +1466,10 @@ fn index_set(obj: &Value, idx: &Value, v: Value) -> Result<(), String> {
         }
         (Value::Object(o), Value::Str(k)) => {
             o.lock().unwrap().set((*k).to_string(), v);
+            Ok(())
+        }
+        (Value::Map(m), Value::Str(k)) => {
+            m.lock().unwrap().set((*k).to_string(), v);
             Ok(())
         }
         (Value::ByteArray(b), Value::Int(i)) => {
@@ -1572,7 +1599,6 @@ fn member_get(obj: &Value, name: &str) -> Result<Value, String> {
             }
         }
         Value::DateTime(dt) => {
-            // datetime 字段访问（只读，不可变）
             match name {
                 "year" => Ok(Value::Int(dt.year() as i64)),
                 "month" => Ok(Value::Int(dt.month() as i64)),
@@ -1583,7 +1609,13 @@ fn member_get(obj: &Value, name: &str) -> Result<Value, String> {
                 "millis" => Ok(Value::Int(dt.millis_part() as i64)),
                 "weekday" => Ok(Value::Int(dt.weekday() as i64)),
                 "tzOffset" => Ok(Value::Int(dt.tz_offset as i64)),
-                _ => Err(format!("datetime has no member '{}' (可能原因：成员名错误；支持 .year/.month/.day/.hour/.minute/.second/.millis/.weekday/.tzOffset)", name)),
+                _ => Err(format!("datetime has no member '{}' (可能原因：成员名错误)", name)),
+            }
+        }
+        Value::Map(m) => {
+            match name {
+                "len" => Ok(Value::Int(m.lock().unwrap().len() as i64)),
+                _ => Err(format!("map has no member '{}' (可能原因：成员名错误；map 支持 .len)", name)),
             }
         }
         _ => Err(format!("cannot get member '{}' from {} (可能原因：类型不支持成员访问)", name, obj.type_name())),
