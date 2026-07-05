@@ -428,6 +428,17 @@ impl Compiler {
                 self.compile_expr(iter)?;
                 // 存到 __iter
                 self.code.emit_u16(Opcode::StoreLocal, iter_slot as u16);
+                // __keys = keys(__iter) —— 统一用 keys() 获取索引数组
+                //   object → string 键数组；array → [0,1,2...]；string → [0,1,2...]
+                // 这样后续用 __keys[__idx] 取 key，再用 __iter[key] 取 value
+                // 解决了 object 不能用 int 索引的问题
+                let keys_slot = self.declare_local("__forin_keys");
+                let key_slot = self.declare_local("__forin_key");
+                let keys_name_idx = self.code.add_name("keys");
+                self.code.emit_u16(Opcode::LoadName, keys_name_idx as u16);
+                self.code.emit_u16(Opcode::LoadLocal, iter_slot as u16);
+                self.code.emit_u8(Opcode::Call, 1);
+                self.code.emit_u16(Opcode::StoreLocal, keys_slot as u16);
                 // __idx = 0
                 let zero_idx = self.code.add_const(Value::Int(0));
                 self.code.emit_u16(Opcode::Const, zero_idx as u16);
@@ -438,26 +449,30 @@ impl Compiler {
 
                 // 压入 __idx（LT 的左操作数先压）
                 self.code.emit_u16(Opcode::LoadLocal, idx_slot as u16);
-                // 计算 len(__iter)：调用内置函数 len
+                // 计算 len(__keys)
                 let len_name_idx = self.code.add_name("len");
                 self.code.emit_u16(Opcode::LoadName, len_name_idx as u16);
-                self.code.emit_u16(Opcode::LoadLocal, iter_slot as u16);
+                self.code.emit_u16(Opcode::LoadLocal, keys_slot as u16);
                 self.code.emit_u8(Opcode::Call, 1);
                 // 栈：[idx, len]
                 self.code.emit(Opcode::LT);
-                // 栈：[bool]
                 let j_end = self.code.emit_u16(Opcode::JumpIfFalse, 0);
 
-                // var = __iter[__idx]
-                self.code.emit_u16(Opcode::LoadLocal, iter_slot as u16);
+                // __key = __keys[__idx]
+                self.code.emit_u16(Opcode::LoadLocal, keys_slot as u16);
                 self.code.emit_u16(Opcode::LoadLocal, idx_slot as u16);
                 self.code.emit(Opcode::IndexGet);
-                // 栈：[value]
+                self.code.emit_u16(Opcode::StoreLocal, key_slot as u16);
+
+                // var = __iter[__key]（object 用 string 键，array/string 用 int 键）
+                self.code.emit_u16(Opcode::LoadLocal, iter_slot as u16);
+                self.code.emit_u16(Opcode::LoadLocal, key_slot as u16);
+                self.code.emit(Opcode::IndexGet);
                 self.code.emit_u16(Opcode::StoreLocal, var_slot as u16);
 
-                // index_var = __idx（如果有）
+                // index_var = __key（如果有）—— object 时是 string 键，array 时是 int 索引
                 if let Some(slot) = index_slot_opt {
-                    self.code.emit_u16(Opcode::LoadLocal, idx_slot as u16);
+                    self.code.emit_u16(Opcode::LoadLocal, key_slot as u16);
                     self.code.emit_u16(Opcode::StoreLocal, slot as u16);
                 }
 

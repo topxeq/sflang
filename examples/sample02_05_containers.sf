@@ -92,10 +92,9 @@ pln("values:", values(person))
 // 不存在的键返回 undefined
 pln("缺失的键:", person["missing"])
 
-// 遍历（用 keys + 索引访问）
-var personKeys = keys(person)
-for k in personKeys {
-    pl("  %s = %v\n", k, person[k])
+// 遍历（for k, v in object 直接遍历键值对）
+for k, v in person {
+    pl("  %s = %v\n", k, v)
 }
 
 // ==================
