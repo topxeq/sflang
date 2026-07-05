@@ -38,9 +38,13 @@ pln("undefined == 0:", undefined == 0)                   // false
 pln("undefined == nil:", undefined == nil)               // true（别名）
 
 // 逻辑运算：按 falsy 处理（不报错）
+// Sflang 逻辑运算符有两种写法：and/&&、or/||、not/!，效果完全等价
 pln("undefined or 99:", undefined or 99)                 // true（undefined falsy → or 返回 true）
+pln("undefined || 99:", undefined || 99)                 // true（同上，|| 等价 or）
 pln("undefined and 99:", undefined and 99)               // false
+pln("undefined && 99:", undefined && 99)                 // false（同上，&& 等价 and）
 pln("!undefined:", !undefined)                           // true
+pln("not undefined:", not undefined)                     // true（同上，not 等价 !）
 
 // 算术运算：报错（类型不兼容）
 // pln(undefined + 1)  // 这会报错
