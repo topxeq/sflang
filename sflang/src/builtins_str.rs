@@ -50,6 +50,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("strRepeat", bi_repeat);
     vm.register_builtin("repeat", bi_repeat);           // 别名
     // 新增字符串函数（对标 Charlang）
+    vm.register_builtin("strTrimLeft", bi_str_trim_left);
+    vm.register_builtin("strTrimRight", bi_str_trim_right);
     vm.register_builtin("strCount", bi_str_count);
     vm.register_builtin("strPad", bi_str_pad);
     vm.register_builtin("strSplitN", bi_str_split_n);
@@ -314,6 +316,27 @@ fn bi_code_of(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 }
 
 // ---- 新增字符串函数（对标 Charlang）----
+
+/// bi_str_trim_left 去除左侧指定的字符集（cutset）。
+///
+/// 与 strTrimStart 不同：strTrimStart 去空白，strTrimLeft 去指定字符集。
+/// 例如 strTrimLeft("123abc", "0123456789") → "abc"
+fn bi_str_trim_left(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "strTrimLeft")?;
+    let cutset = bh::as_str(args, 1, "strTrimLeft")?;
+    let cutset_chars: std::collections::HashSet<char> = cutset.chars().collect();
+    let trimmed: &str = s.trim_start_matches(|c| cutset_chars.contains(&c));
+    Ok(s_owned(trimmed.to_string()))
+}
+
+/// bi_str_trim_right 去除右侧指定的字符集（cutset）。
+fn bi_str_trim_right(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "strTrimRight")?;
+    let cutset = bh::as_str(args, 1, "strTrimRight")?;
+    let cutset_chars: std::collections::HashSet<char> = cutset.chars().collect();
+    let trimmed: &str = s.trim_end_matches(|c| cutset_chars.contains(&c));
+    Ok(s_owned(trimmed.to_string()))
+}
 
 /// bi_str_count 统计子串出现次数。
 fn bi_str_count(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
