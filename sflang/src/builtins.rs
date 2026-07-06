@@ -55,6 +55,9 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("toFloat", bi_float);
     vm.register_builtin("compile", bi_compile);
     vm.register_builtin("runCode", bi_run_code);
+    vm.register_builtin("newRef", bi_new_ref);
+    vm.register_builtin("getValueByRef", bi_get_value_by_ref);
+    vm.register_builtin("setValueByRef", bi_set_value_by_ref);
     // 类型判断谓词
     vm.register_builtin("isArray", bi_is_array);
     vm.register_builtin("isString", bi_is_string);
@@ -1064,4 +1067,58 @@ fn bi_run_code(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         _ => return Err(crate::value::error_value("runCode() 参数应为 compile() 的返回值")),
     };
     vm.run(code_arc)
+}
+
+/// bi_new_ref 创建引用容器，包装一个初始值。
+///
+/// 用法：newRef(value) → 返回引用对象
+/// 引用是独立可变容器，函数传参后可修改容器内的值。
+fn bi_new_ref(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "newRef")?;
+    Ok(Value::Native(std::sync::Arc::new(std::sync::Arc::new(
+        std::sync::Mutex::new(args[0].clone()),
+    ))))
+}
+
+/// bi_get_value_by_ref 读取引用容器内的值。
+///
+/// 用法：getValueByRef(ref) → 返回引用内的值
+fn bi_get_value_by_ref(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "getValueByRef")?;
+    match &args[0] {
+        Value::Native(n) => {
+            if let Some(cell) = n.downcast_ref::<std::sync::Arc<std::sync::Mutex<Value>>>() {
+                Ok(cell.lock().unwrap().clone())
+            } else {
+                Err(crate::value::error_value("getValueByRef() 参数不是引用对象（用 newRef 创建）"))
+            }
+        }
+        v => Err(crate::value::error_value(format!(
+            "getValueByRef() 参数应为引用，得到 {}", v.type_name(),
+        ))),
+    }
+}
+
+/// bi_set_value_by_ref 设置引用容器内的值。
+///
+/// 用法：setValueByRef(ref, newValue) → 返回 undefined
+fn bi_set_value_by_ref(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "setValueByRef")?;
+    bh::require_arg(args, 1, "setValueByRef")?;
+    match &args[0] {
+        Value::Native(n) => {
+            if let Some(cell) = n.downcast_ref::<std::sync::Arc<std::sync::Mutex<Value>>>() {
+                *cell.lock().unwrap() = args[1].clone();
+                Ok(Value::Undefined)
+            } else {
+                Err(crate::value::error_value("setValueByRef() 第一个参数不是引用对象（用 newRef 创建）"))
+            }
+        }
+        v => Err(crate::value::error_value(format!(
+            "setValueByRef() 第一个参数应为引用，得到 {}", v.type_name(),
+        ))),
+    }
 }
