@@ -436,6 +436,21 @@ fn bi_float(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     match &args[0] {
         Value::Int(i) => Ok(Value::Float(*i as f64)),
         Value::Float(_) => Ok(args[0].clone()),
+        Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
+        Value::Byte(b) => Ok(Value::Float(*b as f64)),
+        Value::BigInt(b) => {
+            match b.to_i64() {
+                Some(v) => Ok(Value::Float(v as f64)),
+                None => Err(crate::value::error_value(format!(
+                    "float() BigInt 超出 i64 范围: {} (可能原因：数值过大，无法精确转为 f64)", b
+                ))),
+            }
+        }
+        Value::BigFloat(b) => {
+            // bigFloat -> f64，通过字符串中转尽量保留精度
+            let s = format!("{}", b);
+            Ok(Value::Float(s.parse::<f64>().unwrap_or(0.0)))
+        }
         Value::Str(s) => s.parse::<f64>().map(Value::Float).map_err(|_| {
             crate::value::error_value(format!("float() 无法解析 '{}'", s))
         }),

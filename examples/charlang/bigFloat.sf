@@ -1,0 +1,26 @@
+// port of bigFloat.char — 大浮点数运算演示
+// Sflang 用 bigFloat 类型保持高精度
+
+// 普通浮点（f64）有精度限制
+f1 := 1.0
+bigF1 := bigFloat("987654321000.000987654321")
+pln("bigF1:", bigF1)
+
+// 大浮点运算
+bigF2 := bigFloat("987654321000.000987654321")
+bigR := bigF1 * bigF2
+pln("乘积:", bigR)
+
+// 大浮点除法（指定精度，默认 20 位）
+bigF3 := bigFloat(1)
+bigF4 := bigFloat(3)
+bigDiv := bigFloatDiv(bigF3, bigF4, 30)
+pln("1/3 (30位精度):", bigDiv)
+
+// 字符串构造大浮点
+bigF5 := bigFloat("3.141592653589793238462643383279")
+pln("Pi 高精度:", bigF5)
+
+// 加减运算
+bigF6 := bigF5 + bigFloat("2.718281828459045")
+pln("Pi + e:", bigF6)

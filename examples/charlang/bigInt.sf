@@ -1,0 +1,24 @@
+// port of bigInt.char — 大整数运算演示
+// Sflang 用 bigInt 类型（整数溢出自动提升或显式构造）
+
+// i64 最大值
+n1 := 9223372036854775807
+n2 := n1 - 1
+
+// 普通整数相乘会溢出（i64 回绕）
+r1 := n1 * n2
+pl("n1: %v, n2: %v, r1(溢出): %v\n", n1, n2, r1)
+
+// 转为 bigInt 后可保持精度
+bigN1 := bigInt(n1)
+bigN2 := bigInt(n2)
+bigR1 := bigN1 * bigN2
+pl("bigN1: %v, bigN2: %v, bigR1: %v\n", bigN1, bigN2, bigR1)
+
+// 拼接字符串构造更大的 bigInt
+bigN3 := bigInt(toStr(bigN1) + "000987654321")
+pln("bigN3:", bigN3)
+
+// 大数加法
+bigN4 := bigN3 + bigInt(1)
+pln("bigN3 + 1:", bigN4)

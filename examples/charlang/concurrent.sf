@@ -1,0 +1,33 @@
+// port of concurrent.char — 并发示例
+// Sflang 用 run 关键字启动并发任务（类似 Go 的 go func()）
+
+// 计数器（用引用容器实现跨线程共享可变状态）
+counter := newRef(0)
+
+// 并发任务 1：递增计数器
+func task1() {
+    for i := 0; i < 5; i++ {
+        cur := getValueByRef(counter)
+        setValueByRef(counter, cur + 1)
+        pln("task1: counter =", getValueByRef(counter))
+        sleep(0.1)
+    }
+}
+
+// 并发任务 2：也递增计数器
+func task2() {
+    for i := 0; i < 5; i++ {
+        cur := getValueByRef(counter)
+        setValueByRef(counter, cur + 1)
+        pln("task2: counter =", getValueByRef(counter))
+        sleep(0.15)
+    }
+}
+
+// 启动并发任务
+run task1()
+run task2()
+
+// 主线程等待一会
+sleep(1.0)
+pln("最终 counter =", getValueByRef(counter))

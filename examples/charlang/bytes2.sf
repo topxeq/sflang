@@ -1,0 +1,47 @@
+// port of bytes2.char — 可变字节数组操作
+// Sflang 用 byteArray 类型（可变），区别于 bytes（不可变）
+
+// 创建 byteArray（指定大小，全 0）
+buf1 := byteArray(5)
+pln("初始 buf1:", buf1)
+
+// 通过索引写入字节
+buf1[0] = byte(1)
+buf1[1] = byte(2)
+buf1[2] = byte(3)
+pln("写入 1,2,3:", buf1)
+
+// 覆盖写入
+buf1[2] = byte(9)
+buf1[3] = byte(8)
+buf1[4] = byte(7)
+pln("覆盖后:", buf1)
+
+// 切片（byteArray 切片仍是 byteArray）
+pln("buf1[2:4]:", buf1[2:4])
+
+// 直接构造带初始数据的 byteArray
+// byteArray(n, fill) 创建 n 个 fill 字节
+buf2 := byteArray(4, 3)  // [3, 3, 3, 3]
+pln("初始化 buf2:", buf2)
+
+// 修改某位置
+buf2[1] = byte(255)
+buf2[2] = byte(254)
+pln("修改后 buf2:", buf2)
+
+// 拷贝
+buf3 := deepClone(buf1)
+pln("拷贝的 buf3:", buf3)
+
+// 读取单字节
+pln("buf1[2]:", buf1[2])
+
+// bytes（不可变）转 byteArray
+b1 := bytes("abc")
+ba1 := byteArrayFromBytes(b1)
+pln("bytes->byteArray:", ba1)
+
+// byteArray 转 bytes
+b2 := bytes(ba1)
+pln("byteArray->bytes:", b2)
