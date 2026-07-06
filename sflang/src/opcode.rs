@@ -121,6 +121,13 @@ pub enum Opcode {
     SpreadCall = 64,
     /// OpBuildOrdMap 构造有序映射。u16 键值对数量。
     BuildOrdMap = 65,
+    /// OpRef 取引用：弹出值，包装为 Arc<Mutex<Value>> 压栈。
+    Ref = 66,
+    /// OpDeref 解引用：弹出引用包装，读取内部值压栈。
+    Deref = 67,
+    /// OpSetDeref 引用赋值 *p = v。栈：[..., v, ref] → [..., v]。
+    /// 弹出 ref 和 v（v 在底），写入 ref = v，保留 v 在栈。
+    SetDeref = 68,
 
     // ---- 函数调用 ----
     /// OpCall 调用函数。u8 实参数量。
@@ -219,6 +226,9 @@ impl Opcode {
             59 => Some(Opcode::MethodCall),
             64 => Some(Opcode::SpreadCall),
             65 => Some(Opcode::BuildOrdMap),
+            66 => Some(Opcode::Ref),
+            67 => Some(Opcode::Deref),
+            68 => Some(Opcode::SetDeref),
             60 => Some(Opcode::Call),
             61 => Some(Opcode::Return),
             62 => Some(Opcode::ReturnVoid),

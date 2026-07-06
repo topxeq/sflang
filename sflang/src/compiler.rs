@@ -780,6 +780,9 @@ impl Compiler {
                         };
                         self.code.emit_u8_u8(Opcode::IncDecMember, name_idx as u8, flag);
                     }
+                    AssignTarget::Deref { .. } => {
+                        return Err(self.err(tok.line, "*p 的 ++/-- 暂不支持，请用 *p = *p + 1"));
+                    }
                 }
             }
             // 复合赋值 op=（target op= value）
@@ -828,6 +831,9 @@ impl Compiler {
                         let name_idx = self.code.add_name(name);
                         let flag = binary_op_to_flag(*op);
                         self.code.emit_u8_u8(Opcode::CompoundMember, name_idx as u8, flag);
+                    }
+                    AssignTarget::Deref { .. } => {
+                        return Err(self.err(tok.line, "*p 的复合赋值暂不支持，请用 *p = *p + v"));
                     }
                 }
             }
@@ -1069,20 +1075,39 @@ impl Compiler {
                         self.code.emit(Opcode::IndexSet);
                     }
                     AssignTarget::Member { obj, name } => {
-                        // a.name = v：类似 Index
-                        // 当前栈 [v, v_dup]
-                        // 编译 obj -> [v, v_dup, a]
-                        // SetMember：弹 a, 弹 v_dup，执行 a.name = v_dup，不压回
-                        // 留下 [v] 作为结果
                         self.compile_expr(obj)?;
                         let idx = self.code.add_name(name);
                         self.code.emit_u16(Opcode::SetMember, idx as u16);
+                    }
+                    AssignTarget::Deref { expr } => {
+                        // *p = v：当前栈 [v, v_dup]
+                        // 弹 v_dup（Assign 统一先 Dup 了）
+                        self.code.emit(Opcode::Pop);
+                        // 再 Dup v 给 SetDeref 用
+                        self.code.emit(Opcode::Dup);
+                        // 编译 ref 表达式
+                        self.compile_expr(expr)?;
+                        // 栈：[v, v_copy, ref]
+                        // SetDeref：弹 ref 和 v_copy，写入 ref = v_copy，留 v
+                        self.code.emit(Opcode::SetDeref);
                     }
                 }
             }
             // Spread 不应独立出现（只在 CallExpr 内处理），报错
             Expr::Spread { tok, .. } => {
                 return Err(self.err(tok.line, "... 展开只能在函数调用参数中使用"));
+            }
+            Expr::Ref { expr, tok } => {
+                // &expr：编译内部表达式，发 Ref opcode
+                self.set_line(tok.line);
+                self.compile_expr(expr)?;
+                self.code.emit(Opcode::Ref);
+            }
+            Expr::Deref { expr, tok } => {
+                // *expr：编译内部表达式，发 Deref opcode
+                self.set_line(tok.line);
+                self.compile_expr(expr)?;
+                self.code.emit(Opcode::Deref);
             }
         }
         Ok(())

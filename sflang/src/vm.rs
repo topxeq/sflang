@@ -809,18 +809,49 @@ impl VM {
                 Opcode::Import => {
                     let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                     frame.ip += 3;
-                    // 先克隆出 path 与当前文件名，避免后续 &mut self 借用冲突。
                     let path = code.names[idx].clone();
                     let cur_file = code.file.clone();
-                    // 加载、编译、执行目标脚本，顶层定义合并到当前全局环境。
                     match self.do_import(&path, &cur_file) {
                         Ok(()) => {
-                            // import 表达式值为 undefined
                             self.push(Value::Undefined);
                         }
                         Err(err_val) => {
                             return self.handle_throw(frame, err_val);
                         }
+                    }
+                }
+                Opcode::Ref => {
+                    // &expr：创建引用包装
+                    // 对基本类型（Int/Float/Bool/String/Byte）：创建 Mutex<Value> 拷贝
+                    // 对引用类型（Array/Object/Map）：已经是 Arc<Mutex>，直接包装 Value
+                    // 无论哪种，*p = v 都能修改引用内的值
+                    frame.ip += 1;
+                    let v = self.pop();
+                    self.push(Value::Native(std::sync::Arc::new(std::sync::Arc::new(std::sync::Mutex::new(v)))));
+                }
+                Opcode::Deref => {
+                    // *expr：弹出引用包装，读取内部值
+                    frame.ip += 1;
+                    let v = self.pop();
+                    match deref_value(&v) {
+                        Ok(inner) => self.push(inner),
+                        Err(e) => return self.handle_throw(frame, error_value(e)),
+                    }
+                }
+                Opcode::SetDeref => {
+                    // *p = v：栈 [v, ref]，弹 ref 和 v，写入
+                    frame.ip += 1;
+                    let ref_val = self.pop();
+                    let new_val = self.pop();
+                    match set_deref_value(&ref_val, new_val) {
+                        Ok(()) => {
+                            // 保留 v 在栈（赋值表达式返回被赋值）
+                            // 但 v 已经被弹出了……需要重新压
+                            // 实际上编译器在 SetDeref 前留了一份 v 在栈底
+                            // 栈原来是 [v, v_copy, ref] → 弹 ref + v_copy → [v]
+                            // 所以此处不需要额外压
+                        }
+                        Err(e) => return self.handle_throw(frame, error_value(e)),
                     }
                 }
             }
@@ -1653,5 +1684,38 @@ fn resolve_import_path(path: &str, cur_file: &str) -> String {
             let cwd: PathBuf = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             cwd.join(path).to_string_lossy().into_owned()
         }
+    }
+}
+
+/// deref_value 解引用：从 Native(Arc<Mutex<Value>>) 包装中读取内部值。
+fn deref_value(v: &Value) -> Result<Value, String> {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    match v {
+        Value::Native(n) => {
+            if let Some(cell) = n.downcast_ref::<Arc<Mutex<Value>>>() {
+                Ok(cell.lock().unwrap().clone())
+            } else {
+                Err("cannot dereference non-ref value".into())
+            }
+        }
+        _ => Err(format!("cannot dereference {} (可能原因：只有 & 创建的引用才能用 * 解引用)", v.type_name())),
+    }
+}
+
+/// set_deref_value 引用赋值：写入 Native(Arc<Mutex<Value>>) 包装。
+fn set_deref_value(ref_val: &Value, new_val: Value) -> Result<(), String> {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    match ref_val {
+        Value::Native(n) => {
+            if let Some(cell) = n.downcast_ref::<Arc<Mutex<Value>>>() {
+                *cell.lock().unwrap() = new_val;
+                Ok(())
+            } else {
+                Err("cannot set deref: not a ref wrapper".into())
+            }
+        }
+        _ => Err(format!("cannot set deref on {} (可能原因：只有 & 创建的引用才能赋值)", ref_val.type_name())),
     }
 }

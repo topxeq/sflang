@@ -54,8 +54,12 @@ pub enum Expr {
     IncDec { tok: Token, target: AssignTarget, op: IncDecOp, prefix: bool },
     /// CompoundAssign 复合赋值 `target op= value`（如 a[i] += 1）。
     CompoundAssign { tok: Token, target: AssignTarget, op: BinaryOp, value: Box<Expr> },
-    /// Spread 展开表达式 `...expr`（用于可变参数调用的展开：f(...arr)）。
+    /// Spread 展开表达式 `...expr`。
     Spread { tok: Token, expr: Box<Expr> },
+    /// Ref 取引用 `&expr`，返回可变引用包装。
+    Ref { tok: Token, expr: Box<Expr> },
+    /// Deref 解引用 `*expr`，读取引用指向的值。
+    Deref { tok: Token, expr: Box<Expr> },
 }
 
 impl Expr {
@@ -83,6 +87,8 @@ impl Expr {
             Expr::IncDec { tok, .. } => tok,
             Expr::CompoundAssign { tok, .. } => tok,
             Expr::Spread { tok, .. } => tok,
+            Expr::Ref { tok, .. } => tok,
+            Expr::Deref { tok, .. } => tok,
         }
     }
 }
@@ -134,6 +140,8 @@ pub enum AssignTarget {
     Index { obj: Box<Expr>, index: Box<Expr> },
     /// Member 成员赋值 a.name = v。
     Member { obj: Box<Expr>, name: String },
+    /// Deref 引用赋值 *p = v。
+    Deref { expr: Box<Expr> },
 }
 
 /// FuncLit 函数字面量。

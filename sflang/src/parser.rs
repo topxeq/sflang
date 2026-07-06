@@ -533,6 +533,18 @@ impl Parser {
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
         match self.peek().kind {
+            TokenKind::Amp => {
+                // &expr：取引用（一元 &，区别于二元 & 位与）
+                let tok = self.advance();
+                let operand = self.parse_unary()?;
+                Ok(Expr::Ref { tok, expr: Box::new(operand) })
+            }
+            TokenKind::Star => {
+                // *expr：解引用（一元 *，区别于二元 * 乘法）
+                let tok = self.advance();
+                let operand = self.parse_unary()?;
+                Ok(Expr::Deref { tok, expr: Box::new(operand) })
+            }
             TokenKind::Minus => {
                 let tok = self.advance();
                 let operand = self.parse_unary()?;
@@ -756,6 +768,7 @@ fn expr_to_target(expr: Expr) -> AssignTarget {
         Expr::Ident { name, .. } => AssignTarget::Name(name),
         Expr::IndexExpr { obj, index, .. } => AssignTarget::Index { obj, index },
         Expr::MemberExpr { obj, name, .. } => AssignTarget::Member { obj, name },
+        Expr::Deref { expr, .. } => AssignTarget::Deref { expr },
         _ => AssignTarget::Name(String::new()),
     }
 }
