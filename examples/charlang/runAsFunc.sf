@@ -1,0 +1,14 @@
+// port of runAsFunc.char — 编译脚本代码并作为函数运行
+// 用 runCode(compile(source)) 执行脚本，脚本顶层可访问全局变量并 return
+
+source := `
+func dispatch(...vargs) {
+    pln("收到参数:", jsonEncode(vargs))
+    return vargs[2]  // 返回第三个参数
+}
+
+return dispatch("abc", 123.5, true, {name: "Tom", age: 16})
+`
+
+rs := runCode(compile(source))
+pl("rs: %v\n", rs)

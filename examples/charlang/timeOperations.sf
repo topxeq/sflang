@@ -1,0 +1,23 @@
+// port of timeOperations.char — 时间运算
+// Sflang 用 datetime 类型及 dt* 系列内置函数
+
+// 获取当前时间（datetime 类型）
+time1 := nowDT()
+pln("now:", time1)
+
+// 时间增加秒数
+time2 := dtAddSeconds(time1, 2.6)
+pln("加 2.6 秒:", time2)
+
+// 继续加秒数
+time3 := dtAddSeconds(time2, 23.5)
+pln("再加 23.5 秒:", time3)
+
+// 增加日期字段（天数为单位，减一个月约 -30 天）
+time4 := dtAddDays(time3, -30)
+pln("减一个月(约30天):", time4)
+
+// 格式化输出
+pln("默认:", dtFormat(time1, ""))
+pln("紧凑:", dtFormat(time1, "20060102150405"))
+pln("自定义:", dtFormat(time1, "2006-01-02 15:04:05.000"))

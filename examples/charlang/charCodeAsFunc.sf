@@ -1,0 +1,23 @@
+// port of charCodeAsFunc.char — 把脚本代码编译为可调用函数
+// Charlang 使用 charCode(...).compile()，Sflang 用 runCode() 执行整个脚本
+// 编译后的脚本顶层 return 函数对象即可取出函数
+
+// 源代码顶层返回一个函数
+source := `
+func addAll(v1, v2, ...vargs) {
+    pln("input:", v1, v2, vargs)
+    sum := v1 + v2
+    for i, v in vargs {
+        sum += v
+    }
+    return sum
+}
+
+return addAll  // 顶层返回函数对象
+`
+
+// 编译并运行（runCode 返回顶层 return 的值，即函数对象）
+addAll := runCode(compile(source))
+
+result := addAll(12, 8.5, 2, 3, 16)
+pl("result: %v\n", result)

@@ -1,0 +1,32 @@
+// port of countLineDuplicates.char — 统计每行重复次数
+// 原脚本使用 getClipText，这里改为 argsG 或硬编码示例文本
+
+// 示例：从命令行第一个参数读取文本，若没有则用内置示例
+textT := getParam(argsG, 0, `apple
+banana
+apple
+cherry
+banana
+apple`)
+
+listT := strSplitLines(textT)
+
+map1 := map{}
+
+for i, v in listT {
+    vv := trim(v)
+    if vv == "" {
+        continue
+    }
+    // 不存在的键返回 undefined，用 hasKey 判断
+    if !hasKey(map1, vv) {
+        map1[vv] = 1
+    } else {
+        map1[vv] = map1[vv] + 1
+    }
+}
+
+// 按插入顺序遍历输出
+for k, v in map1 {
+    pl("%v -> %v", k, v)
+}

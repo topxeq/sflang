@@ -1,0 +1,13 @@
+// port of runCode.char — 编译并执行脚本代码
+// 用 runCode(compile(source)) 执行，顶层 return 即返回值
+
+source := `
+func add(v1, v2) {
+    return v1 + v2
+}
+
+return add(12, 8.5)
+`
+
+result := runCode(compile(source))
+pl("result: %v\n", result)

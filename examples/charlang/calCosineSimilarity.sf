@@ -1,0 +1,33 @@
+// port of calCosineSimilarity.char — 计算两个向量的余弦相似度
+// 结果范围 [0..1]：1 表示几乎相同，0 表示完全不同
+
+calCosSim := func(f1, f2) {
+    l1 := len(f1)
+    l2 := len(f2)
+
+    if l1 != l2 {
+        pl("两个向量长度不同，f1 长度: %v，f2 长度: %v", l1, l2)
+        return -1
+    }
+
+    rr := 0.0
+    f1r := 0.0
+    f2r := 0.0
+
+    for i := 0; i < l1; i++ {
+        rr += f1[i] * f2[i]
+        f1r += f1[i] * f1[i]
+        f2r += f2[i] * f2[i]
+    }
+
+    rs := rr / (sqrt(f1r) * sqrt(f2r))
+    return rs
+}
+
+v1 := [1, 2, 3, 5]
+v2 := [2.0, 2, 3, 4]
+
+pln("v1 vs v2:", calCosSim(v1, v2))
+
+v3 := [9, 9, 8, 8]
+pln("v1 vs v3:", calCosSim(v1, v3))

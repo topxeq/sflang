@@ -1,0 +1,25 @@
+// port of trace1.char — 调试信息
+// Sflang 用 plt()/typeCode()/typeName() 等内置函数辅助调试
+
+a := 1
+b := 2.3
+
+// plt() 打印 (类型名)值
+plt(a)
+plt(b)
+
+// 查看类型代码与名称
+pln("a typeCode:", typeCode(a), "typeName:", typeName(a))
+pln("b typeCode:", typeCode(b), "typeName:", typeName(b))
+
+// 当前脚本路径
+pln("scriptPathG:", scriptPathG)
+
+// 调用栈信息（出错时使用 try/catch 捕获并打印）
+try {
+    // 制造一个错误：array + string 不允许
+    bad := [] + "abc"
+    _ = bad
+} catch (e) {
+    pln("捕获到错误:", e)
+}

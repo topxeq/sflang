@@ -1,0 +1,53 @@
+// port of sortByFunc.char — 用自定义比较函数排序
+// Charlang 使用 import("ex").sortByFunc，Sflang 使用内置 sort() 函数
+
+// sort() 排序数组（升序，原地）
+a := [1, 3, 2.5, 435, "abc", "zbds123", "0123a", "2.33", 2.33]
+
+// Sflang 的 sort() 默认按类型规则排序
+// 如需自定义比较，可转为字符串后排序
+a2 := map(a, func(x) { return toStr(x) })
+sort(a2)
+pln("按字符串升序:", a2)
+
+// 对象数组按 Name 升序、Name 相同时按 Age 升序
+m := [
+    {Name: "Tom", Age: 18},
+    {Name: "Jerry", Age: 22},
+    {Name: "Jerry", Age: 18},
+    {Name: "Peter", Age: 8},
+]
+
+// 自定义排序：复制数组后用冒泡 + 自定义比较
+// less(a, b) 返回 true 表示 a 应排在 b 前面（升序）
+func sortBy(data, less) {
+    n := len(data)
+    result := deepClone(data)
+    for i := 0; i < n; i++ {
+        for j := 0; j < n - i - 1; j++ {
+            // 如果 j+1 应排在 j 前面，则交换
+            if less(result[j+1], result[j]) {
+                tmp := result[j]
+                result[j] = result[j+1]
+                result[j+1] = tmp
+            }
+        }
+    }
+    return result
+}
+
+sort1 := func(a, b) {
+    if a.Name < b.Name {
+        return true
+    }
+    if a.Name == b.Name {
+        return a.Age < b.Age
+    }
+    return false
+}
+
+m1 := sortBy(m, sort1)
+pln("对象排序:")
+for item in m1 {
+    pl("  %s (Age=%v)\n", item.Name, item.Age)
+}

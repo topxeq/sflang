@@ -1,0 +1,13 @@
+// port of mapArray.char — 用 map() 转换数组
+// Sflang 用内置 map() 函数
+
+// 将数组每个元素转为字符串
+ma := map([1, 2.5, "abc", true], func(x) { return toStr(x) })
+pln("map结果:", ma)
+
+pln("JSON:", jsonEncode(ma, "-indent"))
+
+// 示例：对数字数组做平方
+nums := [1, 2, 3, 4, 5]
+squared := map(nums, func(x) { return x * x })
+pln("平方:", squared)

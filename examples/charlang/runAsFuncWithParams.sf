@@ -1,0 +1,19 @@
+// port of runAsFuncWithParams.char — 编译脚本为函数并传入多个参数
+// 演示 ...vargs 可变参数；通过顶层 return 取出函数后调用
+
+source := `
+func addAll(v1, v2, ...vargs) {
+    pln("input:", v1, v2, vargs)
+    sum := v1 + v2
+    for i, v in vargs {
+        sum += v
+    }
+    return sum
+}
+
+return addAll
+`
+
+addAll := runCode(compile(source))
+result := addAll(12, 8.5, 2, 3, 16)
+pl("result: %v\n", result)

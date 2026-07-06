@@ -82,6 +82,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("isBool", bi_is_bool);
     vm.register_builtin("isUndefined", bi_is_undefined);
     vm.register_builtin("isFunction", bi_is_function);
+    vm.register_builtin("error", bi_error);
+    vm.register_builtin("isError", bi_is_error);
     // ---- undefined 配套内置函数（对标 Charlang 的 nilToEmpty 等）----
     vm.register_builtin("undefToEmpty", bi_undef_to_empty);
     vm.register_builtin("default", bi_default);
@@ -724,6 +726,22 @@ fn bi_is_undefined(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// bi_is_function 判断是否为函数（用户函数或内置函数）。
 fn bi_is_function(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Bool(matches!(args.get(0), Some(Value::Func(_)) | Some(Value::Builtin(_)))))
+}
+
+/// bi_error 创建一个错误值。
+///
+/// 用法：error(msg) → Error 值
+/// 错误值是普通值（不抛出），用于返回错误结果；配合 isError 判断。
+/// 这符合 Sflang "一般返回错误对象为主" 的设计原则。
+fn bi_error(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    let msg = bh::as_str(args, 0, "error")?;
+    Ok(crate::value::error_value(msg))
+}
+
+/// bi_is_error 判断是否为错误值。
+fn bi_is_error(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    Ok(Value::Bool(matches!(args.get(0), Some(Value::Error(_)))))
 }
 
 // ---- undefined 配套内置函数 ----
