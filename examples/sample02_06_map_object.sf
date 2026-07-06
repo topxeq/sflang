@@ -1,0 +1,140 @@
+// 示例 02.06：有序映射（map）与对象（object）的对比
+// ==================================================
+// Sflang 有两种键值容器：
+//   object — HashMap 无序，支持原型链和方法（OOP 载体）
+//   map    — Vec 有序（插入序），纯数据容器，无方法无原型链
+
+// ==================
+// 创建方式
+// ==================
+pln("--- 创建 ---")
+
+// object 用 {} 字面量
+var obj = {name: "Alice", age: 30, city: "Beijing"}
+pln("object:", typeName(obj))
+
+// map 用 map{} 字面量（插入顺序）
+var m = map{"name": "Alice", "age": 30, "city": "Beijing"}
+pln("map:", typeName(m))
+
+// map 用 newMap() 构造
+var m2 = newMap()
+m2["x"] = 1
+m2["y"] = 2
+pln("newMap:", m2)
+
+// ==================
+// 插入顺序 vs 无序
+// ==================
+pln("\n--- 遍历顺序 ---")
+pln("object 遍历（顺序不可预测）:")
+for k, v in obj {
+    pl("  %s = %v\n", k, v)
+}
+pln("map 遍历（按插入顺序）:")
+for k, v in m {
+    pl("  %s = %v\n", k, v)
+}
+
+// ==================
+// 索引读写
+// ==================
+pln("\n--- 索引读写 ---")
+pln("m[\"name\"]:", m["name"])
+m["email"] = "alice@test.com"
+pln("after add:", len(m))
+m["age"] = 31
+pln("after update:", m["age"])
+
+// 不存在的键返回 undefined
+pln("missing:", m["nonexistent"])
+
+// ==================
+// 类型判断与比较
+// ==================
+pln("\n--- 类型判断 ---")
+pln("isMap(m):", isMap(m))
+pln("isObject(obj):", isObject(obj))
+pln("isMap(obj):", isMap(obj))
+pln("isObject(m):", isObject(m))
+
+// ==================
+// Object 有方法，Map 没有
+// ==================
+pln("\n--- Object 方法 vs Map 纯数据 ---")
+
+// Object 可以挂方法（OOP）
+var counter = {value: 0}
+counter.inc = func(self) { self.value++; return self.value }
+pln("Object 方法调用:", counter.inc())   // 1
+pln("Object 方法调用:", counter.inc())   // 2
+
+// 遍历 Object 会混入方法
+pln("Object keys（含方法）:", keys(counter))
+
+// entries() 过滤方法，只返回数据
+pln("entries:", entries(counter))
+pln("dataKeys:", dataKeys(counter))
+pln("dataValues:", dataValues(counter))
+
+// Map 是纯数据，不会有方法混入问题
+var config = map{"host": "localhost", "port": 8080}
+pln("map keys（纯数据）:", keys(config))
+pln("map entries:", entries(config))
+
+// ==================
+// len / has
+// ==================
+pln("\n--- len / hasKey ---")
+pln("len(m):", len(m))
+pln("hasKey(m, \"name\"):", hasKey(m, "name"))
+pln("hasKey(m, \"xxx\"):", hasKey(m, "xxx"))
+
+// ==================
+// JSON 编解码
+// ==================
+pln("\n--- JSON ---")
+pln("jsonEncode(m):", jsonEncode(m))
+
+// ==================
+// 实用场景对比
+// ==================
+pln("\n--- 实用场景 ---")
+
+// 场景 1：配置映射（用 Map，有序可预测）
+var settings = map{
+    "debug": true,
+    "timeout": 30,
+    "retries": 3
+}
+pln("配置项（有序）:")
+for k, v in settings {
+    pl("  %s: %v\n", k, v)
+}
+
+// 场景 2：OOP 对象（用 Object，挂方法）
+// 注意：obj.method(args) 会自动注入 obj 作为隐式首参 self
+// 所以调用时不需要手动传 self
+func Stack() {
+    var self = {items: []}
+    self.myAdd = func(self, x) { push(self.items, x) }
+    self.mySize = func(self) { return len(self.items) }
+    return self
+}
+var st = Stack()
+st.myAdd("a")        // obj.method(args) 自动注入 st 作为 self
+st.myAdd("b")
+pln("Stack size:", st.mySize())    // 自动注入 st 作为 self
+pln("Stack dataKeys:", dataKeys(st))
+pln("Stack entries:", entries(st))
+
+// 场景 3：HTTP 请求头（用 Map，有序且纯数据）
+var headers = map{
+    "Content-Type": "application/json",
+    "Authorization": "Bearer token123",
+    "Accept": "application/json"
+}
+pln("HTTP 头（有序）:")
+for k, v in headers {
+    pl("  %s: %s\n", k, v)
+}

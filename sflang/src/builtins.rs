@@ -890,9 +890,14 @@ fn bi_values(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// bi_has_key 判断 object 是否包含某键。
 fn bi_has_key(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
-    let o = bh::as_object(args, 0, "hasKey")?;
     let key = bh::as_str(args, 1, "hasKey")?;
-    Ok(Value::Bool(o.lock().unwrap().has(key)))
+    match &args[0] {
+        Value::Object(o) => Ok(Value::Bool(o.lock().unwrap().has(key))),
+        Value::Map(m) => Ok(Value::Bool(m.lock().unwrap().has(key))),
+        v => Err(crate::value::error_value(format!(
+            "hasKey() 第 1 个参数应为 object 或 map，得到 {}", v.type_name(),
+        ))),
+    }
 }
 
 /// bi_deep_clone 深拷贝值（递归复制 array/object/byteArray）。
