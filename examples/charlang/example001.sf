@@ -1,0 +1,3 @@
+// port of example001.char — 最简 hello world
+// pln 等同于其他语言的 println
+pln("Hello world!")

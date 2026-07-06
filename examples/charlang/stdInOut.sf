@@ -1,0 +1,28 @@
+// port of stdInOut.char — 标准输入输出
+// Sflang 用 print/pln 输出到 stdout
+
+// 输出到 stdout
+pr("abcde\n")
+
+// 也可以用 pln
+pln("第二行输出")
+
+// 演示格式化输出到 stdout
+pl("格式化: %v, %v\n", 42, "hello")
+
+// readLine 可以从打开的文件读取
+// 这里演示从临时文件读取
+path := joinPath(getTempDir(), "sflang_stdin_test.txt")
+writeFile(path, "模拟的标准输入\n第二行内容")
+
+f := openFile(path, "r")
+defer close(f)
+
+line := readLine(f)
+pln("从文件读到的行:", line)
+
+line2 := readLine(f)
+pln("第二行:", line2)
+
+deleteFile(path)
+pln("完成")

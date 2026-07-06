@@ -1,0 +1,16 @@
+// port of example004.char — 条件判断
+age := 20
+
+if age < 13 {
+    pln("儿童")
+} elif age < 18 {
+    pln("青少年")
+} elif age < 60 {
+    pln("成年人")
+} else {
+    pln("老年人")
+}
+
+// 三元运算符
+status := age >= 18 ? "成年" : "未成年"
+pln("状态:", status)

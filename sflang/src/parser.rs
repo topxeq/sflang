@@ -225,8 +225,44 @@ impl Parser {
             let body = self.parse_block()?;
             return Ok(Stmt::ForInStmt { tok, index_var: Some(idx), var, iter, body });
         }
-        // C 风格 for (init; cond; post)
+        // C 风格 for (init; cond; post) 或 Go 风格 for cond { / for {
         let has_paren = self.match_token(TokenKind::LParen);
+
+        // Go 风格：for { ... }（无限循环，无括号且直接是 {）
+        if !has_paren && self.check(TokenKind::LBrace) {
+            let body = self.parse_block()?;
+            return Ok(Stmt::ForStmt { tok, init: None, cond: None, post: None, body });
+        }
+
+        // 判断是 Go 风格 for cond { 还是 C 风格 for init; cond; post
+        // 策略：通过扫描 token 判断是否含分号（C 风格有分号，Go 风格无）
+        if !has_paren {
+            // 扫描到匹配的 { 或遇到 ; 为止
+            let mut has_semi = false;
+            let mut depth = 0i32;
+            let mut i = 0;
+            loop {
+                let t = self.peek_at(i);
+                match t.kind {
+                    TokenKind::EOF => break,
+                    TokenKind::LBrace if depth == 0 => break,
+                    TokenKind::LParen | TokenKind::LBracket => depth += 1,
+                    TokenKind::RParen | TokenKind::RBracket => depth -= 1,
+                    TokenKind::Semicolon if depth == 0 => { has_semi = true; break; }
+                    _ => {}
+                }
+                i += 1;
+            }
+            if !has_semi {
+                // Go 风格 for cond {
+                let cond = self.parse_expr()?;
+                let body = self.parse_block()?;
+                return Ok(Stmt::ForStmt { tok, init: None, cond: Some(cond), post: None, body });
+            }
+            // 有分号：当作 C 风格 for init; cond; post（无括号形式）
+        }
+
+        // C 风格 for (init; cond; post)
         let init = if !self.check(TokenKind::Semicolon) {
             // parse_simple_stmt 会消费 init 后的 ;
             Some(Box::new(self.parse_simple_stmt()?))

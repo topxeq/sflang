@@ -1,0 +1,35 @@
+// port of example008.char — 字符串处理
+s := "Hello, 世界"
+
+// 长度（按 Unicode 字符）
+pln("长度:", len(s))
+
+// 大小写转换
+pln("大写:", strToUpper(s))
+pln("小写:", strToLower(s))
+
+// 查找
+pln("找到 '世界' 位置:", strFind(s, "世界"))
+
+// 替换
+pln("替换:", strReplace(s, "世界", "Sflang"))
+
+// 分割
+parts := strSplit("a,b,c,d", ",")
+pln("分割:", parts)
+
+// 连接
+pln("连接:", strJoin(parts, "-"))
+
+// 子串
+pln("子串[0:5]:", strSub(s, 0, 5))
+
+// 去空白
+pln("去空白:", "[" + trim("  abc  ") + "]")
+
+// 判断
+pln("以 Hello 开头:", strStartsWith(s, "Hello"))
+pln("以 世界 结尾:", strEndsWith(s, "世界"))
+
+// 重复
+pln("重复:", strRepeat("ab", 3))

@@ -1,0 +1,31 @@
+// port of example007.char — 数组与 map
+// 数组
+arr := [1, 2, 3, "abc", true]
+pln("数组:", arr)
+pln("长度:", len(arr))
+
+// 追加元素
+push(arr, "新元素")
+pln("追加后:", arr)
+
+// 数组运算
+nums := [1, 2, 3]
+nums2 := map(nums, func(x) { return x * 2 })
+pln("翻倍:", nums2)
+
+evens := filter([1, 2, 3, 4, 5, 6], func(x) { return x % 2 == 0 })
+pln("偶数:", evens)
+
+// map（有序）
+m := map{name: "Alice", age: 30, city: "Beijing"}
+pln("map:", m)
+pln("name:", m["name"])
+
+m["email"] = "alice@example.com"
+pln("添加后:", m)
+
+// 遍历
+pln("遍历:")
+for k, v in m {
+    pl("  %v: %v\n", k, v)
+}

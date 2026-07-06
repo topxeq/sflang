@@ -1,0 +1,39 @@
+// port of example005.char — 循环
+// 经典 for 循环（C 风格）
+for i := 0; i < 5; i++ {
+    pr(i, " ")
+}
+pln("")
+
+// while 循环
+n := 0
+while n < 5 {
+    pr(n, " ")
+    n++
+}
+pln("")
+
+// while true + break（无限循环）
+m := 0
+while true {
+    if m >= 5 {
+        break
+    }
+    pr(m, " ")
+    m++
+}
+pln("")
+
+// for-in 遍历数组
+arr := [10, 20, 30, 40, 50]
+for i, v in arr {
+    pl("[%d]=%v ", i, v)
+}
+pln("")
+
+// for-in 遍历 map
+mp := map{a: 1, b: 2, c: 3}
+for k, v in mp {
+    pl("%v=%v ", k, v)
+}
+pln("")

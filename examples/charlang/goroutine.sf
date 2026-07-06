@@ -1,0 +1,38 @@
+// port of goroutine.char — 并发任务示例（类似 Go 的 goroutine）
+// Sflang 用 run 关键字启动并发任务
+
+// 任务函数1：持续打印参数
+f1 := func(a) {
+    try {
+        for i := 0; i < 3; i++ {
+            pl("f1: a=%v", a)
+            sleep(0.1)
+        }
+    } catch (e) {
+        pl("f1 err: %v", e)
+    }
+}
+
+// 任务函数2：持续打印和
+f2 := func(a, b) {
+    try {
+        for i := 0; i < 3; i++ {
+            pl("f2: a+b=%v", a + b)
+            sleep(0.15)
+        }
+    } catch (e) {
+        pl("f2 err: %v", e)
+    }
+}
+
+// 启动并发任务（类似 go f1(3)）
+run f1(3)
+run f2(5, 2)
+
+// 主线程也循环
+for i := 0; i < 3; i++ {
+    pl("main")
+    sleep(0.2)
+}
+
+pln("所有任务启动完成")
