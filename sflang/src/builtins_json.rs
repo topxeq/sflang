@@ -13,7 +13,6 @@
 use std::sync::{Arc, Mutex};
 
 use crate::builtins_helpers as bh;
-use crate::object_map::Map;
 use crate::value::Value;
 use crate::vm::VM;
 
@@ -205,19 +204,19 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// parse_object 解析对象。
+    /// parse_object 解析对象为有序 Map（保持 JSON 键的原始顺序）。
     fn parse_object(&mut self) -> Result<Value, Value> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             return Err(self.err(&format!("嵌套深度超过 {} 层", MAX_DEPTH)));
         }
         self.pos += 1; // 消费 '{'
-        let mut map = Map::new();
+        let mut map = crate::ord_map::OrdMap::new();
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.pos += 1;
             self.depth -= 1;
-            return Ok(Value::Object(Arc::new(Mutex::new(map))));
+            return Ok(Value::Map(Arc::new(Mutex::new(map))));
         }
         loop {
             self.skip_ws();
@@ -246,7 +245,7 @@ impl<'a> Decoder<'a> {
             }
         }
         self.depth -= 1;
-        Ok(Value::Object(Arc::new(Mutex::new(map))))
+        Ok(Value::Map(Arc::new(Mutex::new(map))))
     }
 
     /// parse_array 解析数组。
