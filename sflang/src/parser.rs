@@ -331,8 +331,20 @@ impl Parser {
     fn parse_expr(&mut self) -> Result<Expr, ParseError> { self.parse_assign() }
 
     fn parse_assign(&mut self) -> Result<Expr, ParseError> {
-        // 优先级链：assign < ternary < nullcoal < or < and < bitor < bitxor < bitand
-        //            < 比较 < shift < +- < */ < 一元 < 后缀
+        // 短变量声明 name := expr（对标 Go/Charlang）
+        if let TokenKind::Ident = self.peek().kind {
+            if self.peek_at(1).kind == TokenKind::ColonAssign {
+                let name = self.advance().value;
+                let tok = self.advance();  // 消费 :=
+                let value = self.parse_assign()?;
+                // 转换为 VarDecl 表达式（值留栈，类似 var x = expr 作为表达式）
+                return Ok(Expr::Assign {
+                    tok,
+                    target: AssignTarget::Name(name),
+                    value: Box::new(value),
+                });
+            }
+        }
         let expr = self.parse_ternary()?;
         // 普通赋值
         if self.check(TokenKind::Assign) {

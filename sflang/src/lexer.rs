@@ -622,7 +622,13 @@ impl Lexer {
             b']' => { self.advance(); TokenKind::RBracket }
             b',' => { self.advance(); TokenKind::Comma }
             b';' => { self.advance(); TokenKind::Semicolon }
-            b':' => { self.advance(); TokenKind::Colon }
+            b':' => {
+                if self.peek_byte_at(1) == Some(b'=') {
+                    self.advance(); self.advance(); TokenKind::ColonAssign
+                } else {
+                    self.advance(); TokenKind::Colon
+                }
+            }
             b'.' => {
                 // ... → Ellipsis，否则 Dot
                 if self.peek_byte_at(1) == Some(b'.') && self.peek_byte_at(2) == Some(b'.') {

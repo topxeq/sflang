@@ -53,6 +53,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("toStr", bi_string);
     vm.register_builtin("toInt", bi_int);
     vm.register_builtin("toFloat", bi_float);
+    vm.register_builtin("compile", bi_compile);
+    vm.register_builtin("runCode", bi_run_code);
     // 类型判断谓词
     vm.register_builtin("isArray", bi_is_array);
     vm.register_builtin("isString", bi_is_string);
@@ -1024,7 +1026,6 @@ fn bi_get_param(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Ok(Value::Undefined);
     }
-    // 第一个参数是数组（通常传 argsG）
     let arr = match &args[0] {
         Value::Array(a) => a,
         _ => return Ok(args.get(2).cloned().unwrap_or(Value::Undefined)),
@@ -1034,4 +1035,33 @@ fn bi_get_param(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(guard.get(idx).cloned().unwrap_or_else(|| {
         args.get(2).cloned().unwrap_or(Value::Undefined)
     }))
+}
+
+/// bi_compile 编译一段代码字符串，返回编译后的 Code 对象。
+fn bi_compile(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    let src = bh::as_str(args, 0, "compile")?;
+    let tokens = crate::lexer::tokenize(src, "<compile>")
+        .map_err(|e| crate::value::error_value(format!("compile() 词法错误: {}", e)))?;
+    let prog = crate::parser::parse_program(tokens, "<compile>")
+        .map_err(|e| crate::value::error_value(format!("compile() 语法错误: {}", e)))?;
+    let code = crate::compiler::compile(&prog)
+        .map_err(|e| crate::value::error_value(format!("compile() 编译错误: {}", e)))?;
+    Ok(Value::Native(std::sync::Arc::new(std::sync::Arc::new(code))))
+}
+
+/// bi_run_code 执行编译后的 Code 对象，返回结果。
+fn bi_run_code(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use std::sync::Arc;
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "runCode")?;
+    let code_arc: Arc<crate::opcode::Code> = match &args[0] {
+        Value::Native(n) => {
+            n.downcast_ref::<Arc<crate::opcode::Code>>()
+                .ok_or_else(|| crate::value::error_value("runCode() 参数不是编译后的代码对象"))?
+                .clone()
+        }
+        _ => return Err(crate::value::error_value("runCode() 参数应为 compile() 的返回值")),
+    };
+    vm.run(code_arc)
 }
