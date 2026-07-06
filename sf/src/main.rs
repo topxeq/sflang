@@ -233,7 +233,7 @@ fn format_error(e: &Value) -> String {
 
 /// print_help 打印主程序帮助。
 fn print_help() {
-    println!("sf - Sflang 解释器 (Rust 实现)");
+    println!("sf - Sflang 解释器");
     println!();
     println!("用法：");
     println!("  sf                       启动 REPL（交互式环境）");
@@ -243,8 +243,17 @@ fn print_help() {
     println!("  sf -v | --version        显示版本");
     println!();
     println!("预定义全局变量：");
-    println!("  argsG        命令行参数数组");
-    println!("  scriptPathG  脚本路径（REPL 模式为空）");
+    println!("  piG, eG       数学常量");
+    println!("  argsG         命令行参数数组（脚本/REPL 可用）");
+    println!("  scriptPathG   脚本路径");
+    println!();
+    println!("注释：// 行注释、/* */ 块注释");
+    println!("逻辑：&& || !（无 and/or/not 关键字）");
+    println!("空值：undefined（无 nil）");
+    println!();
+    println!("19 种类型：int float bool byte string bytes byteArray");
+    println!("  array object map function builtin error native");
+    println!("  bigInt bigFloat datetime file undefined");
     println!();
     println!("脚本示例：");
     println!("  println(\"Hello, Sflang!\")");
@@ -261,4 +270,9 @@ fn print_repl_help() {
     println!();
     println!("多行输入：括号未闭合或行末 \\ 时自动续行");
     println!("顶层表达式求值会自动打印结果");
+    println!();
+    println!("注释：// 和 /* */");
+    println!("逻辑：&& || !");
+    println!("空值：undefined");
+    println!("字符串：\"双引号\" `反引号` \"\"\"三引号\"\"\"");
 }
