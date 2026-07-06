@@ -1,0 +1,19 @@
+// port of integer.char — 整数类型
+
+c1 := 19
+c2 := 18
+
+pln(c1 + c2 / 3)
+
+pl("%v, %v\n", typeName(c1), c1)
+pl("%T, %v\n", c1 + c2, c1 + c2)
+pl("%T, %v\n", (c1 + c2 / 3) * 6, (c1 + c2 / 3) * 6)
+
+// 整数与整数相除为整除
+pl("%v, %v\n", typeName(c2 / 5), c2 / 5)
+
+// 整数与浮点数操作结果为浮点数
+pl("%v, %v\n", typeName(c1 + c2 / 5.0), c1 + c2 / 5.0)
+
+// 强制类型转换
+pl("%v, %v\n", typeName(c1 + float(c2) / 5), c1 + float(c2) / 5)

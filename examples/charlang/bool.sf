@@ -1,0 +1,17 @@
+// port of bool.char — 布尔类型
+
+b1 := true
+plt(b1)
+
+b1 = false
+plt(b1)
+
+pln("string(!b1):", toStr(!b1))
+pln("!!b1:", !!b1)
+pln("3.8 + !b1:", 3.8 + (!b1))
+
+var b2 = false
+pln("bool():", b2)
+pln("bool(1.2):", !!1.2)
+var emptyStr = ""
+pln("bool(\"\"):", !!emptyStr)

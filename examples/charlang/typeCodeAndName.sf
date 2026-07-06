@@ -1,0 +1,20 @@
+// port of typeCodeAndName.char — 类型编码与名称
+
+a := 1
+
+pl("typeCode of a: %v\n", typeCode(a))
+pl("typeName of a: %v\n", typeName(a))
+
+b := "abc123"
+
+pl("typeCode of b: %v\n", typeCode(b))
+pl("typeName of b: %v\n", typeName(b))
+
+c := []
+
+pl("typeCode of c: %v\n", typeCode(c))
+pl("typeName of c: %v\n", typeName(c))
+
+pl("typeName of 123.5: %v\n", typeName(123.5))
+pl("typeName of true: %v\n", typeName(true))
+pl("typeName of byte(65): %v\n", typeName(byte(65)))

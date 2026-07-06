@@ -1,0 +1,14 @@
+// port of tryCatch.char — 异常处理
+
+a := 0
+var r
+
+try {
+    r = 3 / a
+} catch (e) {
+    pln("exception:", e)
+} finally {
+    pln("r:", r)
+}
+
+pln("done")

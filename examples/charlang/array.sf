@@ -1,0 +1,34 @@
+// port of array.char — 数组
+
+// 声明数组（可存任意类型）
+a := [1, 2, 3, "abc", 12.3]
+
+pln("a:", a)
+pln("a[2]:", a[2])
+pln("length of a:", len(a))
+
+// 重新赋值
+a = [1, 2]
+
+// 追加
+a = concat(a, ["abc"])
+
+b := ["xyz", 16]
+
+// 追加另一个数组
+a = concat(a, b)
+
+plt(a)
+
+a[0]++
+
+a[1] = [3.2, 16]
+
+pln("modified:", a)
+
+// 异常处理
+try {
+    a[100] = 1
+} catch (e) {
+    pln("caught:", e)
+}

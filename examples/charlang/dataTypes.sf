@@ -1,0 +1,29 @@
+// port of dataTypes.char — 数据类型
+a := 3
+pl("[%T] %v", a, a)
+pl("[%v] %v", typeName(a), a)
+
+b := 1.2
+pl("[%v] %v", typeName(b), b)
+
+a = "abc"
+pl("[%v] %v", typeName(a), a)
+
+pln("------")
+
+a = 1
+fn1 := func() {
+    a := 6
+    pln("local a in func:", a)
+}
+
+fn1()
+pln("global a:", a)
+
+c := [1, 2.5, "abc"]
+pln("array:", c)
+
+d := {"name": "Peter", "age": 19}
+pln("map:", d)
+pln("name:", d.name)
+pln("age:", d.age)

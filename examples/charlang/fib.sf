@@ -1,0 +1,22 @@
+// port of fib.char — 斐波那契数列（递归 + 计时）
+
+// argsG 是命令行参数数组
+// sf fib.sf 35 → argsG = ["fib.sf", "35"]
+
+var fib
+fib = func(x) {
+    if x < 2 {
+        return x
+    }
+    return fib(x - 1) + fib(x - 2)
+}
+
+countT := toInt(getParam(argsG, 0, "35"))
+pln("count:", countT)
+
+t1 := clock()
+rsT := fib(countT)
+t2 := clock()
+
+pln("result:", rsT)
+pln("time elapsed:", (t2 - t1) / 1000, "ms")

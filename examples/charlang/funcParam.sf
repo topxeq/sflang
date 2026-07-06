@@ -1,0 +1,24 @@
+// port of funcParam.char — 函数参数传递（值传递 vs 引用共享）
+
+// 数组是引用类型：函数内修改会影响原数组
+c := [1, 2, "a"]
+pln("before:", c)
+
+f3 := func(aryA) {
+    aryA[1] = "cc"
+}
+
+f3(c)
+pln("after f3:", c)
+
+// 对象/map 也是引用类型
+d := map{"field1": 1, "field2": "23.8"}
+pln("before:", toJson(d))
+
+f4 := func(mapA) {
+    mapA["field3"] = "dd"
+    mapA["field1"] = true
+}
+
+f4(d)
+pln("after f4:", toJson(d))

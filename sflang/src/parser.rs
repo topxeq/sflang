@@ -249,6 +249,14 @@ impl Parser {
         match self.peek().kind {
             TokenKind::Var => self.parse_var_decl(),
             TokenKind::Const => self.parse_const_decl(),
+            TokenKind::Ident if self.peek_at(1).kind == TokenKind::ColonAssign => {
+                // name := expr 作为语句（for 初始化等）
+                let name = self.advance().value;
+                let tok = self.advance();
+                let value = self.parse_expr()?;
+                self.consume_semicolon();
+                Ok(Stmt::VarDecl { tok, name, value: Some(value) })
+            }
             _ => {
                 let expr = self.parse_expr()?;
                 Ok(Stmt::ExprStmt { tok: expr.token().clone(), expr })

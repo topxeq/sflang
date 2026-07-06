@@ -1,0 +1,2 @@
+// port of 001_helloWorld.char
+pln("Hello world!")

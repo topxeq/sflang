@@ -1,0 +1,5 @@
+// port of basic.char — 基本计算
+x := 1.2
+y := x + 1
+
+pln(x + y)

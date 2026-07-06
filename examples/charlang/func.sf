@@ -1,0 +1,22 @@
+// port of func.char — 函数声明与可变参数
+
+// 带参数的函数
+f1 := func(a, b, c, d) {
+    return a * b + c / d
+}
+
+result1 := f1(3, 6, 8, 9)
+pln("result1=", result1)
+
+// 可变参数（... 标记最后一个参数）
+f2 := func(v0, v1, ...args) {
+    sum := v0 + v1
+    argsLen := len(args)
+    for i := 0; i < argsLen; i++ {
+        sum += args[i]
+    }
+    return sum
+}
+
+result2 := f2(3, 6, 8, 9, 7)
+pln("result2=", result2)

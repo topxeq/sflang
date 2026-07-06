@@ -1,0 +1,11 @@
+// port of var.char — 变量声明与赋值
+var a
+
+a = 1
+pln(a)
+
+a = "abc"
+pln(a)
+
+b := true
+pln(b)

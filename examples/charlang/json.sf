@@ -1,0 +1,34 @@
+// port of json.char — JSON 编解码
+
+jsonStrT := `{"name": "Peter", "age": 19, "father": {"name": "Jordan", "age": 56}}`
+pln("jsonStrT:", jsonStrT)
+pln("---")
+
+outT := fromJson(jsonStrT)
+
+pln("result:", outT)
+pln("name:", outT.name)
+pln("age:", outT.age)
+pln("father:", outT.father)
+pln("father.name:", outT.father.name)
+pln("---")
+
+// 对象转 JSON
+appleT := {
+    "Type": "apple",
+    "Color": "Red",
+    "Weight": 10,
+    "canEat": true,
+    "Ingredients": [
+        {"name": "sugar", "amount": 5},
+        {"name": "water", "amount": 50}
+    ]
+}
+
+pln(toJson(appleT))
+pln("---")
+
+// JSON 字符串转回对象再访问
+data := fromJson(toJson(appleT))
+pln("Type:", data.Type)
+pln("first ingredient:", data.Ingredients[0].name)

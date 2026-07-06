@@ -1,0 +1,43 @@
+// port of for1.char — 循环
+c1 := 0
+
+// 经典三段式 for
+for i := 0; i < 5; i++ {
+    c1 += i
+}
+pln(c1 * 3)
+
+// 条件式 for
+i := 0
+for i < 5 {
+    pl("i: %v", i)
+    i = i + 1
+}
+
+// 无限循环 + break/continue
+c := 5
+for {
+    c = c + 5
+    if c < 10 { continue }
+    if c > 30 { break }
+}
+
+pln("c:", c)
+
+// 多重嵌套循环
+for i := 0; i < 3; i++ {
+    for j := 0; j < 3; j++ {
+        if j == 2 { break }
+        pl("i: %v, j: %v\n", i, j)
+    }
+}
+
+// for-in 遍历
+for i in [1, 2, 3] {
+    pl("[%v] %v\n", i, i * 3)
+}
+
+m1 := map{"key1": "value1", "key2": "value2"}
+for k, v in m1 {
+    pl("%v=%v\n", k, v)
+}
