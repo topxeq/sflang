@@ -1,0 +1,35 @@
+// port of getLineAtPos.char — 获取字符串中指定位置所在的行
+// 用法：sf getLineAtPos.sf -idx=10 "文本..."
+
+// 从参数获取位置
+idxT := toInt(getParam(argsG, 0, "10"))
+
+// 示例文本
+s1 := getParam(argsG, 1, `第一行
+第二行
+第三行
+第四行
+第五行`)
+
+// 去除 \r
+s1 = strReplace(s1, "\r", "")
+
+// 截取到位置 idxT 的子串
+s2 := strSub(s1, 0, idxT)
+
+// 计算行号（数 \n 的个数）
+linesCountT := strCount(s2, "\n")
+
+// 取出所在行
+allLines := strSplit(s1, "\n")
+currentLine := getParam(allLines, linesCountT, "")
+
+// 显示上下文
+startT := idxT - 10
+if startT < 0 {
+    startT = 0
+}
+
+pl("位置 %v 在第 %v 行\n", idxT, linesCountT + 1)
+pl("该行内容: %v\n", currentLine)
+pl("附近字符: %v\n", strSub(s1, startT, idxT))

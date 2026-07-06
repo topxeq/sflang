@@ -1,0 +1,38 @@
+// port of searchUniqueLinesInFile.char — 查找文件中的唯一行
+// 用法：sf searchUniqueLinesInFile.sf 文件1 文件2
+// 找出在文件1中但不在文件2中的行
+
+file1 := getParam(argsG, 0, "")
+file2 := getParam(argsG, 1, "")
+
+if file1 == "" || file2 == "" {
+    pln("用法：sf searchUniqueLinesInFile.sf <文件1> <文件2>")
+    pln("找出在文件1中但不在文件2中的行")
+} elif !fileExists(file1) || !fileExists(file2) {
+    pln("文件不存在")
+} else {
+    // 读取两个文件
+    text1 := readFile(file1)
+    text2 := readFile(file2)
+
+    lines1 := strSplitLines(text1)
+    lines2 := strSplitLines(text2)
+
+    // 把文件2的行存入 map 便于快速查找
+    set2 := map{}
+    for line in lines2 {
+        t := trim(line)
+        if t != "" {
+            set2[t] = true
+        }
+    }
+
+    // 找出文件1中不在文件2的行
+    pln("在文件1中但不在文件2中的行:")
+    for line in lines1 {
+        t := trim(line)
+        if t != "" && !hasKey(set2, t) {
+            pln(line)
+        }
+    }
+}

@@ -1,0 +1,8 @@
+// port of helloWorld.char — 最简单的 Hello world
+pln("Hello world!")
+
+// Sflang 的多种打印方式
+pr("不带换行 ")
+pln("带换行")
+pl("格式化输出 %v %v\n", "Sflang", 2026)
+pln("打印", "多个", "参数")

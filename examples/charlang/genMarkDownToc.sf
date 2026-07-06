@@ -1,0 +1,43 @@
+// port of genMarkDownToc.char — 生成 Markdown 目录（Table of Contents）
+// 原脚本从剪贴板读取，这里改为从 argsG 或硬编码示例读取
+
+// 示例 Markdown 文本
+s1 := getParam(argsG, 0, `# 标题一
+一些内容
+## 子标题
+更多内容
+### 三级标题
+## 另一个子标题
+# 标题二`)
+
+lines1 := strSplitLines(s1)
+
+// 起始级别（默认 1，即 # 开头）
+startLevel := 1
+
+// 用数组收集结果（Sflang 无 stringBuilder，用字符串拼接）
+result := ""
+
+for i, v in lines1 {
+    // 检测一级标题
+    if strStartsWith(v, "# ") {
+        vv := trim(strSub(v, 2))
+        result += "- [" + vv + "](#" + strReplace(vv, " ", "_") + ")\n"
+        continue
+    }
+    // 检测二级标题
+    if strStartsWith(v, "## ") {
+        vv := trim(strSub(v, 3))
+        result += "  - [" + vv + "](#" + strReplace(vv, " ", "_") + ")\n"
+        continue
+    }
+    // 检测三级标题
+    if strStartsWith(v, "### ") {
+        vv := trim(strSub(v, 4))
+        result += "    - [" + vv + "](#" + strReplace(vv, " ", "_") + ")\n"
+        continue
+    }
+}
+
+pln("生成的目录:")
+pr(result)

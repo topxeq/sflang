@@ -1,0 +1,21 @@
+// port of addBom.char — 给文本文件添加 UTF-8 BOM
+// 用法：sf addBom.sf 输入文件 [输出文件]
+
+file1 := getParam(argsG, 0, "")
+outputFile := getParam(argsG, 1, file1)
+
+if file1 == "" {
+    pln("用法：sf addBom.sf <输入文件> [输出文件]")
+} elif !fileExists(file1) {
+    pln("文件不存在:", file1)
+} else {
+    // 读取文件内容
+    fc := readFile(file1)
+
+    // 添加 UTF-8 BOM（\uFEFF）
+    fc = "\uFEFF" + fc
+
+    // 写入输出文件
+    writeFile(outputFile, fc)
+    pln("完成，已保存到", outputFile)
+}

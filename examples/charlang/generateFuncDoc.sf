@@ -1,0 +1,33 @@
+// port of generateFuncDoc.char — 生成函数文档
+// 从源代码中提取函数定义并生成文档
+// 用法：sf generateFuncDoc.sf 源代码文件
+
+filePath := getParam(argsG, 0, "")
+if filePath == "" {
+    pln("用法：sf generateFuncDoc.sf <源代码文件>")
+    pln("提取其中的 func 定义并生成文档")
+} elif !fileExists(filePath) {
+    pln("文件不存在:", filePath)
+} else {
+    content := readFile(filePath)
+    lines := strSplitLines(content)
+
+    pln("# 函数文档")
+    pln("")
+    pln("从", filePath, "提取")
+    pln("")
+
+    // 用正则匹配 func 定义
+    // Sflang 的函数定义格式：func name(params) {
+    for i, line in lines {
+        // regFindFirst(pattern, s) 返回 [完整匹配, 捕获组1, 捕获组2...]
+        caps := regFindFirst(`func\s+(\w+)\s*\(([^)]*)\)`, line)
+        if !isUndefined(caps) {
+            // caps[1] = 函数名, caps[2] = 参数
+            pln("## " + caps[1])
+            pln("")
+            pln("**参数:** " + caps[2])
+            pln("")
+        }
+    }
+}
