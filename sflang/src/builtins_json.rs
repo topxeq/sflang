@@ -20,6 +20,8 @@ use crate::vm::VM;
 pub fn register(vm: &mut VM) {
     vm.register_builtin("jsonEncode", bi_json_encode);
     vm.register_builtin("jsonDecode", bi_json_decode);
+    vm.register_builtin("toJson", bi_json_encode);
+    vm.register_builtin("fromJson", bi_json_decode);
 }
 
 // ---- 编码（Value → JSON 字符串）----

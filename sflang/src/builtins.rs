@@ -47,6 +47,12 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("spr", bi_sprintf);
     vm.register_builtin("fpr", bi_printf);
     vm.register_builtin("adjustFloat", bi_adjust_float);
+    vm.register_builtin("pass", bi_pass);
+    vm.register_builtin("plt", bi_plt);
+    vm.register_builtin("getParam", bi_get_param);
+    vm.register_builtin("toStr", bi_string);
+    vm.register_builtin("toInt", bi_int);
+    vm.register_builtin("toFloat", bi_float);
     // 类型判断谓词
     vm.register_builtin("isArray", bi_is_array);
     vm.register_builtin("isString", bi_is_string);
@@ -979,11 +985,7 @@ fn bi_sprintf(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::str_from(s))
 }
 
-/// bi_adjust_float 消除浮点计算精度误差（如 0.1+0.2=0.30000000000000004 → 0.3）。
-///
-/// 用法：adjustFloat(x) 或 adjustFloat(x, precision)
-/// 默认 precision=10（保留 10 位小数，去除末尾精度噪声）。
-/// 算法：将浮点数格式化为 precision 位小数的字符串，再解析回来。
+/// bi_adjust_float 消除浮点计算精度误差。
 fn bi_adjust_float(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
     let x = bh::as_float(args, 0, "adjustFloat")?;
@@ -997,4 +999,39 @@ fn bi_adjust_float(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         format!("adjustFloat() 解析失败: {}", formatted),
     ))?;
     Ok(Value::Float(result))
+}
+
+/// bi_pass 空操作占位符（对标 Charlang pass()）。
+fn bi_pass(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
+    Ok(Value::Undefined)
+}
+
+/// bi_plt 打印类型+值（对标 Charlang plt）。
+/// 输出格式：(类型名)值
+fn bi_plt(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let out = _vm.output_handle();
+    for v in args {
+        writeln!(out.lock().unwrap(), "({}) {}", v.type_name(), v.inspect())
+            .map_err(|e| crate::value::error_value(e.to_string()))?;
+    }
+    Ok(Value::Undefined)
+}
+
+/// bi_get_param 从 argsG 中取第 idx 个参数，不存在则返回默认值。
+/// 用法：getParam(argsG, index) 或 getParam(argsG, index, default)
+fn bi_get_param(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    if args.is_empty() {
+        return Ok(Value::Undefined);
+    }
+    // 第一个参数是数组（通常传 argsG）
+    let arr = match &args[0] {
+        Value::Array(a) => a,
+        _ => return Ok(args.get(2).cloned().unwrap_or(Value::Undefined)),
+    };
+    let idx = if args.len() > 1 { bh::as_int(args, 1, "getParam")? as usize } else { 0 };
+    let guard = arr.lock().unwrap();
+    Ok(guard.get(idx).cloned().unwrap_or_else(|| {
+        args.get(2).cloned().unwrap_or(Value::Undefined)
+    }))
 }
