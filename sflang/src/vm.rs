@@ -946,6 +946,10 @@ impl VM {
                 // defer 抛出异常：覆盖原 return 值
                 return self.handle_throw(frame, res.value);
             }
+            // do_call 会把返回值压栈，defer 忽略返回值，需要弹出
+            if res.kind == FlowKind::Normal {
+                self.pop();
+            }
         }
         // 2. 处理 finally：若当前帧有未消费的 try 栈
         // 简化：return 时检查 try_stack，若有 finally 入口则挂起

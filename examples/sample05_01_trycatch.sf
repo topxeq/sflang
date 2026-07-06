@@ -1,0 +1,120 @@
+// 示例 05.01：异常处理 try...catch...finally + defer
+// ==================================
+// Sflang 支持完整的异常处理机制和 defer 延迟执行。
+
+// ==================
+// try...catch...finally
+// ==================
+// catch 和 finally 都非必须，但至少要有一个
+
+var a = 0
+var r = undefined
+
+try {
+    r = 10 / a    // 除零错误
+} catch (e) {
+    // e 是 error 类型的值，包含错误信息
+    pln("捕获到异常:", e)
+} finally {
+    // 无论是否异常，finally 总是执行
+    pln("finally: r =", r)
+}
+
+pln("程序继续执行")
+
+// ==================
+// 只有 catch（无 finally）
+// ==================
+try {
+    throw("手动抛出的错误")
+} catch (e) {
+    pln("捕获:", e)
+}
+
+// ==================
+// 只有 finally（无 catch）
+// ==================
+// 异常会穿透 finally 向上传播
+var cleaned = false
+try {
+    try {
+        throw("内层错误")
+    } finally {
+        cleaned = true       // finally 仍会执行
+        pln("内层 finally 执行, cleaned =", cleaned)
+    }
+} catch (e) {
+    pln("外层捕获:", e)
+}
+
+// ==================
+// defer（延迟执行）
+// ==================
+// defer 在函数返回时（正常或异常）逆序执行
+func processFile(pathA) {
+    var f = openFile(pathA, "r")
+    defer close(f)           // 保证函数退出时关闭文件
+
+    var line = readLine(f)
+    if isUndefined(line) {
+        return "(空文件)"     // defer close(f) 仍会执行
+    }
+    return line
+}
+pln("\n--- defer ---")
+var tmpFile = getTempDir() + "/sflang_defer_test.txt"
+writeFile(tmpFile, "defer 测试行")
+pln("processFile:", processFile(tmpFile))
+deleteFile(tmpFile)
+
+// defer 逆序执行（后注册的先执行）
+func multiDefer() {
+    defer pln("  defer 1（最后执行）")
+    defer pln("  defer 2（中间执行）")
+    defer pln("  defer 3（最先执行）")
+    pln("函数体执行")
+}
+pln("\n--- defer 逆序 ---")
+multiDefer()
+
+// ==================
+// 实用：用 defer 保证资源释放
+// ==================
+func safeDivide(x, y) {
+    if y == 0 {
+        throw("除数不能为零")
+    }
+    return x / y
+}
+
+pln("\n--- 实用异常处理 ---")
+var nums = [10, 20, 30]
+var divisors = [2, 0, 5]
+for i in range(len(nums)) {
+    try {
+        var result = safeDivide(nums[i], divisors[i])
+        pln("  %d / %d = %d", nums[i], divisors[i], result)
+    } catch (e) {
+        pln("  %d / %d 失败: %s", nums[i], divisors[i], e)
+    }
+}
+
+// ==================
+// 嵌套 try（内层 catch + 外层 finally）
+// ==================
+func riskyOp() {
+    try {
+        try {
+            throw("内层错误")
+        } catch (e) {
+            pln("  内层捕获:", e)
+            throw("重新抛出")     // 内层 catch 后再抛
+        }
+    } catch (e) {
+        pln("  外层捕获:", e)
+    } finally {
+        pln("  外层 finally")
+    }
+}
+pln("\n--- 嵌套 try ---")
+riskyOp()

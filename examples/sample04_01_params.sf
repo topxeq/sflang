@@ -1,0 +1,66 @@
+// 示例 04.01：函数的输入参数
+// ==================================
+// 展示函数参数的各种用法：固定参数、可变参数、展开调用。
+
+// ---- 固定参数 ----
+func calc(a, b, c, d) {
+    return a * b + c / d
+}
+pln("calc(3, 6, 8, 9) =", calc(3, 6, 8, 9))
+
+// 参数不足时，缺失的参数为 undefined
+// 参与算术会报错，但可以用来做可选参数判断
+func greet(name, greeting) {
+    var g = greeting ?? "你好"
+    return g + ", " + name + "!"
+}
+pln("greet 默认:", greet("Alice"))
+pln("greet 指定:", greet("Bob", "Hello"))
+
+// ---- 可变参数（... 标记最后一个参数）----
+func sumUp(v0, v1, ...rest) {
+    var total = v0 + v1
+    pln("固定参数 v0=%d v1=%d, 可变参数个数=%d", v0, v1, len(rest))
+    for v in rest {
+        total += v
+    }
+    return total
+}
+pln("sumUp(3, 6, 8, 9, 7) =", sumUp(3, 6, 8, 9, 7))
+
+// 可变参数可以是不同类型
+pln("sumUp(1, 2, 3.5, 4) =", sumUp(1, 2, 3.5, 4))
+
+// ---- 展开调用（...arr）----
+func maxOf(...nums) {
+    var m = nums[0]
+    for n in nums {
+        if n > m { m = n }
+    }
+    return m
+}
+var data = [3, 7, 2, 9, 4]
+pln("maxOf(...data) =", maxOf(...data))         // 9
+pln("maxOf(1, ...data, 100) =", maxOf(1, ...data, 100))  // 100
+
+// ---- 函数作为参数（高阶函数）----
+func apply(fn, x) { return fn(x) }
+pln("apply(double, 21) =", apply(func(n) { return n * 2 }, 21))
+
+// ---- 函数作为返回值 ----
+func multiplier(factor) {
+    return func(n) { return n * factor }
+}
+var triple = multiplier(3)
+pln("triple(15) =", triple(15))                 // 45
+
+// ---- 闭包捕获（共享可变状态）----
+func makeCounter() {
+    var count = 0
+    return func() {
+        count++
+        return count
+    }
+}
+var counter = makeCounter()
+pln(counter(), counter(), counter())            // 1 2 3

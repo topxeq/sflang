@@ -1,0 +1,138 @@
+// 示例 06.01：多线程基本方式
+// ==================================
+// Sflang 用 run 关键字启动真正的 OS 线程。
+// 子线程与主线程共享全局变量和输出。
+
+// ---- 基本线程启动 ----
+// run 后跟一个函数调用，在新线程中执行
+func threadFunc() {
+    for i in range(5) {
+        pln("  (子线程) i =", i)
+        sleep(50)    // 毫秒
+    }
+}
+run threadFunc()
+
+// 主线程同时执行
+for i in range(5) {
+    pln("(主线程) i =", i)
+    sleep(80)    // 主线程稍慢，观察交替
+}
+
+sleep(300)  // 等待子线程完成
+pln("\n--- 线程传值（传值，非引用）---")
+
+// ---- 线程传值：基本类型是传值拷贝 ----
+func worker(n) {
+    for i in range(3) {
+        n++
+        pln("  (worker) n =", n)
+        sleep(20)
+    }
+}
+
+var val = 100
+run worker(val)     // 注意：基本类型传值拷贝，子线程修改不影响主线程
+sleep(100)
+pln("(主线程) val =", val)    // 仍为 100
+sleep(100)
+pln("(主线程) val =", val)    // 仍为 100
+
+pln("\n--- 共享数据（数组/对象引用）---")
+
+// ---- 线程共享：复合类型（数组/对象）是引用共享 ----
+var shared = [0]
+
+func incrementor() {
+    for i in range(100) {
+        shared[0]++
+    }
+}
+
+// 启动多个线程同时修改共享数组
+run incrementor()
+run incrementor()
+incrementor()   // 主线程也执行
+sleep(200)
+// 由于无锁竞争，最终值 <= 300
+pln("shared[0] =", shared[0], "(预期 <= 300, 因竞争可能 < 300)")
+
+pln("\n--- Mutex 保护共享数据 ---")
+
+// ---- Mutex 消除竞争 ----
+var counter = [0]
+var mu = newMutex()
+
+func safeIncrementor() {
+    for i in range(100) {
+        lock(mu)
+        counter[0]++
+        unlock(mu)
+    }
+}
+
+// 可以用 defer 简化锁的释放
+func safeIncrementorDefer() {
+    for i in range(100) {
+        lock(mu)
+        defer unlock(mu)    // 注意：defer 在函数结束时执行，不是循环每次
+        // 这里 defer 在 for 循环中不太合适，应该手动 unlock
+    }
+}
+
+// 实际正确写法：手动 lock/unlock
+func safeInc() {
+    for i in range(100) {
+        lock(mu)
+        counter[0]++
+        unlock(mu)
+    }
+}
+
+run safeInc()
+run safeInc()
+safeInc()
+sleep(300)
+pln("mutex 保护后 counter[0] =", counter[0], "(应为 300)")
+
+pln("\n--- Channel 线程间通信 ---")
+
+// ---- Channel：生产者-消费者 ----
+var ch = newChannel()
+
+func producer() {
+    for i in range(1, 6) {
+        chanSend(ch, i)
+        pln("  (生产者) 发送:", i)
+        sleep(30)
+    }
+    chanSend(ch, -1)    // 结束标记
+}
+
+run producer()
+// 消费者在主线程
+while true {
+    var v = chanRecv(ch)
+    if v == -1 { break }
+    pln("(消费者) 接收:", v)
+}
+
+pln("\n--- 多线程等待（WaitGroup）---")
+
+var wg = newWaitGroup()
+var results = map{}
+
+wgAdd(wg, 3)
+
+func task(id) {
+    sleep(50)
+    results[id] = "完成"
+    wgDone(wg)
+}
+
+run task("A")
+run task("B")
+task("C")
+
+wgWait(wg)   // 等待所有任务完成
+pln("所有任务完成:", results["A"], results["B"], results["C"])
