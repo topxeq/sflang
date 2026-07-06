@@ -85,7 +85,8 @@ adjustFloat(0.1 + 0.2)  // 0.3（消除浮点精度误差）
 - `int` ↔ `float`：自动转换（`1 + 2.5` → `3.5`）
 - `int` ↔ `bigInt`：自动（`1 + bigInt(2)` → `int(3)`，大结果保持 bigInt）
 - `bigFloat` ↔ `int/bigInt`：自动
-- `bigInt`/`bigFloat` ↔ `float`：报错（需显式转换）
+- `int(v)` 支持 int/float/bool/byte/string/bigInt（bigInt 超 i64 范围报错）
+- `float(v)` 支持 int/float/bool/byte/string/bigInt/bigFloat
 - `byte + byte` → `byte`（mod 256 环绕：`byte(255) + byte(1)` → `byte(0)`）
 - `byte + int` → `int`（byte 提升）
 
@@ -339,6 +340,27 @@ break / continue
 
 ## 12. 异常处理
 
+Sflang 的错误处理遵循"一般返回错误对象为主，必要时才抛异常"的原则。
+
+### 错误值（推荐）
+
+```sflang
+// 函数返回错误值（不抛异常）
+func divide(a, b) {
+    if b == 0 {
+        return error("除数不能为零")
+    }
+    return a / b
+}
+
+r := divide(10, 0)
+if isError(r) {
+    println("出错了:", r)
+}
+```
+
+### try / catch / finally
+
 ```sflang
 try {
     // 可能出错的代码
@@ -352,6 +374,10 @@ try {
 defer close(f)        // 延迟执行（函数返回时逆序执行）
 
 throw("错误信息")      // 主动抛出
+```
+
+> **何时抛异常**：除零、空指针（undefined.x）、不可恢复的内部错误等。
+> **何时返回错误值**：常规的业务错误、参数校验失败、IO 失败等可用 `error()` 返回。
 ```
 
 ---
