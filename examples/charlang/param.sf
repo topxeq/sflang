@@ -1,0 +1,11 @@
+// port of param.char — 命令行参数获取
+// Sflang 用 argsG + getParam(argsG, index, default)
+
+pln("args:", argsG)
+
+// getParam 取第 idx 个参数，不存在则返回默认值
+pl("arg 0: %v", getParam(argsG, 0, "no"))
+pl("arg 1: %v", getParam(argsG, 1, "no"))
+pl("arg 2: %v", getParam(argsG, 2, "no"))
+
+// 用法：sf param.sf hello world

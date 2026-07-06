@@ -1,0 +1,31 @@
+// port of new.char — 引用语义
+// Sflang 用 newRef/getValueByRef/setValueByRef
+
+b1 := newRef(true)
+plt(b1)
+
+pln("init:", getValueByRef(b1))
+
+f1 := func(arg1) {
+    setValueByRef(arg1, false)
+}
+
+f1(b1)
+
+pln("after f1:")
+plt(b1)
+
+// 引用存整数
+n1 := newRef(5)
+func inc(r) {
+    setValueByRef(r, getValueByRef(r) + 1)
+}
+inc(n1)
+inc(n1)
+inc(n1)
+pln("after 3x inc:", getValueByRef(n1))
+
+// 引用存字符串
+s1 := newRef("hello")
+setValueByRef(s1, "world")
+pln("string ref:", getValueByRef(s1))

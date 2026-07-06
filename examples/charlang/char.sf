@@ -1,0 +1,24 @@
+// port of char.char — 字符/码点
+// Sflang 没有 char 类型，用 int 表示码点，charFromCode 转 string
+
+c1 := 97  // 'a' 的码点
+pl("type of c1: %v", typeName(c1))
+pl("value of c1: %v", c1)
+pl("character of c1: %c", c1)
+
+c2 := 22825  // '天' 的码点
+pl("type of c2: %v", typeName(c2))
+pl("value of c2: %v", c2)
+pl("character of c2: %c", c2)
+
+pln()
+
+// 码点 ↔ 字符转换
+pl("charFromCode(97) = %s", charFromCode(97))
+pl("codeOf(\"a\") = %d", codeOf("a"))
+pl("charFromCode(22825) = %s", charFromCode(22825))
+
+// 从字符串取字符码点
+s := "abc"
+pl("s[0] = %d", s[0])
+pl("charFromCode(s[0]) = %s", charFromCode(s[0]))

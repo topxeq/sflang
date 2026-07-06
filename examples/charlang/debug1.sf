@@ -1,0 +1,19 @@
+// port of debug1.char — 调试：访问不存在的成员
+a := {}
+
+// 对象不存在的键返回 undefined
+pln("a.est:", a.est)
+pln("isUndefined:", isUndefined(a.est))
+
+// 字符串不存在的成员报错（有明确支持的成员列表）
+s := "hello"
+try {
+    pln(s.nonExist)
+} catch (e) {
+    pln("caught:", e)
+}
+
+// 对象不存在的键返回 undefined
+o := {x: 1}
+pln("o.missing:", o.missing)
+pln("isUndefined:", isUndefined(o.missing))

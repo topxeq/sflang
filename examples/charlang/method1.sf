@@ -1,0 +1,21 @@
+// port of method1.char — 方法调用（内置函数）
+// Sflang 不用 callMethod，直接调用全局内置函数
+
+a := "  1.23 "
+
+// 用 contains 内置函数
+b := contains(a, "3")
+plt(b)
+
+pln(contains(a, "5"))
+
+// strFind
+pln(strFind(a, "1"))
+
+// strTrim
+pln(strTrim(a))
+
+// Sflang 的对象方法用 .method() 自动注入 self
+obj := {value: 42}
+obj.double = func(self) { return self.value * 2 }
+pln("obj.double():", obj.double())

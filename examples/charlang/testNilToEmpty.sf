@@ -1,0 +1,20 @@
+// port of testNilToEmpty.char — undefined 转空串
+// Sflang 用 trim() 或 undefToEmpty()
+
+m := {}
+
+e := m["a"]
+
+pl("isUndefined: %v", isUndefined(e))
+
+// trim() 可以将 undefined 转为空串（跨类型函数）
+s := trim(m["a"])
+pl("trim result: '%v'", s)
+
+// undefToEmpty 也可以
+s2 := undefToEmpty(m["a"])
+pl("undefToEmpty result: '%v'", s2)
+
+// default 提供默认值
+s3 := defaultUndef(m["a"], "默认值")
+pl("defaultUndef result: '%v'", s3)

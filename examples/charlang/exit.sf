@@ -1,0 +1,14 @@
+// port of exit.char — exit 函数
+// Sflang 用 throw 替代 exit（没有 exit 内置函数）
+
+a := 0
+
+// 模拟 exit：用 break 退出循环（Sflang 没有 for{} 无限循环，用 while true）
+while true {
+    a++
+    pln(a)
+    if a > 10 {
+        break
+    }
+}
+pln("done")

@@ -1,0 +1,18 @@
+// port of test.char — 基本打印测试
+a := 1
+pln(a + 2)
+
+s := `
+We are the world.
+
+Nice day today!
+`
+pln(s)
+
+// 随机数
+pln("randInt(1, 100):", randInt(1, 100))
+pln("random():", random())
+
+// 字符串函数
+pln(strToUpper("hello"))
+pln(strReplace("a-b-c", "-", "+"))

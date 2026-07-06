@@ -1,0 +1,29 @@
+// port of method2.char — 方法调用（点号语法）
+// Sflang 用 .method() 调用对象方法
+
+a := "  1.23 "
+
+// Sflang 字符串不支持 .contains() 方法（用全局函数）
+// 对象方法用 .method() 自动注入 self
+obj := {
+    value: 42,
+    inc: func(self) { self.value++; return self.value },
+    get: func(self) { return self.value }
+}
+
+pln("obj.get():", obj.get())
+pln("obj.inc():", obj.inc())
+pln("obj.inc():", obj.inc())
+pln("obj.get():", obj.get())
+
+// 闭包作为方法
+counter := {
+    count: 0,
+    add: func(self, n) { self.count += n; return self.count },
+    reset: func(self) { self.count = 0 }
+}
+
+counter.add(counter, 5)  // 这里用 .add(5) 更好（自动注入 self）
+// 正确用法：obj.method(args) 自动注入 obj
+counter.add(10)
+pln("count:", counter.get())

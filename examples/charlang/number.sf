@@ -1,0 +1,29 @@
+// port of number.char — 数值类型演示
+a1 := 1
+plt(a1)
+
+a2 := -5
+plt(a2)
+
+// Sflang 没有 uint 类型，用 int
+pln("int 范围: -2^63 到 2^63-1")
+
+// byte 类型
+d := byte(8)
+plt(d)
+
+// 码点（对标 charlang 的 'D'）
+e1 := 68  // 'D' 的码点
+pl("码点 %d 对应字符: %c\n", e1, e1)
+
+// 浮点
+f := 2.3
+plt(f)
+
+// bigInt
+g := bigInt("99999999999999999999")
+plt(g)
+
+// bigFloat
+h := bigFloat("0.1")
+plt(h)

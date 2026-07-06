@@ -1,0 +1,30 @@
+// port of checkErr.char — 错误检查
+// Sflang 用 try-catch 或 isUndefined 判断错误
+
+// JSON 解析错误捕获
+result := fromJson(`{"abc": 1, "bad"}`)
+
+// Sflang 的 fromJson 返回 error 或值
+// 用 try-catch 检查
+try {
+    pln("result:", result.name)
+} catch (e) {
+    pln("错误: %v", e)
+}
+
+// 成功的 JSON 解析
+ok := fromJson(`{"name": "Peter", "age": 19}`)
+pln("name:", ok["name"])
+pln("age:", ok["age"])
+
+// checkErr 等效模式
+func checkErr(result) {
+    if typeName(result) == "error" {
+        pln("Error: %v", result)
+        throw(result)
+    }
+    return result
+}
+
+r2 := checkErr(fromJson(`{"ok": true}`))
+pln("ok:", r2["ok"])

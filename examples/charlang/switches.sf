@@ -1,0 +1,25 @@
+// port of switches.char — 命令行开关参数
+// Sflang 需要自己解析 argsG 中的开关
+
+// 辅助函数：检查 argsG 是否包含某开关
+func hasSwitch(arr, key) {
+    return contains(arr, key)
+}
+
+// 辅助函数：获取 -key=value 格式的开关值
+func getSwitch(arr, prefix, defaultVal) {
+    for arg in arr {
+        if strStartsWith(arg, prefix) {
+            return strSub(arg, len(prefix))
+        }
+    }
+    return defaultVal
+}
+
+// 测试
+pln("has -v:", hasSwitch(argsG, "-v"))
+pln("num:", getSwitch(argsG, "-num=", "0"))
+pln("name:", getSwitch(argsG, "-name=", "none"))
+
+// 用法示例：
+// sf switches.sf -v -num=42 -name=hello

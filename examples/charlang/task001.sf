@@ -1,0 +1,12 @@
+// port of task001.char — 追加写入日志文件
+
+logPath := joinPath(getTempDir(), "sflang_task_test.log")
+
+// 追加一行
+appendFile(logPath, "task001.sf\n")
+
+// 读回验证
+content := readFile(logPath)
+pln("log content:", content)
+
+deleteFile(logPath)
