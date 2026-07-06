@@ -1,0 +1,45 @@
+// port of example001-008 — 基础示例合集
+// Charlang 的 example001-008 都是简单入门演示，合并为一个
+
+// example001: Hello world
+pln("Hello world!")
+
+// example002: 注释
+/* 块注释 */
+a := 8 // 行注释
+pln("a:", a)
+
+// example003: 变量声明
+var v
+v = 1
+pln(v)
+v = "abc"
+pln(v)
+
+// example004: 类型查看
+pl("[%T] %v", 3, 3)
+pl("[%v] %v", typeName(3), 3)
+
+// example005: 布尔
+b := true
+pl("[%v] %v", typeName(b), b)
+
+// example006: 整数
+c1 := 19
+c2 := 18
+pln(c1 + c2 / 3)
+
+// example007: 浮点
+f1 := 1.32
+pl("%v, %v", typeName(f1), f1)
+f1 = f1 * 0.8
+pl("after *0.8: %v", f1)
+
+// example008: 字符串与字节
+s1 := "abc"
+s2 := s1 + "3"
+plt(s2)
+
+b1 := bytes(s1)
+plt(b1)
+pln("hex:", bytesHex(b1))

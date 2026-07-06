@@ -1,0 +1,20 @@
+// port of compiledFunc.char — 编译后的函数（可变参数求和）
+
+sum := func(...args) {
+    plt(args)
+
+    var result = 0
+    for i, v in args {
+        result += v
+    }
+
+    return result
+}
+
+pln("sum(1,2,3):", sum(1, 2, 3))
+pln("sum(10,20,30,40):", sum(10, 20, 30, 40))
+pln("sum():", sum())
+
+// 编译执行
+code := compile("return 42 * 2")
+pln("runCode:", runCode(code))

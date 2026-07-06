@@ -1,0 +1,27 @@
+// port of bytes.char — 字节序列操作
+s1 := "abc123天气好！"
+
+b1 := bytes(s1)
+plt(b1)
+
+// 字节切片
+pln("hex:", bytesHex(b1))
+pln("len:", len(b1))
+
+// 字节访问
+pln("b1[0]:", b1[0])
+pln("b1[3]:", b1[3])
+
+// bytes 从数组创建
+ary1 := [0x61, 0x62, 0x63, 0x31, 0x32, 0x33]
+b2 := bytes(byteArrayFromArray(ary1))
+pln("from array:", strFromBytes(b2))
+
+// 字节切片
+pln("slice hex:", bytesHex(bytesSlice(b2, 0, 3)))
+
+// XOR 加解密
+enc := bytesXor(b2, byte(0xFF))
+pln("encrypted:", bytesHex(enc))
+dec := bytesXor(enc, byte(0xFF))
+pln("decrypted:", strFromBytes(dec))

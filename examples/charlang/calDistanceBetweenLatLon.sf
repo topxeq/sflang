@@ -1,0 +1,32 @@
+// port of calDistanceBetweenLatLon.char — 经纬度距离计算
+// 使用 Haversine 公式
+
+func haversine(lat1, lon1, lat2, lon2) {
+    // 地球半径（千米）
+    R := 6371.0
+
+    // 转弧度
+    lat1r := lat1 * piG / 180.0
+    lat2r := lat2 * piG / 180.0
+    dlat := (lat2 - lat1) * piG / 180.0
+    dlon := (lon2 - lon1) * piG / 180.0
+
+    a := sin(dlat / 2) * sin(dlat / 2) +
+         cos(lat1r) * cos(lat2r) * sin(dlon / 2) * sin(dlon / 2)
+    c := 2 * atan2(sqrt(a), sqrt(1 - a))
+
+    return R * c
+}
+
+// 巴黎两个点的距离
+lon1 := 2.349014
+lat1 := 48.864716
+lon2 := 2.312385
+lat2 := 48.675392
+
+result := haversine(lat1, lon1, lat2, lon2)
+pl("distance: %.2f km", result)
+
+// 北京到上海
+distBJtoSH := haversine(39.9042, 116.4074, 31.2304, 121.4737)
+pl("\n北京-上海: %.2f km", distBJtoSH)

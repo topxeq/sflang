@@ -1,0 +1,32 @@
+// port of reader1.char — CSV 文件读取（流式）
+// 用 openFile + readLine 流式读取
+
+pathT := joinPath(getTempDir(), "sflang_reader1_test.csv")
+
+// 准备 CSV 数据
+writeFile(pathT, "name,age,city\nAlice,30,Beijing\nBob,25,Shanghai\n")
+
+// 流式逐行读取
+f := openFile(pathT, "r")
+defer close(f)
+
+// 读表头
+header := readLine(f)
+headers := strSplit(header, ",")
+pln("表头:", headers)
+
+// 读数据行
+pln("数据:")
+while true {
+    line := readLine(f)
+    if isUndefined(line) { break }
+
+    fields := strSplit(line, ",")
+    row := map{}
+    for i := 0; i < len(headers); i++ {
+        row[headers[i]] = getParam(fields, i, "")
+    }
+    pl("  %s, %s, %s\n", row["name"], row["age"], row["city"])
+}
+
+deleteFile(pathT)

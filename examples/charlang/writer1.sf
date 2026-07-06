@@ -1,0 +1,32 @@
+// port of writer1.char — 文件写入
+// Sflang 用 openFile + writeStr/writeBytes + close
+
+pathT := joinPath(getTempDir(), "sflang_writer1_test.txt")
+
+// 覆盖写入
+w := openFile(pathT, "w")
+writeStr(w, "abc123天气好")
+close(w)
+
+// 读取验证
+pln("第一次写入:", readFile(pathT))
+
+// 追加写入
+w2 := openFile(pathT, "a")
+writeLine(w2, "第二行")
+writeBytes(w2, bytes("\n第三行"))
+close(w2)
+
+pln("追加后:", readFile(pathT))
+
+// 用 defer 确保关闭
+func safeWrite(path, content) {
+    f := openFile(path, "w")
+    defer close(f)
+    writeStr(f, content)
+}
+
+safeWrite(pathT, "用 defer 写入")
+pln("defer 写入:", readFile(pathT))
+
+deleteFile(pathT)

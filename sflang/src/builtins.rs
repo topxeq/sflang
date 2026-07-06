@@ -408,9 +408,20 @@ fn bi_int(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         Value::Int(_) => Ok(args[0].clone()),
         Value::Float(f) => Ok(Value::Int(*f as i64)),
         Value::Bool(b) => Ok(Value::Int(if *b { 1 } else { 0 })),
+        Value::Byte(b) => Ok(Value::Int(*b as i64)),
         Value::Str(s) => s.parse::<i64>().map(Value::Int).map_err(|_| {
             crate::value::error_value(format!("int() 无法解析 '{}' (可能原因：字符串不是有效整数)", s))
         }),
+        Value::BigInt(b) => {
+            // BigInt -> Int，超出 i64 范围则报错
+            match b.to_i64() {
+                Some(v) => Ok(Value::Int(v)),
+                None => Err(crate::value::error_value(format!(
+                    "int() BigInt 超出 i64 范围: {} (可能原因：数值过大，请保持使用 bigInt 类型)",
+                    b
+                ))),
+            }
+        }
         v => Err(crate::value::error_value(format!("int() 不支持类型 {}", v.type_name()))),
     }
 }

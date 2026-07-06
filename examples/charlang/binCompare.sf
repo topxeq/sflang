@@ -1,0 +1,46 @@
+// port of binCompare.char — 二进制比较两个文件
+// 用法：sf binCompare.sf 文件1 文件2 [limit]
+
+func compareFiles(path1, path2, limit) {
+    b1 := readFileBytes(path1)
+    b2 := readFileBytes(path2)
+
+    diffs := []
+    maxLen := len(b1)
+    if len(b2) > maxLen { maxLen = len(b2) }
+
+    if limit > 0 && limit < maxLen {
+        maxLen = limit
+    }
+
+    for i := 0; i < maxLen; i++ {
+        v1 := b1[i]
+        v2 := b2[i]
+        if v1 != v2 {
+            push(diffs, [i, v1, v2])
+        }
+    }
+
+    return diffs
+}
+
+file1 := getParam(argsG, 0, "")
+file2 := getParam(argsG, 1, "")
+
+if file1 == "" || file2 == "" {
+    pln("用法：sf binCompare.sf <文件1> <文件2> [limit]")
+} else {
+    limit := toInt(getParam(argsG, 2, "0"))
+
+    if !fileExists(file1) {
+        pln("文件1不存在:", file1)
+    } elif !fileExists(file2) {
+        pln("文件2不存在:", file2)
+    } else {
+        diffs := compareFiles(file1, file2, limit)
+        pln("差异数量:", len(diffs))
+        for d in diffs {
+            pl("  pos %d: %02x vs %02x\n", d[0], toInt(d[1]), toInt(d[2]))
+        }
+    }
+}

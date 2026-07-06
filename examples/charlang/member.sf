@@ -1,0 +1,32 @@
+// port of member.char — 对象成员访问
+// Sflang 用 obj.key / obj["key"] / hasKey / keys / values
+
+obj := {name: "Alice", age: 30, remark: "test"}
+
+// 点访问
+pln("name:", obj.name)
+pln("age:", obj.age)
+
+// 括号访问
+pln("remark:", obj["remark"])
+
+// 设置成员
+obj.newField = "hello"
+obj["another"] = 42
+
+// hasKey
+pln("hasKey name:", hasKey(obj, "name"))
+pln("hasKey missing:", hasKey(obj, "missing"))
+
+// keys / values
+pln("keys:", keys(obj))
+pln("values:", values(obj))
+
+// entries（过滤方法）
+obj.method = func(self) { return self.name }
+pln("dataKeys:", dataKeys(obj))
+pln("entries:", entries(obj))
+
+// 不存在的成员返回 undefined
+pln("missing:", obj.nonexistent)
+pln("isUndefined:", isUndefined(obj.nonexistent))

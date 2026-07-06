@@ -1,0 +1,33 @@
+// port of findStringDiffPos.char — 字符串差异位置
+// Sflang 需要自己实现 strFindDiffPos
+
+func strFindDiffPos(s1, s2) {
+    minLen := len(s1)
+    if len(s2) < minLen { minLen = len(s2) }
+
+    for i := 0; i < minLen; i++ {
+        if s1[i] != s2[i] {
+            return i
+        }
+    }
+
+    // 公共部分相同，检查长度
+    if len(s1) != len(s2) {
+        return minLen
+    }
+
+    return -1  // 完全相同
+}
+
+s1 := "abc123+-*/"
+s2 := "abc163+-*/"
+
+pln("diff pos:", strFindDiffPos(s1, s2))     // 3
+
+s3 := "hello"
+s4 := "hello"
+pln("same:", strFindDiffPos(s3, s4))          // -1
+
+s5 := "abc"
+s6 := "abcde"
+pln("length diff:", strFindDiffPos(s5, s6))   // 3
