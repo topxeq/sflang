@@ -100,21 +100,21 @@ for i in range(len(nums)) {
 }
 
 // ==================
-// 嵌套 try（内层 catch + 外层 finally）
+// 嵌套 try（内层只有 finally，外层有 catch）
 // ==================
 func riskyOp() {
     try {
         try {
             throw("内层错误")
-        } catch (e) {
-            pln("  内层捕获:", e)
-            throw("重新抛出")     // 内层 catch 后再抛
+        } finally {
+            pln("  内层 finally（异常挂起，传播到外层 catch）")
         }
     } catch (e) {
         pln("  外层捕获:", e)
+        return "从 catch 返回"
     } finally {
-        pln("  外层 finally")
+        pln("  外层 finally（return 前执行）")
     }
 }
 pln("\n--- 嵌套 try ---")
-riskyOp()
+pln("结果:", riskyOp())

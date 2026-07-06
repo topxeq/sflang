@@ -573,14 +573,16 @@ impl Compiler {
                         self.code.patch_push_try(push_try_off, catch_ip, end);
                     }
                 } else {
-                    // 无 catch：catch_ip 设为 finally_ip 或 end
+                    // 无 catch：catch_ip 和 finally_ip 都指向 end（无 catch 标记为 catch_ip >= finally_ip）
                     let finally_ip = self.code.insts.len() as u16;
                     if let Some(fb) = finally_block {
                         // try 正常完成应跳到 finally（不是 end）
                         self.code.patch_u16(jump_after_try, finally_ip);
                         self.compile_block(fb)?;
                         self.code.emit(Opcode::ExitFinally);
-                        self.code.patch_push_try(push_try_off, finally_ip, finally_ip);
+                        let end = self.code.insts.len() as u16;
+                        // catch_ip = end（>= finally_ip 表示无 catch），finally_ip 正常
+                        self.code.patch_push_try(push_try_off, end, finally_ip);
                     } else {
                         // 既无 catch 也无 finally：实际上 try 无意义
                         let end = self.code.insts.len() as u16;

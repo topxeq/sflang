@@ -906,18 +906,12 @@ impl VM {
     fn handle_throw(&mut self, mut frame: Frame, val: Value) -> FlowResult {
         // 查找最近的有 catch 或 finally 的 try
         while let Some(te) = frame.try_stack.pop() {
-            if te.catch_ip >= 0 {
+            // catch_ip < finally_ip 表示有真正的 catch 块
+            // catch_ip >= finally_ip 表示无 catch（编译器用 end 标记）
+            if te.catch_ip >= 0 && te.catch_ip < te.finally_ip {
                 // 有 catch：跳到 catch_ip，异常值压栈
                 frame.ip = te.catch_ip as usize;
                 self.push(val);
-                // 若同时有 finally，挂起当前 throw（catch 内若正常结束会跳到 finally）
-                // 简化：catch 末尾的 Jump 已编译为跳到 finally 或 end
-                // 若 finally 存在，会在 catch Jump 之前进入 finally——但编译器把 catch 末尾跳到 finally
-                // 这里直接执行 catch 块，由 ExitFinally 处理后续
-                if te.finally_ip >= 0 {
-                    // 注：catch 块若正常完成，会 Jump 到 finally_ip
-                    // 这里不需要挂起，因为 catch 正常完成不携带控制流
-                }
                 return self.run_frame(frame);
             } else if te.finally_ip >= 0 {
                 // 无 catch 但有 finally：挂起 throw，跳到 finally
