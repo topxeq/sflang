@@ -328,10 +328,13 @@ else { }
 
 while x < 10 { x++ }
 
-for var i = 0; i < 5; i++ { }           // C 风格 for
-for i in range(5) { }                    // for-in
-for k, v in obj { }                     // 遍历 object/map
-for i, v in arr { }                     // 遍历 array（带索引）
+// for 循环的四种形式：
+for i := 0; i < 5; i++ { }           // C 风格 for（init; cond; post）
+for x < 10 { x++ }                   // Go 风格：单条件（等同 while）
+for { break }                        // Go 风格：无限循环
+for i in range(5) { }                // for-in
+for k, v in obj { }                  // 遍历 object/map
+for i, v in arr { }                  // 遍历 array（带索引）
 
 break / continue
 ```
