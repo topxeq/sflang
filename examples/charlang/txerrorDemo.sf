@@ -1,0 +1,80 @@
+// TXERROR 错误处理机制示例
+// Sflang 支持两种错误表示：Error 对象 和 "TXERROR:" 字符串
+// 配套函数统一处理两种形式
+
+pln("=== 1. 创建错误 ===")
+
+// Error 对象（推荐方式）
+e1 := error("文件不存在: data.txt")
+pln("error 对象:", e1)
+
+// TXERROR 字符串（用 errStrf 生成）
+e2 := errStrf("网络错误: %v, 状态码: %v", "连接超时", 504)
+pln("TXERROR 字符串:", e2)
+
+pln("")
+pln("=== 2. 判断错误 ===")
+
+// isErr 同时识别两种形式
+pln("isErr(e1):", isErr(e1), "  isError(e1):", isError(e1))
+pln("isErr(e2):", isErr(e2), "  isError(e2):", isError(e2))
+pln("isErr(42):", isErr(42))
+pln("isErrStr(e2):", isErrStr(e2), "  isErrStr(e1):", isErrStr(e1))
+
+pln("")
+pln("=== 3. 提取错误信息 ===")
+
+pln("getErrStr(e1):", getErrStr(e1))
+pln("getErrStr(e2):", getErrStr(e2))
+
+pln("")
+pln("=== 4. 统一错误处理模式 ===")
+
+// 函数可以返回 Error 对象或 TXERROR 字符串，调用方统一处理
+func readFile(path) {
+    if !fileExists(path) {
+        return errStrf("文件不存在: %v", path)
+    }
+    return readFile(path)
+}
+
+func parseJSON(s) {
+    if s == "" {
+        return error("空字符串无法解析为 JSON")
+    }
+    return jsonDecode(s)
+}
+
+// 统一处理
+r1 := readFile("/nonexistent/file.txt")
+if isErr(r1) {
+    pln("读取失败:", getErrStr(r1))
+}
+
+r2 := parseJSON("")
+if isErr(r2) {
+    pln("解析失败:", getErrStr(r2))
+}
+
+pln("")
+pln("=== 5. 安全转换 ===")
+
+// errToEmpty: 错误转空串，非错误保留
+pln("errToEmpty(e1):", "[" + errToEmpty(e1) + "]")
+pln("errToEmpty(42):", errToEmpty(42))
+
+// trimErr: 错误不丢失
+pln("trimErr(e1):", trimErr(e1))
+pln("trimErr('  hi  '):", "[" + trimErr("  hi  ") + "]")
+
+pln("")
+pln("=== 6. 与 try/catch 配合 ===")
+
+try {
+    bad := 10 / 0
+    _ = bad
+} catch (e) {
+    // catch 到的也是 Error 对象，可用 getErrStr 提取
+    pln("捕获异常:", getErrStr(e))
+    pln("isErr(e):", isErr(e))
+}

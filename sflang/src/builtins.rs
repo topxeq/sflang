@@ -84,6 +84,18 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("isFunction", bi_is_function);
     vm.register_builtin("error", bi_error);
     vm.register_builtin("isError", bi_is_error);
+    // ---- TXERROR 错误字符串机制（对标 Charlang isErrX/getErrStrX 等）----
+    vm.register_builtin("isErr", bi_is_err);
+    vm.register_builtin("isErrX", bi_is_err);      // Charlang 兼容别名
+    vm.register_builtin("isErrStr", bi_is_err_str);
+    vm.register_builtin("getErrStr", bi_get_err_str);
+    vm.register_builtin("getErrStrX", bi_get_err_str);  // Charlang 兼容别名
+    vm.register_builtin("errStrf", bi_err_strf);
+    vm.register_builtin("errf", bi_err_strf);       // Charlang 兼容别名
+    vm.register_builtin("errToEmpty", bi_err_to_empty);
+    vm.register_builtin("checkErr", bi_check_err);
+    vm.register_builtin("checkErrX", bi_check_err); // Charlang 兼容别名
+    vm.register_builtin("trimErr", bi_trim_err);
     // ---- undefined 配套内置函数（对标 Charlang 的 nilToEmpty 等）----
     vm.register_builtin("undefToEmpty", bi_undef_to_empty);
     vm.register_builtin("default", bi_default);
@@ -757,6 +769,175 @@ fn bi_error(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// bi_is_error 判断是否为错误值。
 fn bi_is_error(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Bool(matches!(args.get(0), Some(Value::Error(_)))))
+}
+
+// ---- TXERROR 错误字符串机制（对标 Charlang） ----
+//
+// Sflang 同时支持两种错误表示：
+//   1. Error 对象（Value::Error）— 推荐方式，结构化
+//   2. "TXERROR:xxx" 字符串 — 字符串形式的错误，便于跨边界传递
+//
+// 配套函数统一处理两种形式：
+//   - isErr(v):       判断 v 是否为 Error 对象或 "TXERROR:" 开头的字符串
+//   - isErrStr(v):    判断 v 是否为 "TXERROR:" 开头的字符串
+//   - getErrStr(v):   提取错误信息字符串（Error 取 message，TXERROR 字符串去前缀）
+//   - errStrf(fmt, args...): 格式化生成 "TXERROR:" 前缀的错误字符串
+//   - errf(fmt, args...):    同 errStrf（别名）
+//   - checkErr(v, ...):      若 v 是错误则打印并退出进程
+//   - checkErrX(v, ...):     checkErr 的别名
+//   - errToEmpty(v):         若 v 是错误则转为空字符串，否则原样返回
+//   - trimErr(v, ...):       若 v 是错误则原样返回，否则去空白（错误不静默丢失）
+
+/// TXERROR 前缀常量。
+const TXERROR_PREFIX: &str = "TXERROR:";
+
+/// is_err_value 内部辅助：判断 Value 是否为"错误样"值（Error 对象或 TXERROR 字符串）。
+fn is_err_value(v: &Value) -> bool {
+    match v {
+        Value::Error(_) => true,
+        Value::Str(s) => s.starts_with(TXERROR_PREFIX),
+        _ => false,
+    }
+}
+
+/// get_err_str 内部辅助：从错误样值提取错误信息字符串。
+/// - Error 对象 → message（若已是 "error: xxx" 形式则去掉 "error: " 前缀）
+/// - TXERROR 字符串 → 去掉 "TXERROR:" 前缀后的内容
+/// - 非错误 → 值的字符串表示
+fn extract_err_str(v: &Value) -> String {
+    match v {
+        Value::Error(e) => {
+            // Error 对象的 message 可能以 "error: " 开头（VM 抛出时），去掉保持一致
+            let msg = &e.message;
+            if let Some(rest) = msg.strip_prefix("error: ") {
+                rest.to_string()
+            } else {
+                msg.clone()
+            }
+        }
+        Value::Str(s) => {
+            // TXERROR:xxx → xxx
+            s.strip_prefix(TXERROR_PREFIX).map(|r| r.to_string()).unwrap_or_else(|| s.to_string())
+        }
+        _ => v.to_str(),
+    }
+}
+
+/// bi_is_err 判断是否为错误样值（Error 对象或 TXERROR 字符串）。
+///
+/// 这是统一判断函数，同时识别两种错误形式。
+/// 别名：isErrX（与 Charlang 完全一致）。
+fn bi_is_err(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    Ok(Value::Bool(args.get(0).map(is_err_value).unwrap_or(false)))
+}
+
+/// bi_is_err_str 判断是否为 TXERROR 字符串。
+fn bi_is_err_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    Ok(Value::Bool(matches!(
+        args.get(0),
+        Some(Value::Str(s)) if s.starts_with(TXERROR_PREFIX)
+    )))
+}
+
+/// bi_get_err_str 提取错误信息字符串。
+///
+/// 用法：getErrStr(v) → 字符串
+/// - Error 对象 → message（去 "error: " 前缀）
+/// - TXERROR 字符串 → 去 "TXERROR:" 前缀
+/// - 其他 → to_str
+fn bi_get_err_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    match args.get(0) {
+        Some(v) => Ok(Value::str_from(extract_err_str(v))),
+        None => Ok(Value::str_from(String::new())),
+    }
+}
+
+/// bi_err_strf 格式化生成 TXERROR 错误字符串。
+///
+/// 用法：errStrf(format, args...) → "TXERROR:" + sprintf(format, args...)
+/// 这是创建字符串形式错误的便捷方式。
+fn bi_err_strf(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.is_empty() {
+        return Ok(Value::str_from(TXERROR_PREFIX.to_string()));
+    }
+    let formatted = sprintf(args)?;
+    Ok(Value::str_from(format!("{}{}", TXERROR_PREFIX, formatted)))
+}
+
+/// bi_err_to_empty 若 v 是错误样值则转为空字符串，否则原样返回。
+///
+/// 用于安全地处理可能为错误的值：错误时得到空串，非错误时保留原值。
+fn bi_err_to_empty(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    match args.get(0) {
+        Some(v) if is_err_value(v) => Ok(Value::str_from(String::new())),
+        Some(v) => Ok(v.clone()),
+        None => Ok(Value::str_from(String::new())),
+    }
+}
+
+/// bi_check_err 若 v 是错误样值则打印错误信息并退出进程（退出码 1）。
+///
+/// 用法：checkErr(v) 或 checkErr(v, "-format=自定义格式 %v\n")
+/// 默认格式："Error: %v\n"
+/// 非错误时原样返回 v。
+///
+/// 对标 Charlang checkErrX/checkErr。
+fn bi_check_err(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let v = match args.get(0) {
+        Some(v) => v,
+        None => return Err(crate::value::error_value("checkErr() 至少需要 1 个参数")),
+    };
+    if is_err_value(v) {
+        // 解析可选的 -format= 参数
+        let default_fmt = "Error: %v\n";
+        let mut fmt = default_fmt.to_string();
+        for i in 1..args.len() {
+            if let Value::Str(s) = &args[i] {
+                if let Some(rest) = s.strip_prefix("-format=") {
+                    fmt = rest.to_string();
+                }
+            }
+        }
+        let err_msg = extract_err_str(v);
+        let formatted = sprintf(&[Value::str_from(fmt), Value::str_from(err_msg)])?;
+        // 打印到 stderr 并退出
+        eprint!("{}", formatted);
+        std::process::exit(1);
+    }
+    Ok(v.clone())
+}
+
+/// bi_trim_err 若 v 是错误样值则原样返回（不静默丢失错误），否则去空白。
+///
+/// 用法：trimErr(v) 或 trimErr(v, cutset...)
+/// 这是对 trim 的安全增强：避免 trim 意外吞掉错误信息。
+fn bi_trim_err(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    let v = match args.get(0) {
+        Some(v) => v,
+        None => return Err(crate::value::error_value("trimErr() 至少需要 1 个参数")),
+    };
+    // 错误样值原样返回（不丢失错误）
+    if is_err_value(v) {
+        return Ok(v.clone());
+    }
+    // undefined 转空字符串
+    if matches!(v, Value::Undefined) {
+        return Ok(Value::str_from(String::new()));
+    }
+    let s = bh::as_str(args, 0, "trimErr")?;
+    // 收集 cutset 字符
+    let cutsets: Vec<&str> = args[1..].iter().filter_map(|a| match a {
+        Value::Str(s) => Some(&**s),
+        _ => None,
+    }).collect();
+    let trimmed = if cutsets.is_empty() {
+        s.trim().to_string()
+    } else {
+        let chars: Vec<char> = cutsets.iter().flat_map(|c| c.chars()).collect();
+        s.trim_matches(|c| chars.contains(&c)).to_string()
+    };
+    Ok(Value::str_from(trimmed))
 }
 
 // ---- undefined 配套内置函数 ----

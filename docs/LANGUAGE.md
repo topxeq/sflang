@@ -381,6 +381,46 @@ throw("错误信息")      // 主动抛出
 
 > **何时抛异常**：除零、空指针（undefined.x）、不可恢复的内部错误等。
 > **何时返回错误值**：常规的业务错误、参数校验失败、IO 失败等可用 `error()` 返回。
+
+### TXERROR 错误字符串机制
+
+Sflang 同时支持两种错误表示，配套函数统一处理：
+
+| 表示方式 | 说明 | 示例 |
+|---------|------|------|
+| `error(msg)` | Error 对象（推荐，结构化） | `error("文件不存在")` |
+| `"TXERROR:xxx"` | 错误字符串（字符串形式，跨边界） | `"TXERROR:文件不存在"` |
+
+配套函数（同时识别两种形式）：
+
+```sflang
+// 创建错误
+e1 := error("错误一")              // Error 对象
+e2 := errStrf("失败: %v", 404)     // → "TXERROR:失败: 404"
+
+// 判断错误（同时识别两种形式）
+isErr(e1)       // true
+isErr(e2)       // true
+isErr(42)       // false
+isErrStr(e2)    // true（仅识别 TXERROR 字符串）
+
+// 提取错误信息
+getErrStr(e1)   // "错误一"
+getErrStr(e2)   // "失败: 404"
+
+// 安全转换
+errToEmpty(e1)  // "" （错误转为空串）
+errToEmpty(42)  // 42 （非错误原样返回）
+
+// 错误不丢失的去空白
+trimErr(e1)         // 原样返回错误（不静默丢失）
+trimErr("  hi  ")   // "hi"
+
+// 检查并退出（错误时打印到 stderr 并 exit(1)）
+checkErr(result, "-format=Error: %v\n")
+```
+
+> **设计要点**：`isErr` 是统一的错误判断函数，同时识别 Error 对象和 `"TXERROR:"` 开头的字符串，便于在不同场景下灵活使用。
 ```
 
 ---

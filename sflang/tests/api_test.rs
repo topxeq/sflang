@@ -2051,3 +2051,186 @@ fn test_sync_wrong_type_error() {
         _ => panic!("expected Error"),
     }
 }
+
+// ---- TXERROR 错误字符串机制 ----
+
+#[test]
+fn test_error_object() {
+    // error() 创建 Error 对象
+    let r = eval("return error(\"测试错误\")");
+    assert!(matches!(r, Value::Error(_)));
+}
+
+#[test]
+fn test_is_error() {
+    // isError 判断 Error 对象
+    assert_eq!(eval("return isError(error(\"x\"))"), Value::Bool(true));
+    assert_eq!(eval("return isError(42)"), Value::Bool(false));
+}
+
+#[test]
+fn test_is_err_error_object() {
+    // isErr 同时识别 Error 对象
+    assert_eq!(eval("return isErr(error(\"x\"))"), Value::Bool(true));
+}
+
+#[test]
+fn test_is_err_txerror_string() {
+    // isErr 同时识别 TXERROR 字符串
+    assert_eq!(eval("return isErr(\"TXERROR:something\")"), Value::Bool(true));
+}
+
+#[test]
+fn test_is_err_non_error() {
+    // isErr 对非错误值返回 false
+    assert_eq!(eval("return isErr(42)"), Value::Bool(false));
+    assert_eq!(eval("return isErr(\"正常字符串\")"), Value::Bool(false));
+    assert_eq!(eval("return isErr(\"\")"), Value::Bool(false));
+}
+
+#[test]
+fn test_is_err_undefined() {
+    // isErr(undefined) 返回 false（undefined 不是错误）
+    assert_eq!(eval("return isErr(undefined)"), Value::Bool(false));
+}
+
+#[test]
+fn test_is_err_str() {
+    // isErrStr 只识别 TXERROR 字符串
+    assert_eq!(eval("return isErrStr(\"TXERROR:错误\")"), Value::Bool(true));
+    assert_eq!(eval("return isErrStr(\"正常\")"), Value::Bool(false));
+    // Error 对象不算 TXERROR 字符串
+    assert_eq!(eval("return isErrStr(error(\"x\"))"), Value::Bool(false));
+}
+
+#[test]
+fn test_get_err_str_from_error() {
+    // getErrStr 从 Error 对象提取信息
+    let r = eval("return getErrStr(error(\"测试错误\"))");
+    assert_eq!(r, Value::str("测试错误"));
+}
+
+#[test]
+fn test_get_err_str_from_txerror() {
+    // getErrStr 从 TXERROR 字符串提取信息（去前缀）
+    let r = eval("return getErrStr(\"TXERROR:字符串错误\")");
+    assert_eq!(r, Value::str("字符串错误"));
+}
+
+#[test]
+fn test_get_err_str_non_error() {
+    // getErrStr 对非错误值返回其字符串表示
+    let r = eval("return getErrStr(42)");
+    assert_eq!(r, Value::str("42"));
+}
+
+#[test]
+fn test_err_strf() {
+    // errStrf 格式化生成 TXERROR 字符串
+    let r = eval("return errStrf(\"失败: %v\", 404)");
+    assert_eq!(r, Value::str("TXERROR:失败: 404"));
+    // 确认生成的字符串能被 isErr 识别
+    assert_eq!(eval("return isErr(errStrf(\"x\"))"), Value::Bool(true));
+}
+
+#[test]
+fn test_err_strf_no_args() {
+    // errStrf 无参数返回纯前缀
+    let r = eval("return errStrf()");
+    assert_eq!(r, Value::str("TXERROR:"));
+}
+
+#[test]
+fn test_err_to_empty_error() {
+    // errToEmpty 对 Error 对象返回空字符串
+    let r = eval("return errToEmpty(error(\"x\"))");
+    assert_eq!(r, Value::str(""));
+}
+
+#[test]
+fn test_err_to_empty_txerror() {
+    // errToEmpty 对 TXERROR 字符串返回空字符串
+    let r = eval("return errToEmpty(\"TXERROR:x\")");
+    assert_eq!(r, Value::str(""));
+}
+
+#[test]
+fn test_err_to_empty_non_error() {
+    // errToEmpty 对非错误值原样返回
+    assert_eq!(eval("return errToEmpty(42)"), Value::Int(42));
+    assert_eq!(eval("return errToEmpty(\"正常\")"), Value::str("正常"));
+}
+
+#[test]
+fn test_trim_err_preserves_error() {
+    // trimErr 对错误值原样返回（不丢失错误）
+    let r = eval("return trimErr(error(\"x\"))");
+    assert!(matches!(r, Value::Error(_)));
+    let r2 = eval("return trimErr(\"TXERROR:x\")");
+    assert_eq!(r2, Value::str("TXERROR:x"));
+}
+
+#[test]
+fn test_trim_err_normal() {
+    // trimErr 对正常字符串去空白
+    let r = eval("return trimErr(\"  hi  \")");
+    assert_eq!(r, Value::str("hi"));
+}
+
+#[test]
+fn test_trim_err_undefined() {
+    // trimErr 对 undefined 返回空字符串
+    let r = eval("return trimErr(undefined)");
+    assert_eq!(r, Value::str(""));
+}
+
+#[test]
+fn test_txerror_unified_pattern() {
+    // 统一错误处理模式：同时处理 Error 对象和 TXERROR 字符串
+    // 用全局函数定义 + 多次 run_string 调用
+    let mut sf = Sflang::new();
+    sf.run_string("func doWork(typ) {\n\
+        if typ == \"error\" {\n\
+            return error(\"error对象错误\")\n\
+        }\n\
+        if typ == \"txerror\" {\n\
+            return errStrf(\"txerror字符串错误: %v\", 99)\n\
+        }\n\
+        return \"成功\"\n\
+    }").unwrap();
+
+    // error 对象
+    sf.run_string("var __r = doWork(\"error\")").unwrap();
+    let r1 = sf.get_global("__r").unwrap();
+    assert!(is_err_value_test(&r1), "error 对象应被 isErr 识别");
+
+    // TXERROR 字符串
+    sf.run_string("var __r2 = isErr(doWork(\"txerror\"))").unwrap();
+    let r2 = sf.get_global("__r2").unwrap();
+    assert_eq!(r2, Value::Bool(true));
+
+    // 成功
+    sf.run_string("var __r3 = doWork(\"ok\")").unwrap();
+    let r3 = sf.get_global("__r3").unwrap();
+    assert_eq!(r3, Value::str("成功"));
+}
+
+#[test]
+fn test_get_err_str_strips_error_prefix() {
+    // VM 抛出的异常 message 以 "error: " 开头，getErrStr 应去掉
+    let src = "try { return 1/0 } catch (e) { return getErrStr(e) }";
+    let r = eval(src);
+    // 不应以 "error: " 开头
+    if let Value::Str(s) = &r {
+        assert!(!s.starts_with("error: "), "getErrStr 不应包含 'error: ' 前缀");
+    }
+}
+
+/// is_err_value_test 测试辅助：复用 isErr 的逻辑（避免依赖私有函数）。
+fn is_err_value_test(v: &Value) -> bool {
+    match v {
+        Value::Error(_) => true,
+        Value::Str(s) => s.starts_with("TXERROR:"),
+        _ => false,
+    }
+}
