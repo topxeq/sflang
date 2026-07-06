@@ -1,0 +1,58 @@
+// 示例 02.05：字节（byte）
+// ==================================
+// byte 是 0-255 的无符号值，算术自动 mod 256 环绕。
+// 用于字节级操作（加密、协议解析等），与 int 区分但可互转。
+
+// ---- 构造 ----
+var b1 = byte(65)
+var b2 = byte(255)
+pln("byte(65):", b1, "typeName:", typeName(b1))
+pln("byte(255):", b2)
+pln("isByte:", isByte(b1))
+
+// 超出范围报错
+// byte(256)  // 报错
+
+// ---- byte 算术（mod 256 环绕）----
+pln("\n--- 环绕运算 ---")
+pln("byte(255) + byte(1):", byte(255) + byte(1))    // 0（环绕）
+pln("byte(0) - byte(1):", byte(0) - byte(1))        // 255（环绕）
+pln("byte(200) * byte(2):", byte(200) * byte(2))    // 144（400 mod 256）
+
+// 结果类型保持 byte
+pln("typeName(byte(65) + byte(1)):", typeName(byte(65) + byte(1)))   // byte
+
+// ---- byte + int → int（提升）----
+pln("byte(65) + 1:", byte(65) + 1)                  // 66
+pln("typeName:", typeName(byte(65) + 1))             // int
+
+// ---- byte 位运算 ----
+pln("\n--- 位运算 ---")
+pln("byte(0xF0) & byte(0x0F):", byte(0xF0) & byte(0x0F))   // 0
+pln("byte(0xF0) | byte(0x0F):", byte(0xF0) | byte(0x0F))   // 255
+pln("byte(0xFF) ^ byte(0xAA):", byte(0xFF) ^ byte(0xAA))   // 85
+pln("~byte(0):", ~byte(0))                                 // 255
+
+// ---- byte 与 int 跨类型比较 ----
+pln("byte(65) == 65:", byte(65) == 65)     // true
+pln("byte(0) == 0:", byte(0) == 0)         // true
+
+// ---- byteArray 索引返回 byte ----
+pln("\n--- byteArray 与 byte ---")
+var ba = byteArray(5, 0x41)               // [0x41, 0x41, 0x41, 0x41, 0x41]
+pln("ba[0]:", ba[0], "typeName:", typeName(ba[0]))   // byte
+ba[0] = byte(0x48)
+pln("ba[0] after set:", ba[0])            // 72
+
+// ---- XOR 加解密 ----
+pln("\n--- XOR 加密 ---")
+var data = bytes("Secret")
+var enc = bytesXor(data, byte(0xFF))
+pln("加密 hex:", bytesHex(enc))
+var dec = bytesXor(enc, byte(0xFF))
+pln("解密:", strFromBytes(dec))
+
+// ---- charFromCode 关联 ----
+pln("\n--- byte 与字符 ---")
+pln("byte(65) 对应字符:", charFromCode(byte(65)))   // "A"
+pln("\"A\"[0]:", "A"[0])                           // 码点 65

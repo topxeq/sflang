@@ -1,0 +1,85 @@
+// 示例 02.07：对象（object）
+// ==================================
+// object 是 HashMap + 原型链，既是键值映射也是 OOP 载体。
+// 遍历顺序不保证（HashMap 无序），需要有序用 map。
+
+// ---- 创建 ----
+var person = {name: "Alice", age: 30, email: "alice@example.com"}
+pln("对象:", person)
+pln("typeName:", typeName(person))
+
+// ---- 成员访问 ----
+pln("person.name:", person.name)
+pln("person[\"age\"]:", person["age"])
+
+// ---- 修改/新增成员 ----
+person.age = 31
+person.phone = "12345"
+pln("修改后 age:", person.age, "phone:", person.phone)
+
+// ---- 判断键 ----
+pln("hasKey \"name\":", hasKey(person, "name"))
+pln("hasKey \"xxx\":", hasKey(person, "xxx"))
+
+// ---- keys / values ----
+pln("keys:", keys(person))
+pln("values:", values(person))
+
+// ---- 不存在的键返回 undefined ----
+pln("缺失的键:", person["missing"])
+
+// ---- 遍历 ----
+pln("\n--- 遍历 ---")
+for k, v in person {
+    pl("  %s = %v\n", k, v)
+}
+
+// ---- Object 加方法（OOP）----
+// obj.method(args) 自动注入 obj 作为隐式首参 self
+pln("\n--- Object 方法 ---")
+func Counter(startA) {
+    var self = {value: startA}
+    self.inc = func(self, n) { self.value += n; return self.value }
+    self.get = func(self) { return self.value }
+    return self
+}
+var c = Counter(10)
+pln("c.inc(5):", c.inc(5))     // 15 — 不需要手动传 self
+pln("c.get():", c.get())       // 15
+
+// ---- entries / dataKeys / dataValues（过滤方法）----
+pln("\n--- 过滤方法 ---")
+pln("keys（含方法）:", keys(c))
+pln("dataKeys（仅数据）:", dataKeys(c))
+pln("dataValues:", dataValues(c))
+pln("entries:", entries(c))
+
+// ---- 原型链（方法共享）----
+pln("\n--- 原型链 ---")
+var proto = {
+    distance: func(self) { return self.x * self.x + self.y * self.y }
+}
+func Point(xA, yA) {
+    var self = newObject(proto)
+    self.x = xA; self.y = yA
+    return self
+}
+var p1 = Point(3, 4)
+pln("p1.distance():", p1.distance())   // 25（沿原型链）
+
+// ---- 继承（构造函数组合）----
+pln("\n--- 继承 ---")
+func Animal(nameA) {
+    var self = {}
+    self.name = nameA
+    self.speak = func(self) { return self.name + " sounds" }
+    return self
+}
+func Dog(nameA, breedA) {
+    var self = Animal(nameA)           // 复用父类
+    self.breed = breedA
+    self.speak = func(self) { return self.name + " (" + self.breed + ") barks" }
+    return self
+}
+var d = Dog("Rex", "Lab")
+pln("d.speak():", d.speak())

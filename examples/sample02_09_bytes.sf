@@ -1,0 +1,72 @@
+// 示例 02.09：字节序列（bytes / byteArray）
+// ==================================
+// bytes：不可变字节序列（读取、哈希、传输）
+// byteArray：可变字节序列（就地修改、加密、协议改包）
+
+// ---- bytes（不可变）----
+var b = bytes("Hello")
+pln("bytes:", b, "typeName:", typeName(b))
+pln("bytes hex:", bytesHex(b))
+pln("b[0]:", b[0], "typeName:", typeName(b[0]))   // byte 类型
+pln("len:", len(b))
+
+// bytes 从数组创建
+var b2 = bytes(byteArrayFromArray([0x41, 0x42, 0x43]))
+pln("from array:", strFromBytes(b2))    // "ABC"
+
+// ---- byteArray（可变）----
+var ba = byteArray(5, 0x41)   // 5 字节全 0x41
+pln("\nbyteArray:", ba)
+pln("ba[0]:", ba[0], "typeName:", typeName(ba[0]))
+
+// 就地修改
+ba[0] = byte(0x48)
+ba[1] = 0x49     // int 也接受（0-255）
+pln("after set:", bytesHex(ba))
+
+// 追加
+push(ba, byte(0xFF))
+pln("after push:", len(ba))
+
+// ---- 互转 ----
+pln("\n--- 互转 ---")
+var ba2 = byteArrayFromBytes(bytes("World"))
+pln("byteArrayFromBytes:", bytesHex(ba2))
+var b3 = bytes(ba2)
+pln("bytes(ba):", strFromBytes(b3))
+
+// ---- 十六进制编解码 ----
+pln("\n--- 十六进制 ---")
+var hex = bytesFromHex("48656c6c6f")
+pln("bytesFromHex:", strFromBytes(hex))
+pln("bytesHex:", bytesHex(bytes("Hello")))
+
+// ---- XOR 加解密 ----
+pln("\n--- XOR 加密 ---")
+var data = bytes("Secret")
+var enc = bytesXor(data, byte(0xFF))
+pln("加密:", bytesHex(enc))
+pln("解密:", strFromBytes(bytesXor(enc, byte(0xFF))))
+
+// 原地 XOR
+var ba3 = byteArrayFromBytes(bytes("Test"))
+bytesXorInPlace(ba3, byte(0xAA))
+pln("原地加密:", bytesHex(ba3))
+bytesXorInPlace(ba3, byte(0xAA))
+pln("原地解密:", strFromBytes(ba3))
+
+// ---- copy（批量复制）----
+pln("\n--- copy ---")
+var dst = byteArray(5, 0x00)
+copy(dst, bytes("AB"))
+pln("after copy:", bytesHex(dst))
+
+// ---- slice（切片）----
+pln("\n--- slice ---")
+var orig = byteArrayFromBytes(bytes("ABCDE"))
+pln("slice(1,3):", bytesHex(slice(orig, 1, 3)))   // 返回 byteArray
+
+// ---- strFromBytes（字节转字符串）----
+pln("\n--- strFromBytes ---")
+pln("utf8:", strFromBytes(bytes("中文")))
+pln("hex:", strFromBytes(bytes("AB"), "hex"))

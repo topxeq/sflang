@@ -1,0 +1,57 @@
+// 示例 02.04：浮点数（float）
+// ==================================
+// 64 位双精度浮点（f64）。
+
+// ---- 浮点赋值 ----
+var f1 = 3.14
+var f2 = 2.5e10          // 科学计数法
+pln("f1:", f1, "f2:", f2)
+pln("typeName:", typeName(3.14))
+
+// ---- 浮点运算 ----
+pln("加法:", 1.5 + 2.5)        // 4.0
+pln("减法:", 10.0 - 3.5)       // 6.5
+pln("乘法:", 2.5 * 4.0)        // 10.0
+pln("除法:", 7.0 / 2.0)        // 3.5
+pln("取模:", 7.5 % 2.0)        // 1.5
+
+// ---- int 与 float 混合运算 ----
+pln("1 + 2.5:", 1 + 2.5)       // 3.5（自动提升为 float）
+pln("3.0 - 1:", 3.0 - 1)       // 2.0
+pln("typeName(1 + 2.5):", typeName(1 + 2.5))  // float
+
+// ---- 浮点精度问题 ----
+pln("\n--- 精度问题 ---")
+pln("0.1 + 0.2:", 0.1 + 0.2)                    // 0.30000000000000004
+pln("0.1 + 0.2 == 0.3:", 0.1 + 0.2 == 0.3)      // false
+
+// 方案一：adjustFloat 快速消除精度噪声
+pln("adjustFloat(0.1+0.2):", adjustFloat(0.1 + 0.2))          // 0.3
+pln("adjustFloat == 0.3:", adjustFloat(0.1 + 0.2) == 0.3)     // true
+pln("adjustFloat(x, 6):", adjustFloat(1.0 / 3.0, 6))          // 0.333333
+
+// 方案二：bigFloat 完全精确
+pln("bigFloat(0.1) + bigFloat(0.2):", bigFloat("0.1") + bigFloat("0.2"))   // 0.3
+pln("bigFloat == 0.3:", bigFloat("0.1") + bigFloat("0.2") == bigFloat("0.3"))  // true
+
+// 方案三：取整函数
+pln("floor(3.9):", floor(3.9))    // 3
+pln("ceil(3.1):", ceil(3.1))      // 4
+pln("round(3.5):", round(3.5))    // 4
+pln("abs(-3.14):", abs(-3.14))    // 3.14
+
+// ---- 数学函数 ----
+pln("\n--- 数学函数 ---")
+pln("sqrt(9):", sqrt(9.0))        // 3.0
+pln("pow(2, 10):", pow(2, 10))    // 1024
+pln("sin(0):", sin(0))            // 0
+pln("log(e):", log(eG))           // 1.0
+pln("piG:", piG)
+pln("eG:", eG)
+
+// ---- 大浮点（任意精度十进制）----
+pln("\n--- bigFloat ---")
+var bf = bigFloat("99999999999999999999.99")
+pln("bigFloat:", bf)
+pln("bigFloat + bigFloat(\"0.01\"):", bf + bigFloat("0.01"))
+pln("bigFloat 1/3:", bigFloat("1") / bigFloat("3"))   // 0.333...（20 位小数）

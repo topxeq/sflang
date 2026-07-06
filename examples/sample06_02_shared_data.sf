@@ -1,0 +1,78 @@
+// 示例 06.02：多线程共享数据
+// ==================================
+// 通过复合类型（数组/对象/map）实现线程间共享数据。
+// Sflang 的 array/object/map 都是引用类型（Arc 共享），传给子线程的是引用而非拷贝。
+
+// ---- 共享数组 ----
+pln("--- 共享数组 ---")
+var counter = [0]
+
+func incrementor() {
+    for i in range(100) {
+        counter[0]++
+    }
+}
+
+run incrementor()
+run incrementor()
+incrementor()   // 主线程也执行
+sleep(200)
+// 因无锁竞争，最终值 <= 300
+pln("无锁 counter[0] =", counter[0], "(预期 <= 300)")
+
+// ---- Mutex 保护共享数据 ----
+pln("\n--- Mutex 保护 ---")
+var safeCounter = [0]
+var mu = newMutex()
+
+func safeInc() {
+    for i in range(100) {
+        lock(mu)
+        safeCounter[0]++
+        unlock(mu)
+    }
+}
+
+run safeInc()
+run safeInc()
+safeInc()
+sleep(300)
+pln("mutex 保护 safeCounter[0] =", safeCounter[0], "(应为 300)")
+
+// ---- 共享对象 ----
+pln("\n--- 共享对象 ---")
+var state = {running: true, count: 0}
+
+func monitor() {
+    while state.running {
+        lock(mu)
+        state.count++
+        unlock(mu)
+        sleep(10)
+    }
+}
+
+run monitor()
+sleep(100)
+state.running = false
+sleep(50)
+pln("state.count =", state.count, "(应 > 0)")
+
+// ---- 共享 map ----
+pln("\n--- 共享 map ---")
+var shared = map{"a": 0, "b": 0}
+
+func updater(key) {
+    for i in range(50) {
+        lock(mu)
+        shared[key]++
+        unlock(mu)
+        sleep(1)
+    }
+}
+
+run updater("a")
+run updater("b")
+updater("a")
+sleep(200)
+pln("shared.a =", shared["a"], "shared.b =", shared["b"])

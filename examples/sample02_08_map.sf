@@ -1,0 +1,67 @@
+// 示例 02.08：有序映射（map）
+// ==================================
+// map 是插入序保持的纯数据容器。
+// 与 object 区分：object 是 HashMap 无序 + 原型链（OOP），map 是有序纯数据。
+
+// ---- 创建 ----
+var m = map{"first": 1, "second": 2, "third": 3}
+pln("map:", m)
+pln("typeName:", typeName(m))
+pln("isMap:", isMap(m))
+
+// newMap() 创建空 map
+var m2 = newMap()
+m2["x"] = 1
+m2["y"] = 2
+pln("newMap:", m2)
+
+// ---- 索引读写 ----
+pln("m[\"first\"]:", m["first"])
+m["fourth"] = 4
+pln("after add:", len(m))
+m["first"] = 10
+pln("after update:", m["first"])
+
+// 不存在的键返回 undefined
+pln("missing:", m["nonexistent"])
+
+// ---- 遍历（按插入顺序）----
+pln("\n--- 遍历（插入顺序）---")
+for k, v in m {
+    pl("  %s = %v\n", k, v)
+}
+
+// ---- len / hasKey ----
+pln("\nlen:", len(m))
+pln("hasKey \"first\":", hasKey(m, "first"))
+pln("hasKey \"xxx\":", hasKey(m, "xxx"))
+
+// ---- keys / entries ----
+pln("keys:", keys(m))
+pln("entries:", entries(m))
+
+// ---- JSON 编解码 ----
+pln("jsonEncode:", jsonEncode(m))
+
+// ---- object vs map 对比 ----
+pln("\n--- object vs map ---")
+pln("object 遍历（顺序不可预测）:")
+var obj = {b: 2, a: 1, c: 3}
+for k, v in obj { pl("  %s=%v\n", k, v) }
+pln("map 遍历（插入顺序）:")
+var mp = map{"b": 2, "a": 1, "c": 3}
+for k, v in mp { pl("  %s=%v\n", k, v) }
+
+// ---- 实用：配置映射 ----
+pln("\n--- 配置映射 ---")
+var config = map{"debug": true, "timeout": 30, "retries": 3}
+for k, v in config {
+    pl("  %s: %v\n", k, v)
+}
+
+// ---- 实用：HTTP 头 ----
+pln("\n--- HTTP 头 ---")
+var headers = map{"Content-Type": "application/json", "Accept": "application/json"}
+for k, v in headers {
+    pl("  %s: %s\n", k, v)
+}

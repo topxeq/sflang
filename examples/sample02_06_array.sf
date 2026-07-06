@@ -1,0 +1,77 @@
+// 示例 02.06：数组（array）
+// ==================================
+// 可变有序序列，可存任意类型。
+
+// ---- 创建 ----
+var arr = [1, 2, 3, 4, 5]
+pln("数组:", arr)
+pln("len:", len(arr))
+pln("typeName:", typeName(arr))
+
+// 混合类型
+var mixed = [1, "hello", true, 3.14, [1, 2]]
+pln("混合类型:", mixed)
+
+// 空数组
+var empty = []
+pln("空数组 len:", len(empty))
+
+// ---- 索引（支持负索引）----
+pln("arr[0]:", arr[0])           // 1
+pln("arr[-1]:", arr[-1])         // 5
+pln("arr[-2]:", arr[-2])         // 4
+
+// ---- 切片 ----
+pln("arr[1:3]:", arr[1:3])       // [2, 3]
+pln("arr[:2]:", arr[:2])         // [1, 2]
+pln("arr[3:]:", arr[3:])         // [4, 5]
+pln("arr[:]:", arr[:])           // [1, 2, 3, 4, 5]（拷贝）
+
+// ---- 修改元素 ----
+arr[0] = 99
+pln("arr[0]=99 后:", arr)
+
+// ---- 追加与弹出 ----
+push(arr, 6)
+pln("push 6 后:", arr)
+var last = pop(arr)
+pln("pop:", last, "arr:", arr)
+
+// ---- 排序 ----
+var nums = [3, 1, 4, 1, 5, 9, 2, 6]
+sort(nums)
+pln("sort:", nums)
+sort(nums, true)    // 降序
+pln("sort desc:", nums)
+
+// 自定义排序
+var nums2 = [3, 1, 4, 1, 5]
+sortByFunc(nums2, func(a, b) { return b - a })  // 降序
+pln("sortByFunc 降序:", nums2)
+
+// 按对象字段排序
+var people = [{name: "Bob", age: 30}, {name: "Alice", age: 25}]
+sortByFunc(people, func(a, b) { return a.age - b.age })
+pln("按 age 排序:", people[0].name, people[1].name)
+
+// ---- 其他操作 ----
+pln("reverse:", reverse([1, 2, 3]))          // [3, 2, 1]
+pln("concat:", concat([1, 2], [3, 4]))       // [1, 2, 3, 4]
+pln("insert:", insert([1, 3], 1, 2))         // [1, 2, 3]
+pln("remove:", remove([1, 2, 3], 1))         // 2（返回被删元素）
+pln("contains:", contains([1, 2, 3], 2))     // true
+pln("indexOf:", indexOf([1, 2, 3], 2))       // 1
+pln("slice:", slice([1,2,3,4,5], 1, 3))     // [2, 3]
+
+// ---- 遍历 ----
+pln("\n--- 遍历 ---")
+var fruits = ["apple", "banana", "cherry"]
+for i, fruit in fruits {
+    pl("  [%d] %s\n", i, fruit)
+}
+
+// ---- 函数式 ----
+pln("\n--- 函数式 ---")
+var data = [1, 2, 3, 4, 5, 6]
+pln("filter 偶数:", filter(data, func(x) { return x % 2 == 0 }))
+pln("map *2:", map(data, func(x) { return x * 2 }))
