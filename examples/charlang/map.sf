@@ -1,0 +1,36 @@
+// port of map.char — 映射操作（Sflang 用 object {}）
+// Charlang 的 Map 等价于 Sflang 的 object 或有序 map
+
+// object 字面量
+a := {}
+
+// 设置键值
+a["Num"] = 3
+a["Name"] = "Alice"
+a["ary"] = [1, "xyz", false]
+
+pln(a)
+
+// 长度
+pl("length of a: %v\n", len(a))
+
+// 点索引
+pl("a.Num: %v\n", a.Num)
+
+// 括号索引
+a["Num"]++
+pln(a["Num"])
+
+// 切片（数组值）
+pln(a["ary"][2:3])
+
+// 有序 map（插入顺序保持）
+m := map{"first": 1, "second": 2, "third": 3}
+pln("有序 map:")
+for k, v in m {
+    pl("  %s = %v\n", k, v)
+}
+
+pln("hasKey:", hasKey(a, "Num"))
+pln("keys:", keys(a))
+pln("values:", values(a))

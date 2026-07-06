@@ -1,0 +1,36 @@
+// port of textfile.char — 文本文件读写
+
+pathA := getTempDir() + "/sflang_textfile_test.txt"
+
+// 写入
+writeFile(pathA, "第一行\n第二行\n第三行\n")
+
+// 读取全部
+content := readFile(pathA)
+pln("readFile:", content)
+
+// 按行读取
+lines := readLines(pathA)
+pln("readLines:", len(lines), "行")
+for i, line in lines {
+    pl("  [%d] %s\n", i, line)
+}
+
+// 追加
+appendFile(pathA, "第四行\n")
+content2 := readFile(pathA)
+pln("after append:", content2)
+
+// 流式读写
+f := openFile(pathA, "r")
+defer close(f)
+
+pln("\n流式读取:")
+line := readLine(f)
+while !isUndefined(line) {
+    pl("  %s\n", line)
+    line = readLine(f)
+}
+
+deleteFile(pathA)
+pln("已删除文件")

@@ -1,0 +1,27 @@
+// port of le.char — 文本统计（行数/词数/字符数）
+// 用法：sf le.sf 文件名
+
+pathA := getParam(argsG, 0, "")
+if pathA == "" {
+    pln("用法：sf le.sf <文件名>")
+} else {
+content := readFile(pathA)
+
+lines := strSplitLines(content)
+lineCount := len(lines)
+
+// 词数（按空格分割）
+wordCount := 0
+for line in lines {
+    words := strSplit(strTrim(line), " ")
+    wordCount += len(words)
+}
+
+charCount := len(content)
+byteCount := lenBytes(content)
+
+pl("行数: %d\n", lineCount)
+pl("词数: %d\n", wordCount)
+pl("字符数: %d\n", charCount)
+pl("字节数: %d\n", byteCount)
+}

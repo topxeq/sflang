@@ -1,0 +1,29 @@
+// port of csv1.char — CSV 文件读写
+
+pathA := getTempDir() + "/sflang_csv_test.csv"
+
+// 写入 CSV
+content := "name,age,city\n"
+content += "Alice,30,Beijing\n"
+content += "Bob,25,Shanghai\n"
+content += "Charlie,35,Guangzhou\n"
+writeFile(pathA, content)
+
+// 读取并解析
+lines := readLines(pathA)
+
+// 第一行是表头
+headers := strSplit(lines[0], ",")
+pln("表头:", headers)
+
+// 数据行
+for i := 1; i < len(lines); i++ {
+    fields := strSplit(lines[i], ",")
+    row := map{}
+    for j := 0; j < len(headers); j++ {
+        row[headers[j]] = fields[j]
+    }
+    pl("%s, %s, %s\n", row["name"], row["age"], row["city"])
+}
+
+deleteFile(pathA)

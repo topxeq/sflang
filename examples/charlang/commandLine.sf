@@ -1,0 +1,9 @@
+// port of commandLine.char — 命令行参数
+// 用法：sf commandLine.sf hello world 123
+
+pln("argsG:", argsG)
+pln("参数个数:", len(argsG))
+
+for i, arg in argsG {
+    pl("  [%d] %s\n", i, arg)
+}

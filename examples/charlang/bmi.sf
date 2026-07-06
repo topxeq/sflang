@@ -1,0 +1,24 @@
+// port of bmi.char — BMI 计算（从命令行参数读取）
+// 用法：sf bmi.sf 1.7 65
+
+H := toFloat(getParam(argsG, 0, "1.75"))
+W := toFloat(getParam(argsG, 1, "65.0"))
+
+pl("height: %.2f m", H)
+pl("weight: %.2f kg", W)
+
+BMI := W / (H * H)
+
+pl("BMI: %.2f", BMI)
+
+if BMI < 18.5 {
+    pl("thin")
+} elif 18.5 <= BMI && BMI < 24 {
+    pl("normal")
+} elif 24 <= BMI && BMI < 28 {
+    pl("Overweight")
+} elif 28 <= BMI && BMI < 30 {
+    pl("fat")
+} elif BMI >= 30 {
+    pl("severe obesity")
+}

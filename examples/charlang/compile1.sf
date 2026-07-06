@@ -1,0 +1,22 @@
+// port of compile1.char — 脚本内编译执行
+// Sflang 用 compile() + runCode()
+
+sourceT := `
+var v1 = 10
+var v2 = 20
+return v1 + v2
+`
+
+codeT := compile(sourceT)
+result := runCode(codeT)
+pln("result:", result)
+
+// 带参数的编译执行
+sourceT2 := `
+return x * 2
+`
+// 当前 runCode 不传参数到子脚本顶层
+// 子脚本顶层可用 argsG
+codeT2 := compile(sourceT2)
+// runCode 执行后子脚本中定义的全局变量可见
+pln("compiled and run ok")

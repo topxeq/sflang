@@ -1,0 +1,19 @@
+// port of bmi1.char — BMI 计算（硬编码值）
+H := 1.75
+W := 65.0
+
+BMI := W / (H * H)
+
+pl("BMI: %.2f", BMI)
+
+if BMI < 18.5 {
+    pl("thin")
+} elif 18.5 <= BMI && BMI < 24 {
+    pl("normal")
+} elif 24 <= BMI && BMI < 28 {
+    pl("Overweight")
+} elif 28 <= BMI && BMI < 30 {
+    pl("fat")
+} elif BMI >= 30 {
+    pl("severe obesity")
+}

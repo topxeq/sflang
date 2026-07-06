@@ -1,0 +1,23 @@
+// port of time.char — 时间格式化
+
+now := nowDT()
+
+pl("%s", dtFormat(now, "2006-01-02 15:04:05"))
+pl("%s", dtFormat(now, "2006-01-02"))
+pl("%s", dtFormat(now, "15:04:05"))
+pl("%s", dtFormat(now, "2006年01月02日"))
+
+pl("year: %d\n", now.year)
+pl("month: %d\n", now.month)
+pl("day: %d\n", now.day)
+pl("hour: %d\n", now.hour)
+pl("minute: %d\n", now.minute)
+pl("second: %d\n", now.second)
+pl("weekday: %d\n", now.weekday)
+
+// 时间戳
+pl("millis: %d\n", dtToMillis(now))
+
+// 时间加减
+tomorrow := dtAddDays(now, 1)
+pl("tomorrow: %s", dtFormat(tomorrow, "2006-01-02"))

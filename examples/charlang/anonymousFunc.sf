@@ -1,0 +1,24 @@
+// port of anonymousFunc.char — 匿名函数与闭包
+
+// 复杂匿名函数嵌套调用
+func(x) {
+    return func(y) {
+        x(y)
+    }
+}(func(z) {
+    pln("Hi!", z)
+})("Nice to see you.")
+
+// 闭包累加器
+NewAddFunc := func() {
+    count := 0
+    return func(n) {
+        count += n
+        return count
+    }
+}
+
+f2 := NewAddFunc()
+pln(f2(3))
+pln(f2(5))
+pln(f2(9))

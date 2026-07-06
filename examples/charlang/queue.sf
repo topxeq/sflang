@@ -1,0 +1,27 @@
+// port of queue.char — 队列数据结构（FIFO）
+
+// 基于 array 实现
+queue := []
+
+func enqueue(q, v) {
+    push(q, v)
+}
+
+func dequeue(q) {
+    if len(q) == 0 {
+        return undefined
+    }
+    return remove(q, 0)
+}
+
+// 测试
+enqueue(queue, "first")
+enqueue(queue, "second")
+enqueue(queue, "third")
+
+pln("len:", len(queue))
+pln("dequeue:", dequeue(queue))
+pln("dequeue:", dequeue(queue))
+pln("len:", len(queue))
+pln("dequeue:", dequeue(queue))
+pln("dequeue:", dequeue(queue), "(空队列返回 undefined)")

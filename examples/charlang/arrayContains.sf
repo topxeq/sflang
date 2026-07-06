@@ -1,0 +1,14 @@
+// port of arrayContains.char — 数组包含判断
+// Sflang 用 contains(arr, val) 判断
+
+ary1 := ["abc", 123, 2.58]
+
+pln(contains(ary1, "abc"))       // true
+pln(contains(ary1, "abcd"))      // false
+pln(contains(ary1, 123))         // true
+pln(contains(ary1, 1234))        // false
+pln(contains(ary1, 2.58))        // true
+pln(contains(ary1, 2.589))       // false
+
+// 检查命令行参数是否包含某选项
+pln(contains(argsG, "-verbose")) // 视命令行而定

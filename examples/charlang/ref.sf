@@ -1,0 +1,42 @@
+// port of ref.char — 引用传递
+// Sflang 用 newRef/getValueByRef/setValueByRef
+
+// 创建引用
+r := newRef(5)
+pln("init:", getValueByRef(r))
+
+// 函数通过引用修改值
+func inc(refA) {
+    setValueByRef(refA, getValueByRef(refA) + 1)
+}
+
+inc(r)
+pln("after inc:", getValueByRef(r))
+
+inc(r)
+inc(r)
+pln("after 3x inc:", getValueByRef(r))
+
+// 引用可以存任意类型
+rStr := newRef("hello")
+setValueByRef(rStr, "world")
+pln("string ref:", getValueByRef(rStr))
+
+// 引用可以在线程间共享
+pln("\n--- 线程间共享引用 ---")
+counter := newRef(0)
+mu := newMutex()
+
+func worker(c, lock) {
+    for i := 0; i < 100; i++ {
+        lock(lock)
+        setValueByRef(c, getValueByRef(c) + 1)
+        unlock(lock)
+    }
+}
+
+run worker(counter, mu)
+run worker(counter, mu)
+worker(counter, mu)
+sleep(200)
+pln("counter:", getValueByRef(counter), "(应为 300)")

@@ -1,0 +1,26 @@
+// port of findDuplicateLines.char — 查找文件中重复的行
+
+pathA := getParam(argsG, 0, "")
+if pathA == "" {
+    pln("用法：sf findDuplicateLines.sf <文件名>")
+} else {
+    lines := readLines(pathA)
+
+    // 用 map 统计每行出现次数
+    counts := map{}
+    for line in lines {
+        if hasKey(counts, line) {
+            counts[line] = counts[line] + 1
+        } else {
+            counts[line] = 1
+        }
+    }
+
+    // 输出重复行
+    pln("重复行:")
+    for k, v in counts {
+        if v > 1 {
+            pl("  [%d次] %s\n", v, k)
+        }
+    }
+}

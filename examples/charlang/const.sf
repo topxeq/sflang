@@ -1,0 +1,9 @@
+// port of const.char — 数学常量
+// Sflang 用全局变量 piG / eG
+
+pln("pi:", piG)
+pln("e:", eG)
+
+// 内置函数形式
+pln("pi():", pi())
+pln("e():", e())

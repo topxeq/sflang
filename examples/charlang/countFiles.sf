@@ -1,0 +1,16 @@
+// port of countFiles.char — 统计目录下文件数量
+
+// 用法：sf countFiles.sf d:\tmpx
+dirA := getParam(argsG, 0, ".")
+
+if !fileExists(dirA) {
+    pln("目录不存在:", dirA)
+    exit(1)
+}
+
+files := listDir(dirA)
+pln("目录 '%s' 下有 %d 个条目", dirA, len(files))
+
+for f in files {
+    pl("  %s\n", f)
+}

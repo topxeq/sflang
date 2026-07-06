@@ -1,0 +1,9 @@
+// port of limitStr.char — 字符串截断
+
+s1 := "Hello World, this is a long string"
+
+pln(strLimit(s1, 10))           // "Hello w..."
+pln(strLimit(s1, 5))            // "H..."
+pln(strLimit(s1, 50))           // 原样返回
+pln(strLimit(s1, 10, "!!"))     // "Hello w!!"
+pln(strLimit("中文测试字符串", 4))  // "中..."

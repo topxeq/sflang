@@ -1,0 +1,38 @@
+// port of sort1.char — 冒泡排序（按字符串比较）
+
+a := [1, 3, 2.5, 435, "abc", "zbds123", "0123a", "2.33", 2.33]
+
+pln("before:", a)
+
+for i := 0; i < len(a); i++ {
+    for j := i + 1; j < len(a); j++ {
+        if toStr(a[i]) < toStr(a[j]) {
+            tmp := a[i]
+            a[i] = a[j]
+            a[j] = tmp
+        }
+    }
+}
+
+pln("after:", a)
+
+// 使用内置 sort + sortByFunc
+b := [3, 1, 4, 1, 5, 9, 2, 6]
+sort(b)
+pln("sort:", b)
+
+sortByFunc(b, func(x, y) { return y - x })
+pln("sort desc:", b)
+
+// 按对象字段排序
+people := [
+    {"name": "Tom", "age": 18},
+    {"name": "Jerry", "age": 22},
+    {"name": "Peter", "age": 8}
+]
+
+sortByFunc(people, func(a, b) { return a.age - b.age })
+pln("按 age 排序:")
+for p in people {
+    pl("  %s %d\n", p.name, p.age)
+}

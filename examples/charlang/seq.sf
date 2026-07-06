@@ -1,0 +1,33 @@
+// port of calCosineSimilarity.char — 余弦相似度计算
+
+func dotProduct(a, b) {
+    if len(a) != len(b) { return 0.0 }
+    sum := 0.0
+    for i := 0; i < len(a); i++ {
+        sum += a[i] * b[i]
+    }
+    return sum
+}
+
+func magnitude(a) {
+    sum := 0.0
+    for v in a {
+        sum += v * v
+    }
+    return sqrt(sum)
+}
+
+func cosineSimilarity(a, b) {
+    magA := magnitude(a)
+    magB := magnitude(b)
+    if magA == 0.0 || magB == 0.0 { return 0.0 }
+    return dotProduct(a, b) / (magA * magB)
+}
+
+v1 := [1.0, 2.0, 3.0]
+v2 := [4.0, 5.0, 6.0]
+v3 := [1.0, 2.0, 3.0]
+
+pl("cos(v1, v2) = %.6f\n", cosineSimilarity(v1, v2))
+pl("cos(v1, v3) = %.6f\n", cosineSimilarity(v1, v3))
+pl("cos(v1, v1) = %.6f\n", cosineSimilarity(v1, v1))
