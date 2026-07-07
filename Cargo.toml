@@ -23,6 +23,10 @@ repository = "https://github.com/topxeq/sflang"
 regex = "1"
 # windows-sys：Windows API 绑定（仅 Windows 编译，用于控制台编码转换）。
 windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation", "Win32_Globalization"] }
+# rust_xlsxwriter：写 Excel xlsx 文件（MIT OR Apache-2.0, jmcnamara），用于 excel* 写入函数。
+rust_xlsxwriter = "0.79"
+# calamine：读 Excel xlsx/xls/ods 文件（MIT, tafia），用于 excel* 读取函数。
+calamine = "0.26"
 
 # 编译优化配置：release 模式启用 LTO 与单代码生成单元，最大化优化
 [profile.release]

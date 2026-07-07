@@ -17,6 +17,9 @@ path = "src/lib.rs"
 [dependencies]
 # 正则库（rust-lang 官方，workspace 统一管理版本）
 regex = { workspace = true }
+# Excel 读写（rust_xlsxwriter 写 + calamine 读，workspace 统一管理版本）
+rust_xlsxwriter = { workspace = true }
+calamine = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }

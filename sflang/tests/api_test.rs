@@ -2669,3 +2669,132 @@ fn test_csv_write_read_roundtrip() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+// ---- Excel (xlsx) ----
+
+#[test]
+fn test_excel_new() {
+    let r = eval("var wb = excelNew(); return isType(wb, \"workbook\")");
+    assert_eq!(r, Value::Bool(true));
+}
+
+#[test]
+fn test_excel_write_read_roundtrip() {
+    use std::path::PathBuf;
+    let mut path = std::env::temp_dir();
+    path.push("sflang_xlsx_test_roundtrip.xlsx");
+    let path_str = path.to_str().unwrap().replace('\\', "/");
+
+    let mut sf = Sflang::new();
+    let src = format!(
+        "var wb = excelNew()\n\
+        excelWriteSheet(wb, 0, [[\"name\", \"age\"], [\"Alice\", 30], [\"Bob\", 25]])\n\
+        excelSaveAs(wb, \"{}\")\n\
+        var rows = excelReadSheet(\"{}\")\n\
+        var r0 = rows[0]\n\
+        var r1 = rows[1]",
+        path_str, path_str,
+    );
+    sf.run_string(&src).unwrap();
+
+    let r0 = sf.get_global("r0").unwrap();
+    assert_array(&r0, &[Value::str("name"), Value::str("age")]);
+
+    let r1 = sf.get_global("r1").unwrap();
+    assert_array(&r1, &[Value::str("Alice"), Value::Int(30)]);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_excel_write_float() {
+    use std::path::PathBuf;
+    let mut path = std::env::temp_dir();
+    path.push("sflang_xlsx_test_float.xlsx");
+    let path_str = path.to_str().unwrap().replace('\\', "/");
+
+    let mut sf = Sflang::new();
+    let src = format!(
+        "var wb = excelNew()\n\
+        excelWriteSheet(wb, 0, [[\"x\"], [3.14]])\n\
+        excelSaveAs(wb, \"{}\")\n\
+        var rows = excelReadSheet(\"{}\")\n\
+        var val = rows[1][0]",
+        path_str, path_str,
+    );
+    sf.run_string(&src).unwrap();
+
+    let val = sf.get_global("val").unwrap();
+    // calamine 可能返回 float
+    match val {
+        Value::Float(f) => assert!((f - 3.14).abs() < 0.001),
+        Value::Int(i) => assert!((i as f64 - 3.14).abs() < 0.001),
+        other => panic!("期望数字，得到 {:?}", other),
+    }
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_excel_multiple_sheets() {
+    use std::path::PathBuf;
+    let mut path = std::env::temp_dir();
+    path.push("sflang_xlsx_test_multi.xlsx");
+    let path_str = path.to_str().unwrap().replace('\\', "/");
+
+    let mut sf = Sflang::new();
+    let src = format!(
+        "var wb = excelNew()\n\
+        excelWriteSheet(wb, 0, [[\"sheet1data\"]])\n\
+        var idx = excelNewSheet(wb, \"MySheet\")\n\
+        excelWriteSheet(wb, \"MySheet\", [[\"sheet2data\"]])\n\
+        excelSaveAs(wb, \"{}\")\n\
+        var rows1 = excelReadSheet(\"{}\", 0)\n\
+        var rows2 = excelReadSheet(\"{}\", \"MySheet\")\n\
+        var all = excelReadAll(\"{}\")\n\
+        var sheetCount = len(all)",
+        path_str, path_str, path_str, path_str,
+    );
+    sf.run_string(&src).unwrap();
+
+    let count = sf.get_global("sheetCount").unwrap();
+    assert_eq!(count, Value::Int(2));
+
+    let rows2 = sf.get_global("rows2").unwrap();
+    match rows2 {
+        Value::Array(a) => {
+            let g = a.lock().unwrap();
+            assert_eq!(g.len(), 1);
+        }
+        other => panic!("期望数组，得到 {:?}", other),
+    }
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_excel_bool_type() {
+    use std::path::PathBuf;
+    let mut path = std::env::temp_dir();
+    path.push("sflang_xlsx_test_bool.xlsx");
+    let path_str = path.to_str().unwrap().replace('\\', "/");
+
+    let mut sf = Sflang::new();
+    let src = format!(
+        "var wb = excelNew()\n\
+        excelWriteSheet(wb, 0, [[\"flag\"], [true], [false]])\n\
+        excelSaveAs(wb, \"{}\")\n\
+        var rows = excelReadSheet(\"{}\")\n\
+        var v1 = rows[1][0]",
+        path_str, path_str,
+    );
+    sf.run_string(&src).unwrap();
+
+    let v1 = sf.get_global("v1").unwrap();
+    match v1 {
+        Value::Bool(b) => assert!(b),
+        other => panic!("期望 bool true，得到 {:?}", other),
+    }
+
+    let _ = std::fs::remove_file(&path);
+}

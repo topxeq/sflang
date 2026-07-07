@@ -1,0 +1,52 @@
+// port of excel1.char — Excel 读写示例
+// Sflang 用 excelNew/excelWriteSheet/excelSaveAs/excelReadSheet
+
+path := joinPath(getTempDir(), "sflang_excel1.xlsx")
+
+// 1. 创建工作簿并写入数据
+wb := excelNew()
+rows := [
+    ["title1", "title2", "title3"],
+    ["value1", 2.3, "value3"],
+    ["value4", 6, "value6"]
+]
+excelWriteSheet(wb, 0, rows)
+
+// 2. 新建第二个 sheet
+index := excelNewSheet(wb, "Sheet2")
+pln("new sheet index:", index)
+excelWriteSheet(wb, "Sheet2", [["a", "b"], [1, 2]])
+
+// 3. 保存
+excelSaveAs(wb, path)
+pln("saved to:", path)
+
+// 4. 读回第一个 sheet
+pln("")
+pln("=== Sheet1 ===")
+data := excelReadSheet(path)
+for row in data {
+    pln(row)
+}
+
+// 5. 读第二个 sheet（按名称）
+pln("")
+pln("=== Sheet2 ===")
+data2 := excelReadSheet(path, "Sheet2")
+for row in data2 {
+    pln(row)
+}
+
+// 6. 读取所有 sheets
+pln("")
+pln("=== All sheets ===")
+all := excelReadAll(path)
+for k, v in all {
+    pln("sheet:", k, "rows:", len(v))
+}
+
+// 7. 类型判断
+pln("")
+pln("isType workbook:", isType(wb, "workbook"))
+
+deleteFile(path)
