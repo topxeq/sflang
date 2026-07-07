@@ -1,0 +1,38 @@
+// port of noMutex.char — 不用 Mutex 的并发（演示竞争问题）
+// 与 mutex1.sf 对比：不加锁时结果通常小于期望值（丢失更新）
+
+// 共享计数器
+n1 := newRef(5)
+
+flag1 := newRef(false)
+flag2 := newRef(false)
+
+pln("初始值:", getValueByRef(n1))
+
+// 子线程任务：累加 5000 次（不加锁，会有竞争）
+func worker(counter, done) {
+    for i := 0; i < 5000; i++ {
+        setValueByRef(counter, getValueByRef(counter) + 1)
+    }
+    setValueByRef(done, true)
+}
+
+// 启动两个子线程
+run worker(n1, flag1)
+run worker(n1, flag2)
+
+// 主线程也累加 5000 次
+for i := 0; i < 5000; i++ {
+    setValueByRef(n1, getValueByRef(n1) + 1)
+}
+
+// 等待子线程完成
+while true {
+    if getValueByRef(flag1) == true && getValueByRef(flag2) == true {
+        break
+    }
+    sleep(0.001)
+}
+
+pln("result:", getValueByRef(n1))
+pln("期望: 15005（无锁通常小于此值，因为并发竞争丢失更新）")

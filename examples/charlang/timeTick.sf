@@ -1,0 +1,30 @@
+// port of timeTick.char — 时间解析与格式化
+// Sflang 用 datetimeParse/dtFormat/dtToMillis 等
+
+// 从字符串解析时间（需指定格式）
+t1 := datetimeParse("1971-08-01", "2006-01-02")
+pln("t1:", t1)
+
+// 格式化输出
+pln("默认:", dtFormat(t1, ""))
+pln("日期:", dtFormat(t1, "2006-01-02"))
+pln("时间:", dtFormat(t1, "2006-01-02 15:04:05"))
+
+// 转毫秒时间戳
+millis := dtToMillis(t1)
+pln("毫秒:", millis)
+
+// 从毫秒恢复
+t2 := datetimeFromMillis(millis)
+pln("恢复:", dtFormat(t2, "2006-01-02"))
+
+// 时间运算
+t3 := dtAddDays(t1, 30)
+pln("加30天:", dtFormat(t3, "2006-01-02"))
+
+t4 := dtAddSeconds(t1, 3600)
+pln("加1小时:", dtFormat(t4, "2006-01-02 15:04:05"))
+
+// 当前时间
+now1 := nowDT()
+pln("现在:", dtFormat(now1, "2006-01-02 15:04:05"))

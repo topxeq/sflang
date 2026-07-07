@@ -1,0 +1,47 @@
+// port of mutex1.char — 用 Mutex 保护并发共享状态
+// 演示：两个子线程 + 主线程各自累加 5000 次，用 mutex 保证不丢更新
+// 最终结果应为 15005（5 初始值 + 5000*3）
+
+// 共享计数器（newRef 模拟 Charlang 的 new("int", 5)）
+n1 := newRef(5)
+
+// 子线程完成标志
+flag1 := newRef(false)
+flag2 := newRef(false)
+
+// 互斥锁
+m1 := newMutex()
+
+pln("初始值:", getValueByRef(n1))
+
+// 子线程任务：累加 5000 次后置完成标志
+func worker(counter, done, mu) {
+    for i := 0; i < 5000; i++ {
+        lock(mu)
+        setValueByRef(counter, getValueByRef(counter) + 1)
+        unlock(mu)
+    }
+    setValueByRef(done, true)
+}
+
+// 启动两个子线程（对标 Charlang 的 threadRun）
+run worker(n1, flag1, m1)
+run worker(n1, flag2, m1)
+
+// 主线程也累加 5000 次
+for i := 0; i < 5000; i++ {
+    lock(m1)
+    setValueByRef(n1, getValueByRef(n1) + 1)
+    unlock(m1)
+}
+
+// 等待两个子线程完成
+while true {
+    if getValueByRef(flag1) == true && getValueByRef(flag2) == true {
+        break
+    }
+    sleep(0.001)
+}
+
+pln("result:", getValueByRef(n1))
+pln("期望: 15005")
