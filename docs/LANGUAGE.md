@@ -581,6 +581,16 @@ bytesXorInPlace(ba, key)       // 原地 XOR
 copy(dst, src)                 // 批量复制字节
 ```
 
+### CSV（RFC 4180）
+
+```sflang
+rows := readCsv("data.csv")           // 文件 → 二维数组（全字符串）
+rows := readCsvFromStr("a,b\n1,2\n")  // 字符串 → 二维数组
+writeCsv(data, "out.csv")             // 二维数组 → 文件（自动转义引号/逗号）
+```
+
+自动处理引号包裹、`""` 转义、字段内换行/逗号。
+
 ---
 
 ## 18. JSON

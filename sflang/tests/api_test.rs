@@ -2559,3 +2559,113 @@ fn test_clear_map() {
     let r = eval("var m = map{a:1,b:2}; clear(m); return len(m)");
     assert_eq!(r, Value::Int(0));
 }
+
+// ---- CSV ----
+
+/// assert_csv_rows 断言 readCsvFromStr 的结果与预期字符串二维数组一致。
+fn assert_csv_rows(actual: &Value, expected: &[&[&str]]) {
+    match actual {
+        Value::Array(rows) => {
+            let rg = rows.lock().unwrap();
+            assert_eq!(rg.len(), expected.len(), "行数不符: {:?} vs {:?}", actual, expected);
+            for (i, (row_val, exp_row)) in rg.iter().zip(expected.iter()).enumerate() {
+                match row_val {
+                    Value::Array(fields) => {
+                        let fg = fields.lock().unwrap();
+                        assert_eq!(fg.len(), exp_row.len(), "第{}行字段数不符", i);
+                        for (j, (f, exp)) in fg.iter().zip(exp_row.iter()).enumerate() {
+                            assert_eq!(f, &Value::str(exp), "第{}行第{}列: {:?} != {:?}", i, j, f, exp);
+                        }
+                    }
+                    other => panic!("第{}行不是数组: {:?}", i, other),
+                }
+            }
+        }
+        other => panic!("期望二维数组，得到 {:?}", other),
+    }
+}
+
+#[test]
+fn test_csv_basic() {
+    let r = eval("return readCsvFromStr(\"a,b,c\\n1,2,3\\n\")");
+    assert_csv_rows(&r, &[&["a", "b", "c"], &["1", "2", "3"]]);
+}
+
+#[test]
+fn test_csv_quoted_comma() {
+    // 引号内的逗号不算分隔符
+    let r = eval("return readCsvFromStr(\"a,b\\n\\\"x,y\\\",z\\n\")");
+    assert_csv_rows(&r, &[&["a", "b"], &["x,y", "z"]]);
+}
+
+#[test]
+fn test_csv_escaped_quotes() {
+    // "" 表示字面双引号
+    let r = eval("return readCsvFromStr(\"a\\n\\\"say \\\"\\\"hi\\\"\\\"\\\"\\n\")");
+    assert_csv_rows(&r, &[&["a"], &["say \"hi\""]]);
+}
+
+#[test]
+fn test_csv_newline_in_quotes() {
+    // 引号内的换行是字段内容
+    let r = eval("return readCsvFromStr(\"a\\n\\\"line1\\nline2\\\"\\n\")");
+    assert_csv_rows(&r, &[&["a"], &["line1\nline2"]]);
+}
+
+#[test]
+fn test_csv_no_trailing_newline() {
+    // 最后一行无换行也能解析
+    let r = eval("return readCsvFromStr(\"a,b\\nc,d\")");
+    assert_csv_rows(&r, &[&["a", "b"], &["c", "d"]]);
+}
+
+#[test]
+fn test_csv_single_field() {
+    let r = eval("return readCsvFromStr(\"hello\\n\")");
+    assert_csv_rows(&r, &[&["hello"]]);
+}
+
+#[test]
+fn test_csv_empty_string() {
+    let r = eval("return readCsvFromStr(\"\")");
+    // 空字符串应返回空数组
+    match r {
+        Value::Array(a) => assert!(a.lock().unwrap().is_empty()),
+        other => panic!("期望空数组，得到 {:?}", other),
+    }
+}
+
+#[test]
+fn test_csv_crlf_line_endings() {
+    // \r\n 行结束
+    let r = eval("return readCsvFromStr(\"a,b\\r\\n1,2\\r\\n\")");
+    assert_csv_rows(&r, &[&["a", "b"], &["1", "2"]]);
+}
+
+#[test]
+fn test_csv_write_read_roundtrip() {
+    // 写入文件再读回
+    use std::path::PathBuf;
+    let mut path = std::env::temp_dir();
+    path.push("sflang_csv_test_roundtrip.csv");
+    let path_str = path.to_str().unwrap().replace('\\', "/");
+
+    let mut sf = Sflang::new();
+    let src = format!(
+        "var data = [[\"name\", \"age\"], [\"Alice\", \"30\"], [\"Tom, Jr.\", \"25\"]]\n\
+        writeCsv(data, \"{}\")\n\
+        var rows = readCsv(\"{}\")\n\
+        var r0 = rows[0]\n\
+        var r2 = rows[2]",
+        path_str, path_str,
+    );
+    sf.run_string(&src).unwrap();
+
+    let r0 = sf.get_global("r0").unwrap();
+    assert_array(&r0, &[Value::str("name"), Value::str("age")]);
+
+    let r2 = sf.get_global("r2").unwrap();
+    assert_array(&r2, &[Value::str("Tom, Jr."), Value::str("25")]);
+
+    let _ = std::fs::remove_file(&path);
+}

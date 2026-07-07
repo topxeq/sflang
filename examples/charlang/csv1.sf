@@ -1,29 +1,41 @@
-// port of csv1.char — CSV 文件读写
+// port of csv1.char — CSV 读写（RFC 4180 规范）
+// Sflang 用 readCsv/writeCsv，自动处理引号、转义、字段内换行
 
-pathA := getTempDir() + "/sflang_csv_test.csv"
-
-// 写入 CSV
-content := "name,age,city\n"
-content += "Alice,30,Beijing\n"
-content += "Bob,25,Shanghai\n"
-content += "Charlie,35,Guangzhou\n"
-writeFile(pathA, content)
-
-// 读取并解析
-lines := readLines(pathA)
-
-// 第一行是表头
-headers := strSplit(lines[0], ",")
-pln("表头:", headers)
-
-// 数据行
-for i := 1; i < len(lines); i++ {
-    fields := strSplit(lines[i], ",")
-    row := map{}
-    for j := 0; j < len(headers); j++ {
-        row[headers[j]] = fields[j]
-    }
-    pl("%s, %s, %s\n", row["name"], row["age"], row["city"])
+// 1. 从字符串解析 CSV
+csvText := "title1,title2,title3\ndataA1,dataB1,dataC1\ndataA2,dataB2,dataC2\n1,2,3\na,b,c\n"
+pln("=== 从字符串解析 ===")
+rows := readCsvFromStr(csvText)
+for row in rows {
+    pln(row)
 }
 
-deleteFile(pathA)
+// 2. 写入文件（二维数组 → CSV）
+data := [
+    ["name", "age", "city"],
+    ["Alice", 30, "Beijing"],
+    ["Bob", 25, "Shanghai"],
+    ["Charlie, Jr.", 35, "Shenzhen"]   // 含逗号会自动加引号
+]
+path := joinPath(getTempDir(), "sflang_csv_test.csv")
+writeCsv(data, path)
+
+// 3. 从文件读回
+pln("")
+pln("=== 从文件读回 ===")
+rows2 := readCsv(path)
+for row in rows2 {
+    pln(row)
+}
+
+// 4. 引号和转义处理
+pln("")
+pln("=== 引号处理 ===")
+csvWithQuotes := "name,remark\n\"Tom\",\"He said \"\"hello\"\"\"\nJerry,\"Multi\nline\"\n"
+rows3 := readCsvFromStr(csvWithQuotes)
+for i, row in rows3 {
+    for j, field in row {
+        pl("  [%d][%d]: %s\n", i, j, field)
+    }
+}
+
+deleteFile(path)
