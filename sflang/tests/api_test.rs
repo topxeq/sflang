@@ -2465,3 +2465,97 @@ fn test_is_type_code_native() {
     // Ring 的 typeCode 是 11 (Native)
     assert_eq!(eval("var r = newRing(3); return isTypeCode(r, 11)"), Value::Bool(true));
 }
+
+// ---- StringBuilder ----
+
+#[test]
+fn test_string_builder_new() {
+    let r = eval("var sb = newStringBuilder(); return len(sb)");
+    assert_eq!(r, Value::Int(0));
+}
+
+#[test]
+fn test_string_builder_new_with_init() {
+    let r = eval("var sb = newStringBuilder(\"hello\"); return len(sb)");
+    assert_eq!(r, Value::Int(5));
+}
+
+#[test]
+fn test_string_builder_write_str() {
+    let r = eval("\
+        var sb = newStringBuilder()\n\
+        writeStr(sb, \"abc\")\n\
+        writeStr(sb, \"123\")\n\
+        return toStr(sb)");
+    assert_eq!(r, Value::str("abc123"));
+}
+
+#[test]
+fn test_string_builder_write_any() {
+    let r = eval("\
+        var sb = newStringBuilder()\n\
+        writeStr(sb, 42)\n\
+        writeStr(sb, true)\n\
+        return toStr(sb)");
+    assert_eq!(r, Value::str("42true"));
+}
+
+#[test]
+fn test_string_builder_write_bytes() {
+    let r = eval("\
+        var sb = newStringBuilder()\n\
+        writeBytes(sb, \"AB\")\n\
+        return toStr(sb)");
+    assert_eq!(r, Value::str("AB"));
+}
+
+#[test]
+fn test_string_builder_chain() {
+    let r = eval("\
+        var sb = newStringBuilder()\n\
+        writeStr(writeStr(sb, \"a\"), \"b\")\n\
+        return toStr(sb)");
+    assert_eq!(r, Value::str("ab"));
+}
+
+#[test]
+fn test_string_builder_len() {
+    let r = eval("var sb = newStringBuilder(\"hello\"); return len(sb)");
+    assert_eq!(r, Value::Int(5));
+}
+
+#[test]
+fn test_string_builder_clear() {
+    let r = eval("var sb = newStringBuilder(\"hello\"); clear(sb); return len(sb)");
+    assert_eq!(r, Value::Int(0));
+}
+
+#[test]
+fn test_string_builder_reset() {
+    let r = eval("var sb = newStringBuilder(\"hello\"); reset(sb); return len(sb)");
+    assert_eq!(r, Value::Int(0));
+}
+
+#[test]
+fn test_string_builder_is_type() {
+    assert_eq!(eval("return isType(newStringBuilder(), \"stringBuilder\")"), Value::Bool(true));
+    assert_eq!(eval("return isTypeCode(newStringBuilder(), 19)"), Value::Bool(true));
+}
+
+#[test]
+fn test_string_builder_json() {
+    let r = eval("return jsonEncode(newStringBuilder(\"hello\"))");
+    assert_eq!(r, Value::str("\"hello\""));
+}
+
+#[test]
+fn test_clear_array() {
+    let r = eval("var a = [1,2,3]; clear(a); return len(a)");
+    assert_eq!(r, Value::Int(0));
+}
+
+#[test]
+fn test_clear_map() {
+    let r = eval("var m = map{a:1,b:2}; clear(m); return len(m)");
+    assert_eq!(r, Value::Int(0));
+}

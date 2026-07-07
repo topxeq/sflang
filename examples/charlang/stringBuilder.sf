@@ -1,0 +1,62 @@
+// port of stringBuilder.char — 高效字符串构建器
+// Sflang 用 newStringBuilder() 创建，通过通用函数 writeStr/writeBytes/len/toStr/clear/reset 操作
+
+sb := newStringBuilder()
+
+// writeStr 追加字符串（返回 sb 自身，支持链式）
+writeStr(sb, "abc\n")
+writeStr(sb, "123")
+
+pln("sb:", sb)
+pln("toStr:", toStr(sb))
+pln("len:", len(sb))
+
+// 链式写法
+writeStr(writeStr(sb, "---"), "+++")
+pln("链式:", toStr(sb))
+
+// writeStr 追加任意值（自动转字符串）
+writeStr(sb, 42)
+writeStr(sb, true)
+writeStr(sb, 3.14)
+pln("追加混合类型:", toStr(sb))
+
+// writeBytes 追加字节序列
+sb2 := newStringBuilder()
+writeBytes(sb2, bytes([0x2b, 0x2d, 0x2a, 0x2f]))  // +-*/
+writeBytes(sb2, "\n\t")
+pln("writeBytes:", toStr(sb2))
+
+// 带初始内容
+sb3 := newStringBuilder("初始内容")
+pln("初始:", toStr(sb3))
+
+// clear 清空（不释放内存）
+clear(sb3)
+pln("clear后 len:", len(sb3))
+
+// reset 清空并释放内存
+sb4 := newStringBuilder()
+for i := 0; i < 1000; i++ {
+    writeStr(sb4, "x")
+}
+pln("1000个x len:", len(sb4))
+reset(sb4)
+pln("reset后 len:", len(sb4))
+
+// 实际场景：构建 CSV
+sb5 := newStringBuilder()
+for row in [["name", "age"], ["Alice", 30], ["Bob", 25]] {
+    first := true
+    for cell in row {
+        if !first { writeStr(sb5, ",") }
+        writeStr(sb5, cell)
+        first = false
+    }
+    writeStr(sb5, "\n")
+}
+pln("CSV:")
+pr(toStr(sb5))
+
+// isType 判断
+pln("isType stringBuilder:", isType(sb, "stringBuilder"))

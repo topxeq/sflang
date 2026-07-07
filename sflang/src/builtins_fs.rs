@@ -337,20 +337,37 @@ fn bi_read_n(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_write_str 向 file 写字符串。
 fn bi_write_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let f = as_file(args, 0, "writeStr")?;
-    let s = bh::as_str(args, 1, "writeStr")?;
-    let mut guard = f.lock().map_err(|e| crate::value::error_value(format!(
-        "writeStr() 文件锁异常: {}", e,
-    )))?;
-    guard.write_all(s.as_bytes()).map_err(|e| crate::value::error_value(format!(
-        "writeStr() 写入失败: {} (可能原因：磁盘满或权限)", e,
-    )))?;
-    Ok(Value::Undefined)
+    bh::require_arg(args, 0, "writeStr")?;
+    bh::require_arg(args, 1, "writeStr")?;
+    match &args[0] {
+        Value::File(_) => {
+            // 文件写入：严格要求 string 参数
+            let s = bh::as_str(args, 1, "writeStr")?;
+            if let Value::File(f) = &args[0] {
+                let mut guard = f.lock().map_err(|e| crate::value::error_value(format!(
+                    "writeStr() 文件锁异常: {}", e,
+                )))?;
+                guard.write_all(s.as_bytes()).map_err(|e| crate::value::error_value(format!(
+                    "writeStr() 写入失败: {} (可能原因：磁盘满或权限)", e,
+                )))?;
+            }
+            Ok(Value::Undefined)
+        }
+        Value::StringBuilder(sb) => {
+            // StringBuilder 写入：接受任意值（用 to_str 转换）
+            let s = args[1].to_str();
+            sb.lock().unwrap().push_str(&s);
+            Ok(args[0].clone())  // 返回 sb 自身，支持链式
+        }
+        other => Err(crate::value::error_value(format!(
+            "writeStr() 第一个参数应为 file 或 stringBuilder，得到 {} (可能原因：参数类型错误)", other.type_name(),
+        ))),
+    }
 }
 
 /// bi_write_bytes 向 file 写字节（bytes/byteArray/string）。
 fn bi_write_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let f = as_file(args, 0, "writeBytes")?;
+    bh::require_arg(args, 0, "writeBytes")?;
     bh::require_arg(args, 1, "writeBytes")?;
     let data: Vec<u8> = match &args[1] {
         Value::Bytes(b) => b.as_ref().to_vec(),
@@ -360,13 +377,25 @@ fn bi_write_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             "writeBytes() 数据应为 bytes/byteArray/string，得到 {}", v.type_name(),
         ))),
     };
-    let mut guard = f.lock().map_err(|e| crate::value::error_value(format!(
-        "writeBytes() 文件锁异常: {}", e,
-    )))?;
-    guard.write_all(&data).map_err(|e| crate::value::error_value(format!(
-        "writeBytes() 写入失败: {}", e,
-    )))?;
-    Ok(Value::Undefined)
+    match &args[0] {
+        Value::File(f) => {
+            let mut guard = f.lock().map_err(|e| crate::value::error_value(format!(
+                "writeBytes() 文件锁异常: {}", e,
+            )))?;
+            guard.write_all(&data).map_err(|e| crate::value::error_value(format!(
+                "writeBytes() 写入失败: {} (可能原因：磁盘满或权限)", e,
+            )))?;
+            Ok(Value::Undefined)
+        }
+        Value::StringBuilder(sb) => {
+            // 将字节按 UTF-8 追加（如果字节不是有效 UTF-8，用 lossy 转换）
+            sb.lock().unwrap().push_str(&String::from_utf8_lossy(&data));
+            Ok(args[0].clone())
+        }
+        other => Err(crate::value::error_value(format!(
+            "writeBytes() 第一个参数应为 file 或 stringBuilder，得到 {} (可能原因：参数类型错误)", other.type_name(),
+        ))),
+    }
 }
 
 /// bi_write_line 写一行（字符串 + \n）。

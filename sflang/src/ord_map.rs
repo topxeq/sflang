@@ -71,6 +71,11 @@ impl OrdMap {
         self.entries.is_empty()
     }
 
+    /// clear 清空所有键值对。
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
     /// snapshot 克隆所有键值对（用于持锁期间快速取数据后释放锁）。
     pub fn snapshot(&self) -> Vec<(String, Value)> {
         self.entries.clone()

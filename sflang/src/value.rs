@@ -64,6 +64,8 @@ pub enum TypeCode {
     Byte = 17,
     /// Map 有序映射（插入顺序保持，纯数据容器，无原型链）。
     Map = 18,
+    /// StringBuilder 高效字符串构建器（可变，大量拼接用）。
+    StringBuilder = 19,
 }
 
 impl TypeCode {
@@ -89,6 +91,7 @@ impl TypeCode {
             TypeCode::File => "file",
             TypeCode::Byte => "byte",
             TypeCode::Map => "map",
+            TypeCode::StringBuilder => "stringBuilder",
         }
     }
 }
@@ -160,6 +163,11 @@ pub enum Value {
     Byte(u8),
     /// Map 有序映射（插入顺序，纯数据容器）。
     Map(Arc<Mutex<OrdMap>>),
+    /// StringBuilder 高效字符串构建器（可变，用于大量拼接）。
+    ///
+    /// 对标 Go strings.Builder。底层 Rust String，O(1) 追加、O(n) 构建。
+    /// 通过通用的 writeStr/writeBytes/len/toStr/clear/reset 操作。
+    StringBuilder(Arc<Mutex<String>>),
 }
 
 impl PartialEq for Value {
@@ -185,6 +193,7 @@ impl PartialEq for Value {
             (Value::File(a), Value::File(b)) => Arc::ptr_eq(a, b),
             (Value::Byte(a), Value::Byte(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => Arc::ptr_eq(a, b),
+            (Value::StringBuilder(a), Value::StringBuilder(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -220,6 +229,7 @@ impl Value {
             Value::File(_) => TypeCode::File,
             Value::Byte(_) => TypeCode::Byte,
             Value::Map(_) => TypeCode::Map,
+            Value::StringBuilder(_) => TypeCode::StringBuilder,
         }
     }
 
@@ -290,6 +300,7 @@ impl Value {
             Value::File(_) => true,
             Value::Byte(b) => *b != 0,
             Value::Map(m) => !m.lock().unwrap().is_empty(),
+            Value::StringBuilder(sb) => !sb.lock().unwrap().is_empty(),
         }
     }
 
@@ -371,6 +382,14 @@ impl Value {
                     .map(|(k, v)| format!("{}: {}", quote_str(k), repr_value(v)))
                     .collect();
                 format!("map{{{}}}", items.join(", "))
+            }
+            Value::StringBuilder(sb) => {
+                let s = sb.lock().unwrap().clone();
+                if s.is_empty() {
+                    "(stringBuilder)".to_string()
+                } else {
+                    format!("(stringBuilder){}", s)
+                }
             }
         }
     }
@@ -479,6 +498,7 @@ impl Value {
         match self {
             Value::Undefined => "undefined".to_string(),
             Value::Str(s) => (*s).to_string(),
+            Value::StringBuilder(sb) => sb.lock().unwrap().clone(),
             _ => self.inspect(),
         }
     }

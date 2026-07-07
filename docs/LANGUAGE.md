@@ -67,6 +67,7 @@ x = "hello"      // 赋值（动态类型，可改变类型）
 | `bigFloat` | 任意精度十进制浮点 | `bigFloat("0.1")` |
 | `datetime` | 日期时间 | `datetime(2024, 1, 1)` |
 | `file` | 文件句柄 | `openFile("a.txt", "r")` |
+| `stringBuilder` | 高效字符串构建器 | `newStringBuilder()` |
 
 ### 通用类型判断
 
@@ -644,7 +645,27 @@ ringClear(r)             // 清空
 
 ---
 
-## 21. 系统与环境
+## 21. StringBuilder 高效字符串构建器
+
+大量字符串拼接时用 StringBuilder 避免 O(n²) 的重复分配。通过通用函数操作，无专属函数。
+
+```sflang
+sb := newStringBuilder()           // 创建（可选初始内容）
+writeStr(sb, "hello")              // 追加字符串（返回 sb，支持链式）
+writeStr(sb, 42)                   // 追加任意值（自动 toStr）
+writeBytes(sb, bytes([0x41, 0x42])) // 追加字节序列
+toStr(sb)                          // 获取最终字符串
+len(sb)                            // 当前字符数
+clear(sb)                          // 清空（不释放内存）
+reset(sb)                          // 清空并释放内存
+```
+
+`writeStr` 对 StringBuilder 接受任意值（用 `toStr` 转换）；对 file 严格要求 string 参数。
+`clear` / `reset` 也支持 array、byteArray、map、ring。
+
+---
+
+## 22. 系统与环境
 
 ```sflang
 getEnv("HOME")                // 环境变量

@@ -35,6 +35,9 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("assert", bi_assert);
     vm.register_builtin("sleep", bi_sleep);
     vm.register_builtin("sleepMs", bi_sleep_ms);
+    vm.register_builtin("newStringBuilder", bi_new_string_builder);
+    vm.register_builtin("clear", bi_clear);
+    vm.register_builtin("reset", bi_reset);
     // ---- 实用函数（对标 charlang 常见编程任务）----
     vm.register_builtin("uuid", bi_uuid);
     vm.register_builtin("randomStr", bi_random_str);
@@ -330,6 +333,7 @@ fn bi_len(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         Value::Array(a) => a.lock().unwrap().len() as i64,
         Value::Object(o) => o.lock().unwrap().len() as i64,
         Value::Map(m) => m.lock().unwrap().len() as i64,
+        Value::StringBuilder(sb) => sb.lock().unwrap().chars().count() as i64,
         v => return Err(crate::value::error_value(format!("len() 不支持类型 {} (可能原因：参数类型错误)", v.type_name()))),
     };
     Ok(Value::Int(n))
@@ -558,6 +562,82 @@ fn bi_byte(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// bi_new_map 创建空有序 Map。
 fn bi_new_map(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Map(std::sync::Arc::new(std::sync::Mutex::new(crate::ord_map::OrdMap::new()))))
+}
+
+/// bi_new_string_builder 创建 StringBuilder（高效字符串构建器）。
+///
+/// 用法：
+///   newStringBuilder()       — 空 builder
+///   newStringBuilder("初始")  — 带初始内容
+///
+/// 通过通用函数操作：writeStr/writeBytes/len/toStr/clear/reset。
+fn bi_new_string_builder(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let initial = if args.is_empty() {
+        String::new()
+    } else {
+        args[0].to_str()
+    };
+    Ok(Value::StringBuilder(std::sync::Arc::new(std::sync::Mutex::new(initial))))
+}
+
+/// bi_clear 清空容器内容（不释放内存）。
+///
+/// 支持：stringBuilder、array、byteArray、map、ring。
+/// 用法：clear(sb)
+fn bi_clear(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "clear")?;
+    match &args[0] {
+        Value::StringBuilder(sb) => sb.lock().unwrap().clear(),
+        Value::Array(a) => a.lock().unwrap().clear(),
+        Value::ByteArray(b) => b.lock().unwrap().clear(),
+        Value::Map(m) => m.lock().unwrap().clear(),
+        Value::Native(n) => {
+            // ring
+            if let Some(r) = n.downcast_ref::<std::sync::Arc<std::sync::Mutex<crate::ring::Ring>>>() {
+                r.lock().unwrap().clear();
+            } else {
+                return Err(crate::value::error_value(format!(
+                    "clear() 不支持此 native 类型 (可能原因：不是 ring)",
+                )));
+            }
+        }
+        other => return Err(crate::value::error_value(format!(
+            "clear() 不支持类型 {} (可能原因：参数应为 stringBuilder/array/byteArray/map/ring)", other.type_name(),
+        ))),
+    }
+    Ok(Value::Undefined)
+}
+
+/// bi_reset 清空容器并释放内存（对 stringBuilder 效果最明显）。
+///
+/// 支持：stringBuilder、array、byteArray、map。
+/// 用法：reset(sb)
+fn bi_reset(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "reset")?;
+    match &args[0] {
+        Value::StringBuilder(sb) => {
+            // 清空并 shrink_to_fit 释放内存
+            let mut guard = sb.lock().unwrap();
+            guard.clear();
+            guard.shrink_to_fit();
+        }
+        Value::Array(a) => {
+            let mut guard = a.lock().unwrap();
+            guard.clear();
+            guard.shrink_to_fit();
+        }
+        Value::ByteArray(b) => {
+            let mut guard = b.lock().unwrap();
+            guard.clear();
+            guard.shrink_to_fit();
+        }
+        other => return Err(crate::value::error_value(format!(
+            "reset() 不支持类型 {} (可能原因：参数应为 stringBuilder/array/byteArray)", other.type_name(),
+        ))),
+    }
+    Ok(Value::Undefined)
 }
 
 /// bi_entries 返回对象的非函数键值对（过滤方法），每对为 [key, value]。

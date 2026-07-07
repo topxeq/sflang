@@ -102,6 +102,7 @@ fn encode_value(v: &Value, out: &mut String) {
             }
             out.push('}');
         }
+        Value::StringBuilder(sb) => encode_string(&sb.lock().unwrap(), out),
         Value::Func(_) | Value::Builtin(_) => {
             // 函数无 JSON 表示，编码为 null
             out.push_str("null");
