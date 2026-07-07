@@ -27,6 +27,8 @@ windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Fou
 rust_xlsxwriter = "0.79"
 # calamine：读 Excel xlsx/xls/ods 文件（MIT, tafia），用于 excel* 读取函数。
 calamine = "0.26"
+# zip：ZIP 压缩/解压（MIT），用于 docx 读写（docx 本质是 ZIP 包）。
+zip = "2.4"
 
 # 编译优化配置：release 模式启用 LTO 与单代码生成单元，最大化优化
 [profile.release]

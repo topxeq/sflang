@@ -20,6 +20,8 @@ regex = { workspace = true }
 # Excel 读写（rust_xlsxwriter 写 + calamine 读，workspace 统一管理版本）
 rust_xlsxwriter = { workspace = true }
 calamine = { workspace = true }
+# ZIP 压缩/解压（用于 docx 读写，docx 本质是 ZIP 包）
+zip = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }

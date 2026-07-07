@@ -5,6 +5,7 @@
 use sflang::Sflang;
 use sflang::value::Value;
 use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
 
 // ---- 辅助函数 ----
 
@@ -2794,6 +2795,152 @@ fn test_excel_bool_type() {
     match v1 {
         Value::Bool(b) => assert!(b),
         other => panic!("期望 bool true，得到 {:?}", other),
+    }
+
+    let _ = std::fs::remove_file(&path);
+}
+
+// ---- docx ----
+
+/// create_test_docx 创建一个最小的测试 docx 文件，返回路径。
+fn create_test_docx(filename: &str) -> PathBuf {
+    use std::io::Write;
+    let mut path = std::env::temp_dir();
+    path.push(filename);
+
+    let doc_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
+        <w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">\
+        <w:body>\
+        <w:p><w:r><w:t>Hello World</w:t></w:r></w:p>\
+        <w:p><w:r><w:t>Name: {name}</w:t></w:r></w:p>\
+        <w:p><w:r><w:t>Date: {date}</w:t></w:r></w:p>\
+        <w:p><w:r><w:t>Amp: test &amp; demo</w:t></w:r></w:p>\
+        </w:body></w:document>";
+
+    let content_types = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+        <Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\
+        <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
+        <Default Extension=\"xml\" ContentType=\"application/xml\"/>\
+        <Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>\
+        </Types>";
+
+    let rels = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+        <Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\
+        <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/>\
+        </Relationships>";
+
+    let file = std::fs::File::create(&path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default();
+
+    zip.start_file("[Content_Types].xml", options).unwrap();
+    zip.write_all(content_types.as_bytes()).unwrap();
+    zip.start_file("_rels/.rels", options).unwrap();
+    zip.write_all(rels.as_bytes()).unwrap();
+    zip.start_file("word/document.xml", options).unwrap();
+    zip.write_all(doc_xml.as_bytes()).unwrap();
+    zip.finish().unwrap();
+
+    path
+}
+
+#[test]
+fn test_docx_to_strs() {
+    let path = create_test_docx("sflang_docx_test_tostrs.docx");
+    let path_str = path.to_str().unwrap().replace('\\', "/");
+
+    let mut sf = Sflang::new();
+    let src = format!("var paras = docxToStrs(\"{}\")", path_str);
+    sf.run_string(&src).unwrap();
+
+    let paras = sf.get_global("paras").unwrap();
+    match &paras {
+        Value::Array(a) => {
+            let g = a.lock().unwrap();
+            assert!(g.len() >= 4, "应至少 4 段");
+            assert_eq!(g[0], Value::str("Hello World"));
+            // XML 实体解码
+            assert_eq!(g[3], Value::str("Amp: test & demo"));
+        }
+        other => panic!("期望数组，得到 {:?}", other),
+    }
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_docx_get_placeholders() {
+    let path = create_test_docx("sflang_docx_test_placeholders.docx");
+    let path_str = path.to_str().unwrap().replace('\\', "/");
+
+    let mut sf = Sflang::new();
+    let src = format!("var ph = docxGetPlaceholders(\"{}\")", path_str);
+    sf.run_string(&src).unwrap();
+
+    let ph = sf.get_global("ph").unwrap();
+    match &ph {
+        Value::Array(a) => {
+            let g = a.lock().unwrap();
+            assert_eq!(g.len(), 2, "应有 2 个占位符");
+            assert!(g.contains(&Value::str("{name}")), "应包含 {{name}}");
+            assert!(g.contains(&Value::str("{date}")), "应包含 {{date}}");
+        }
+        other => panic!("期望数组，得到 {:?}", other),
+    }
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_docx_replace() {
+    let path = create_test_docx("sflang_docx_test_replace.docx");
+    let path_str = path.to_str().unwrap().replace('\\', "/");
+
+    let mut sf = Sflang::new();
+    let src = format!(
+        "var bs = readFileBytes(\"{}\")\n\
+        var newBs = docxReplace(bs, [\"{{name}}\", \"Alice\", \"{{date}}\", \"2026-07-07\"])\n\
+        var outPath = joinPath(getTempDir(), \"sflang_docx_replaced.docx\")\n\
+        writeFileBytes(outPath, newBs)\n\
+        var paras = docxToStrs(outPath)\n\
+        var p1 = paras[1]\n\
+        var p2 = paras[2]",
+        path_str,
+    );
+    sf.run_string(&src).unwrap();
+
+    let p1 = sf.get_global("p1").unwrap();
+    assert_eq!(p1, Value::str("Name: Alice"));
+
+    let p2 = sf.get_global("p2").unwrap();
+    assert_eq!(p2, Value::str("Date: 2026-07-07"));
+
+    // 清理
+    let out_path = std::env::temp_dir().join("sflang_docx_replaced.docx");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&out_path);
+}
+
+#[test]
+fn test_docx_to_strs_from_bytes() {
+    let path = create_test_docx("sflang_docx_test_bytes.docx");
+    let path_str = path.to_str().unwrap().replace('\\', "/");
+
+    let mut sf = Sflang::new();
+    let src = format!(
+        "var bs = readFileBytes(\"{}\")\n\
+        var paras = docxToStrs(bs)",
+        path_str,
+    );
+    sf.run_string(&src).unwrap();
+
+    let paras = sf.get_global("paras").unwrap();
+    match &paras {
+        Value::Array(a) => {
+            let g = a.lock().unwrap();
+            assert_eq!(g[0], Value::str("Hello World"));
+        }
+        other => panic!("期望数组，得到 {:?}", other),
     }
 
     let _ = std::fs::remove_file(&path);

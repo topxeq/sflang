@@ -50,6 +50,7 @@ pub mod ring;
 pub mod builtins_ring;
 pub mod builtins_csv;
 pub mod builtins_xlsx;
+pub mod builtins_docx;
 pub mod api;
 
 // 重导出常用类型
