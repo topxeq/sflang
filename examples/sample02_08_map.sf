@@ -7,7 +7,7 @@
 var m = map{"first": 1, "second": 2, "third": 3}
 pln("map:", m)
 pln("typeName:", typeName(m))
-pln("isMap:", isMap(m))
+pln("isType map:", isType(m, "map"))
 
 // newMap() 创建空 map
 var m2 = newMap()

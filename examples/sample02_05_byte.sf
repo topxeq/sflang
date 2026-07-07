@@ -8,7 +8,7 @@ var b1 = byte(65)
 var b2 = byte(255)
 pln("byte(65):", b1, "typeName:", typeName(b1))
 pln("byte(255):", b2)
-pln("isByte:", isByte(b1))
+pln("isType byte:", isType(b1, "byte"))
 
 // 超出范围报错
 // byte(256)  // 报错

@@ -58,30 +58,17 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("newRef", bi_new_ref);
     vm.register_builtin("getValueByRef", bi_get_value_by_ref);
     vm.register_builtin("setValueByRef", bi_set_value_by_ref);
-    // 类型判断谓词
-    vm.register_builtin("isArray", bi_is_array);
-    vm.register_builtin("isString", bi_is_string);
-    vm.register_builtin("isObject", bi_is_object);
-    vm.register_builtin("isByteArray", bi_is_byte_array);
-    vm.register_builtin("isBytes", bi_is_bytes);
-    vm.register_builtin("isFile", bi_is_file);
+    // byte 构造与字节操作
     vm.register_builtin("byte", bi_byte);
-    vm.register_builtin("isByte", bi_is_byte);
     vm.register_builtin("newMap", bi_new_map);
-    vm.register_builtin("isMap", bi_is_map);
     vm.register_builtin("entries", bi_entries);
     vm.register_builtin("dataKeys", bi_data_keys);
     vm.register_builtin("dataValues", bi_data_values);
     vm.register_builtin("bytesXor", bi_bytes_xor);
     vm.register_builtin("bytesXorInPlace", bi_bytes_xor_in_place);
-    vm.register_builtin("isBigInt", bi_is_big_int_pred);
-    vm.register_builtin("isBigFloat", bi_is_big_float_pred);
-    vm.register_builtin("isNumber", bi_is_number);
-    vm.register_builtin("isInt", bi_is_int);
-    vm.register_builtin("isFloat", bi_is_float);
-    vm.register_builtin("isBool", bi_is_bool);
+    // 类型判断：isUndefined 保留（特殊语义：缺参返回 true，链式判空）
     vm.register_builtin("isUndefined", bi_is_undefined);
-    vm.register_builtin("isFunction", bi_is_function);
+    // 错误处理：isError/isErr 保留（错误判断，非纯类型判断）
     vm.register_builtin("error", bi_error);
     vm.register_builtin("isError", bi_is_error);
     // ---- TXERROR 错误字符串机制（对标 Charlang isErrX/getErrStrX 等）----
@@ -535,40 +522,7 @@ fn bi_sleep(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Undefined)
 }
 
-// ---- 类型判断谓词 ----
-//
-// 每个谓词接收 1 个参数，返回 Bool。
-// 空 args 时返回 false（而非报错），便于链式判断。
-
-/// bi_is_array 判断是否为数组。
-fn bi_is_array(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(matches!(args.get(0), Some(Value::Array(_)))))
-}
-
-/// bi_is_string 判断是否为字符串。
-fn bi_is_string(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(matches!(args.get(0), Some(Value::Str(_)))))
-}
-
-/// bi_is_object 判断是否为对象/映射。
-fn bi_is_object(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(matches!(args.get(0), Some(Value::Object(_)))))
-}
-
-/// bi_is_byte_array 判断是否为可变字节序列 byteArray。
-fn bi_is_byte_array(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(matches!(args.get(0), Some(Value::ByteArray(_)))))
-}
-
-/// bi_is_bytes 判断是否为不可变字节序列 bytes。
-fn bi_is_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(matches!(args.get(0), Some(Value::Bytes(_)))))
-}
-
-/// bi_is_file 判断是否为文件句柄 file。
-fn bi_is_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(matches!(args.get(0), Some(Value::File(_)))))
-}
+// ---- byte 构造 ----
 
 /// bi_byte 构造 byte 值（0-255）。
 ///
@@ -584,19 +538,9 @@ fn bi_byte(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Byte(v as u8))
 }
 
-/// bi_is_byte 判断是否为 byte 类型。
-fn bi_is_byte(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(matches!(args.get(0), Some(Value::Byte(_)))))
-}
-
 /// bi_new_map 创建空有序 Map。
 fn bi_new_map(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Map(std::sync::Arc::new(std::sync::Mutex::new(crate::ord_map::OrdMap::new()))))
-}
-
-/// bi_is_map 判断是否为有序 Map 类型。
-fn bi_is_map(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(matches!(args.get(0), Some(Value::Map(_)))))
 }
 
 /// bi_entries 返回对象的非函数键值对（过滤方法），每对为 [key, value]。
@@ -716,46 +660,12 @@ fn to_byte_vec(v: &Value) -> Result<Vec<u8>, String> {
     }
 }
 
-/// bi_is_big_int_pred 判断是否为任意精度整数 bigInt。
-fn bi_is_big_int_pred(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(matches!(args.get(0), Some(Value::BigInt(_)))))
-}
-
-/// bi_is_big_float_pred 判断是否为任意精度浮点 bigFloat。
-fn bi_is_big_float_pred(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(matches!(args.get(0), Some(Value::BigFloat(_)))))
-}
-
-/// bi_is_number 判断是否为数字（Int 或 Float）。
-fn bi_is_number(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(args.get(0).map(|v| v.is_number()).unwrap_or(false)))
-}
-
-/// bi_is_int 判断是否为整数。
-fn bi_is_int(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(matches!(args.get(0), Some(Value::Int(_)))))
-}
-
-/// bi_is_float 判断是否为浮点。
-fn bi_is_float(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(matches!(args.get(0), Some(Value::Float(_)))))
-}
-
-/// bi_is_bool 判断是否为布尔。
-fn bi_is_bool(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(matches!(args.get(0), Some(Value::Bool(_)))))
-}
-
 /// bi_is_undefined 判断是否为 undefined（含旧称 nil）。
 ///
 /// 缺参时返回 true（便于链式判空：`isUndefined(m["maybe"])`）。
+/// 这是特殊保留的类型判断函数（缺参返回 true 的语义不同于 isType）。
 fn bi_is_undefined(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Bool(matches!(args.get(0), Some(Value::Undefined) | None)))
-}
-
-/// bi_is_function 判断是否为函数（用户函数或内置函数）。
-fn bi_is_function(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Bool(matches!(args.get(0), Some(Value::Func(_)) | Some(Value::Builtin(_)))))
 }
 
 /// bi_error 创建一个错误值。

@@ -250,7 +250,7 @@ var m = map{"first": 1, "second": 2}  // 插入序
 var m2 = newMap()
 m["key"] = "value"
 for k, v in m { }            // 按插入序遍历
-isMap(m)                     // true
+isType(m, "map")             // true
 ```
 
 ### Object vs Map

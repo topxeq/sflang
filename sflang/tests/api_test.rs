@@ -502,7 +502,7 @@ fn test_file_handle() {
     let mut sf2 = Sflang::new();
     sf2.set_global("__p", Value::str(path_str));
     assert_eq!(sf2.run_string("return typeName(openFile(__p, \"r\"))").unwrap(), Value::str("file"));
-    assert_eq!(sf2.run_string("return isFile(openFile(__p, \"r\"))").unwrap(), Value::Bool(true));
+    assert_eq!(sf2.run_string("return isType(openFile(__p, \"r\"), \"file\")").unwrap(), Value::Bool(true));
 
     // 逐行读取
     let mut sf3 = Sflang::new();
@@ -621,7 +621,7 @@ fn test_generic_close() {
     std::fs::write(&path, "test").unwrap();
     let mut sf = Sflang::new();
     sf.set_global("__p", Value::str(path.to_str().unwrap()));
-    assert!(sf.run_string("var f = openFile(__p, \"r\"); close(f); return isFile(f)").unwrap() == Value::Bool(true));
+    assert!(sf.run_string("var f = openFile(__p, \"r\"); close(f); return isType(f, \"file\")").unwrap() == Value::Bool(true));
     // close(mutex) — 释放互斥锁
     assert!(run("var mu = newMutex(); lock(mu); close(mu); return tryLock(mu)").unwrap() == Value::Bool(true));
     // close(rwlock) — 释放写锁
@@ -1009,8 +1009,8 @@ fn test_big_int() {
     // toBigInt（强制 bigInt 类型）
     assert_eq!(eval("return typeName(toBigInt(5))"), Value::str("bigInt"));
     // isBigInt
-    assert_eq!(eval("return isBigInt(bigInt(5))"), Value::Bool(true));
-    assert_eq!(eval("return isBigInt(5)"), Value::Bool(false));
+    assert_eq!(eval("return isType(bigInt(5), \"bigInt\")"), Value::Bool(true));
+    assert_eq!(eval("return isType(5, \"bigInt\")"), Value::Bool(false));
 }
 
 #[test]
@@ -1034,7 +1034,7 @@ fn test_big_float() {
     // 大数 + 小数
     assert_eq!(eval("return (bigFloat(\"99999999999999999999.99\") + bigFloat(\"0.01\")) == bigFloat(\"100000000000000000000\")"), Value::Bool(true));
     // isBigFloat
-    assert_eq!(eval("return isBigFloat(bigFloat(\"1\"))"), Value::Bool(true));
+    assert_eq!(eval("return isType(bigFloat(\"1\"), \"bigFloat\")"), Value::Bool(true));
     // bigFloat + float 报错（精度语义冲突）
     assert!(run("return bigFloat(\"1\") + 1.5").is_err());
     // 非交换运算的操作数顺序（BigFloat 在左、Int 在右）—— 曾因共用 arm 算反
@@ -1054,8 +1054,8 @@ fn test_big_float() {
 fn test_byte_type() {
     // 构造与类型
     assert_eq!(eval("return typeName(byte(65))"), Value::str("byte"));
-    assert_eq!(eval("return isByte(byte(65))"), Value::Bool(true));
-    assert_eq!(eval("return isByte(65)"), Value::Bool(false));
+    assert_eq!(eval("return isType(byte(65), \"byte\")"), Value::Bool(true));
+    assert_eq!(eval("return isType(65, \"byte\")"), Value::Bool(false));
     // byte == int 跨类型相等
     assert_eq!(eval("return byte(65) == 65"), Value::Bool(true));
     assert_eq!(eval("return byte(0) == 0"), Value::Bool(true));
@@ -1097,8 +1097,8 @@ fn test_byte_array_basics() {
     // 构造与类型
     assert!(eval("return byteArray(4)").type_name() == "byteArray".to_string());
     assert_eq!(eval("return typeName(byteArray(4))"), Value::str("byteArray"));
-    assert_eq!(eval("return isByteArray(byteArray(4))"), Value::Bool(true));
-    assert_eq!(eval("return isByteArray(bytes(\"ab\"))"), Value::Bool(false));
+    assert_eq!(eval("return isType(byteArray(4), \"byteArray\")"), Value::Bool(true));
+    assert_eq!(eval("return isType(bytes(\"ab\"), \"byteArray\")"), Value::Bool(false));
     // 长度与填充
     assert_eq!(eval("return len(byteArray(8))"), Value::Int(8));
     assert_eq!(eval("return byteArray(3, 0xFF)[0]"), Value::Byte(255));
@@ -1504,20 +1504,18 @@ fn test_arr_remove_out_of_bounds_error() {
 
 #[test]
 fn test_type_predicates() {
-    assert_eq!(eval("return isArray([])"), Value::Bool(true));
-    assert_eq!(eval("return isString(\"x\")"), Value::Bool(true));
-    assert_eq!(eval("return isObject({})"), Value::Bool(true));
-    assert_eq!(eval("return isNumber(3)"), Value::Bool(true));
-    assert_eq!(eval("return isNumber(3.0)"), Value::Bool(true));
-    assert_eq!(eval("return isInt(3)"), Value::Bool(true));
-    assert_eq!(eval("return isFloat(3.0)"), Value::Bool(true));
-    assert_eq!(eval("return isBool(true)"), Value::Bool(true));
-    assert_eq!(eval("return isUndefined(undefined)"), Value::Bool(true));
-    assert_eq!(eval("return isUndefined(undefined)"), Value::Bool(true));
+    // 通用类型判断 isType 取代零散的 isXxx 谓词
+    assert_eq!(eval("return isType([], \"array\")"), Value::Bool(true));
+    assert_eq!(eval("return isType(\"x\", \"string\")"), Value::Bool(true));
+    assert_eq!(eval("return isType(3, \"int\")"), Value::Bool(true));
+    assert_eq!(eval("return isType(3.0, \"float\")"), Value::Bool(true));
+    assert_eq!(eval("return isType(true, \"bool\")"), Value::Bool(true));
+    // isUndefined 保留（特殊语义）
     assert_eq!(eval("return isUndefined(undefined)"), Value::Bool(true));
     assert_eq!(eval("return isUndefined(0)"), Value::Bool(false));
-    assert_eq!(eval("return isNumber(\"x\")"), Value::Bool(false));
-    assert_eq!(eval("return isFunction(println)"), Value::Bool(true));
+    // isTypeCode 按数字编码判断
+    assert_eq!(eval("return isTypeCode(3, 1)"), Value::Bool(true));
+    assert_eq!(eval("return isTypeCode(3.0, 2)"), Value::Bool(true));
 }
 
 // ---- 时间内置函数 ----
