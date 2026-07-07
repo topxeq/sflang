@@ -4,6 +4,7 @@
 
 use sflang::Sflang;
 use sflang::value::Value;
+use std::sync::{Arc, Mutex};
 
 // ---- 辅助函数 ----
 
@@ -2233,4 +2234,236 @@ fn is_err_value_test(v: &Value) -> bool {
         Value::Str(s) => s.starts_with("TXERROR:"),
         _ => false,
     }
+}
+
+// ---- Ring 环形缓冲区 ----
+
+/// assert_array 断言 Value 是 Array 且元素按值等于预期。
+fn assert_array(actual: &Value, expected: &[Value]) {
+    match actual {
+        Value::Array(a) => {
+            let g = a.lock().unwrap();
+            assert_eq!(g.len(), expected.len(), "数组长度不符: 实际 {:?} 期望 {:?}", actual, expected);
+            for (i, (a, b)) in g.iter().zip(expected.iter()).enumerate() {
+                assert!(a.equals(b), "元素 #{} 不符: 实际 {:?} 期望 {:?}", i, a, b);
+            }
+        }
+        other => panic!("期望 array，得到 {:?}", other),
+    }
+}
+
+#[test]
+fn test_ring_new() {
+    // newRing 创建 ring，初始 size 为 0
+    let r = eval("var r = newRing(3); return ringSize(r)");
+    assert_eq!(r, Value::Int(0));
+}
+
+#[test]
+fn test_ring_push_basic() {
+    let r = eval("\
+        var r = newRing(10)\n\
+        ringPush(r, 10)\n\
+        ringPush(r, 20)\n\
+        ringPush(r, 30)\n\
+        return ringToList(r)");
+    assert_array(&r, &[Value::Int(10), Value::Int(20), Value::Int(30)]);
+}
+
+#[test]
+fn test_ring_capacity_eviction() {
+    // 容量 3，push 4 个，淘汰头部
+    let r = eval("\
+        var r = newRing(3)\n\
+        ringPush(r, 1); ringPush(r, 2); ringPush(r, 3); ringPush(r, 4)\n\
+        return ringToList(r)");
+    assert_array(&r, &[Value::Int(2), Value::Int(3), Value::Int(4)]);
+}
+
+#[test]
+fn test_ring_get() {
+    let r = eval("\
+        var r = newRing(10)\n\
+        ringPush(r, \"a\"); ringPush(r, \"b\"); ringPush(r, \"c\")\n\
+        return ringGet(r, 0)");
+    assert_eq!(r, Value::str("a"));
+}
+
+#[test]
+fn test_ring_get_head_and_tail() {
+    let r = eval("\
+        var r = newRing(10)\n\
+        ringPush(r, \"a\"); ringPush(r, \"b\"); ringPush(r, \"c\")\n\
+        var head = ringGet(r)\n\
+        var tail = ringGet(r, -1)\n\
+        return [head, tail]");
+    assert_array(&r, &[Value::str("a"), Value::str("c")]);
+}
+
+#[test]
+fn test_ring_pick() {
+    // pick 取出头部（删除）
+    let r = eval("\
+        var r = newRing(10)\n\
+        ringPush(r, 10); ringPush(r, 20)\n\
+        var first = ringPick(r)\n\
+        var sizeAfter = ringSize(r)\n\
+        return [first, sizeAfter]");
+    assert_array(&r, &[Value::Int(10), Value::Int(1)]);
+}
+
+#[test]
+fn test_ring_pop() {
+    // pop 取出尾部（删除）
+    let r = eval("\
+        var r = newRing(10)\n\
+        ringPush(r, 10); ringPush(r, 20)\n\
+        var last = ringPop(r)\n\
+        var sizeAfter = ringSize(r)\n\
+        return [last, sizeAfter]");
+    assert_array(&r, &[Value::Int(20), Value::Int(1)]);
+}
+
+#[test]
+fn test_ring_pick_empty() {
+    // 空 ring pick 返回 undefined
+    let r = eval("var r = newRing(3); return ringPick(r)");
+    assert_eq!(r, Value::Undefined);
+}
+
+#[test]
+fn test_ring_pop_empty() {
+    // 空 ring pop 返回 undefined
+    let r = eval("var r = newRing(3); return ringPop(r)");
+    assert_eq!(r, Value::Undefined);
+}
+
+#[test]
+fn test_ring_insert() {
+    let r = eval("\
+        var r = newRing(10)\n\
+        ringPush(r, 1); ringPush(r, 3)\n\
+        ringInsert(r, 1, 2)\n\
+        return ringToList(r)");
+    assert_array(&r, &[Value::Int(1), Value::Int(2), Value::Int(3)]);
+}
+
+#[test]
+fn test_ring_remove() {
+    let r = eval("\
+        var r = newRing(10)\n\
+        ringPush(r, 1); ringPush(r, 2); ringPush(r, 3)\n\
+        ringRemove(r, 1)\n\
+        return ringToList(r)");
+    assert_array(&r, &[Value::Int(1), Value::Int(3)]);
+}
+
+#[test]
+fn test_ring_set() {
+    let r = eval("\
+        var r = newRing(10)\n\
+        ringPush(r, 1); ringPush(r, 2); ringPush(r, 3)\n\
+        ringSet(r, 1, 99)\n\
+        return ringToList(r)");
+    assert_array(&r, &[Value::Int(1), Value::Int(99), Value::Int(3)]);
+}
+
+#[test]
+fn test_ring_clear() {
+    let r = eval("\
+        var r = newRing(10)\n\
+        ringPush(r, 1); ringPush(r, 2)\n\
+        ringClear(r)\n\
+        return ringSize(r)");
+    assert_eq!(r, Value::Int(0));
+}
+
+#[test]
+fn test_ring_mixed_types() {
+    // Ring 可存任意 Value 类型
+    let r = eval("\
+        var r = newRing(5)\n\
+        ringPush(r, \"字符串\")\n\
+        ringPush(r, 42)\n\
+        ringPush(r, true)\n\
+        return ringSize(r)");
+    assert_eq!(r, Value::Int(3));
+}
+
+#[test]
+fn test_ring_default_capacity() {
+    // newRing() 无参数默认容量 10
+    let r = eval("\
+        var r = newRing()\n\
+        ringPush(r, 1)\n\
+        return ringSize(r)");
+    assert_eq!(r, Value::Int(1));
+}
+
+#[test]
+fn test_ring_unlimited_capacity() {
+    // cap <= 0 表示无限制
+    let r = eval("\
+        var r = newRing(0)\n\
+        for i := 0; i < 100; i++ { ringPush(r, i) }\n\
+        return ringSize(r)");
+    assert_eq!(r, Value::Int(100));
+}
+
+// ---- isType / isTypeCode 通用类型判断 ----
+
+#[test]
+fn test_is_type_basic() {
+    assert_eq!(eval("return isType(42, \"int\")"), Value::Bool(true));
+    assert_eq!(eval("return isType(3.14, \"float\")"), Value::Bool(true));
+    assert_eq!(eval("return isType(true, \"bool\")"), Value::Bool(true));
+    assert_eq!(eval("return isType(\"hi\", \"string\")"), Value::Bool(true));
+}
+
+#[test]
+fn test_is_type_case_insensitive() {
+    // 大小写不敏感
+    assert_eq!(eval("return isType(42, \"Int\")"), Value::Bool(true));
+    assert_eq!(eval("return isType(42, \"INT\")"), Value::Bool(true));
+}
+
+#[test]
+fn test_is_type_mismatch() {
+    assert_eq!(eval("return isType(42, \"string\")"), Value::Bool(false));
+    assert_eq!(eval("return isType(\"hi\", \"int\")"), Value::Bool(false));
+}
+
+#[test]
+fn test_is_type_undefined() {
+    assert_eq!(eval("return isType(undefined, \"undefined\")"), Value::Bool(true));
+}
+
+#[test]
+fn test_is_type_array_map_object() {
+    assert_eq!(eval("return isType([1,2], \"array\")"), Value::Bool(true));
+    assert_eq!(eval("return isType(map{}, \"map\")"), Value::Bool(true));
+    assert_eq!(eval("return isType({}, \"object\")"), Value::Bool(true));
+}
+
+#[test]
+fn test_is_type_ring() {
+    // Ring 是 Native 细分类型
+    assert_eq!(eval("var r = newRing(3); return isType(r, \"ring\")"), Value::Bool(true));
+    // 不是 'native'
+    assert_eq!(eval("var r = newRing(3); return isType(r, \"native\")"), Value::Bool(false));
+}
+
+#[test]
+fn test_is_type_code() {
+    // isTypeCode 按数字编码判断
+    assert_eq!(eval("return isTypeCode(42, 1)"), Value::Bool(true));   // int = 1
+    assert_eq!(eval("return isTypeCode(\"hi\", 4)"), Value::Bool(true));  // string = 4
+    assert_eq!(eval("return isTypeCode(true, 3)"), Value::Bool(true));  // bool = 3
+    assert_eq!(eval("return isTypeCode(42, 4)"), Value::Bool(false));   // int != string
+}
+
+#[test]
+fn test_is_type_code_native() {
+    // Ring 的 typeCode 是 11 (Native)
+    assert_eq!(eval("var r = newRing(3); return isTypeCode(r, 11)"), Value::Bool(true));
 }

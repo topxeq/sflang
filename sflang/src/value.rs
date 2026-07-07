@@ -228,6 +228,47 @@ impl Value {
         self.type_code().name()
     }
 
+    /// type_name_ex 返回细化的类型名称。
+    ///
+    /// 对于 Native 类型，尝试 downcast 识别具体的包装类型（如 ring、channel、mutex 等）。
+    /// 非 Native 类型与 type_name 相同。
+    pub fn type_name_ex(&self) -> String {
+        match self {
+            Value::Native(n) => {
+                // 尝试识别各种 Native 包装类型
+                if n.downcast_ref::<std::sync::Arc<std::sync::Mutex<crate::ring::Ring>>>().is_some() {
+                    return "ring".to_string();
+                }
+                if n.downcast_ref::<std::sync::Arc<crate::opcode::Code>>().is_some() {
+                    return "code".to_string();
+                }
+                if n.downcast_ref::<std::sync::Arc<std::sync::Mutex<crate::value::Value>>>().is_some() {
+                    return "ref".to_string();
+                }
+                if n.downcast_ref::<std::sync::Arc<crate::concurrency::Channel>>().is_some() {
+                    return "channel".to_string();
+                }
+                if n.downcast_ref::<std::sync::Arc<crate::concurrency::MutexT>>().is_some() {
+                    return "mutex".to_string();
+                }
+                if n.downcast_ref::<std::sync::Arc<crate::concurrency::RWMutexT>>().is_some() {
+                    return "rwmutex".to_string();
+                }
+                if n.downcast_ref::<std::sync::Arc<crate::concurrency::WaitGroupT>>().is_some() {
+                    return "waitGroup".to_string();
+                }
+                if n.downcast_ref::<std::sync::Arc<crate::concurrency::SemaphoreT>>().is_some() {
+                    return "semaphore".to_string();
+                }
+                if n.downcast_ref::<std::sync::Arc<regex::Regex>>().is_some() {
+                    return "regex".to_string();
+                }
+                "native".to_string()
+            }
+            other => other.type_code().name().to_string(),
+        }
+    }
+
     /// is_truthy 返回值的布尔真值（用于条件判断）。
     ///
     /// 语义：undefined/false/0/0.0/空字符串/空数组/空对象 为假，其余为真。

@@ -101,6 +101,9 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("default", bi_default);
     vm.register_builtin("defaultUndef", bi_default_undef);
     vm.register_builtin("explainUndef", bi_explain_undef);
+    // ---- 通用类型判断（取代零散的 isXxx 谓词）----
+    vm.register_builtin("isType", bi_is_type);
+    vm.register_builtin("isTypeCode", bi_is_type_code);
 }
 
 /// bi_println 打印并换行。
@@ -1026,6 +1029,43 @@ fn bi_explain_undef(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
     msg.push_str(" 可用 isUndefined(x) 判空；default(x, d) / defaultUndef(x, d) 提供默认值。");
     Ok(Value::str_from(msg))
+}
+
+// ---- 通用类型判断（取代零散的 isXxx 谓词） ----
+
+/// bi_is_type 通用类型判断：按类型名字符串判断。
+///
+/// 用法：isType(v, "string") → bool
+///
+/// 支持的类型名（与 type_name_ex 一致）：
+///   基础类型：undefined, int, float, bool, string, bytes, byteArray, array,
+///             object, function, builtin, error, native, bigInt, bigFloat,
+///             datetime, file, byte, map
+///   Native 细分：ring, channel, mutex, rwmutex, waitGroup, semaphore, code, ref, regex
+///
+/// 这取代零散的 isInt/isString/isArray 等谓词，统一为一个入口。
+fn bi_is_type(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "isType")?;
+    let type_name = bh::as_str(args, 1, "isType")?;
+    // 用 type_name_ex 获取细化类型名，做大小写不敏感比较
+    let actual = args[0].type_name_ex();
+    let result = actual.eq_ignore_ascii_case(type_name);
+    Ok(Value::Bool(result))
+}
+
+/// bi_is_type_code 通用类型判断：按类型数字编码判断。
+///
+/// 用法：isTypeCode(v, 4) → bool   // 4 = string
+///
+/// 数字编码与 TypeCode 枚举一致（0-18，详见 typeCode(v)）。
+/// 对于 Native 细分类型（ring 等），编码均为 11（Native），需用 isType 按名字判断。
+fn bi_is_type_code(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "isTypeCode")?;
+    let code = bh::as_int(args, 1, "isTypeCode")?;
+    let actual = args[0].type_code() as i64;
+    Ok(Value::Bool(actual == code))
 }
 
 /// utf8_char_len 根据 UTF-8 首字节返回字符长度。

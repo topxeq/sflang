@@ -46,6 +46,8 @@ pub mod builtins_encode;
 pub mod builtins_hash;
 pub mod builtins_sys;
 pub mod concurrency;
+pub mod ring;
+pub mod builtins_ring;
 pub mod api;
 
 // 重导出常用类型

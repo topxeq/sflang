@@ -68,6 +68,24 @@ x = "hello"      // 赋值（动态类型，可改变类型）
 | `datetime` | 日期时间 | `datetime(2024, 1, 1)` |
 | `file` | 文件句柄 | `openFile("a.txt", "r")` |
 
+### 通用类型判断
+
+Sflang 提供 `isType` / `isTypeCode` 作为统一的类型判断入口，取代零散的 `isInt`/`isString` 等谓词：
+
+```sflang
+isType(42, "int")           // true（大小写不敏感）
+isType("hi", "string")      // true
+isType([1,2], "array")      // true
+isType(newRing(3), "ring")  // true（Native 细分类型）
+
+isTypeCode(42, 1)           // true（1 = int 的 TypeCode）
+isTypeCode("hi", 4)         // true（4 = string 的 TypeCode）
+
+// typeCode() 和 typeName() 获取类型信息
+typeCode(42)                // 1
+typeName(42)                // "int"
+```
+
 ### undefined
 
 读取未定义的变量返回 `undefined`（不报错）。map 缺键、无返回值的函数也返回 `undefined`。
@@ -593,7 +611,40 @@ datetimeParse("2024-12-25", "2006-01-02")  // 解析
 
 ---
 
-## 20. 系统与环境
+## 20. Ring 环形缓冲区
+
+通用固定容量环形缓冲区（对标 Charlang/tkc 的 AnyQueue + StringRing + ByteQueue，用一个通用类型替代三者）。可存储任意 Value。
+
+```sflang
+// 创建（cap > 0 固定容量，cap <= 0 无限制，缺省 10）
+r := newRing(3)
+
+ringPush(r, 10)         // 尾部追加，超容量淘汰头部
+ringPush(r, 20)
+ringPush(r, 30)
+ringPush(r, 40)          // 10 被淘汰 → [20, 30, 40]
+
+ringGet(r)               // 头部元素（不删除）→ 20
+ringGet(r, -1)           // 尾部元素 → 40
+ringGet(r, 1)            // 指定位置 → 30
+
+ringPick(r)              // 取出头部（删除）→ 20
+ringPop(r)               // 取出尾部（删除）→ 40
+
+ringInsert(r, 0, 99)     // 在位置 0 插入
+ringSet(r, 0, 100)       // 修改位置 0 的值
+ringRemove(r, 0)         // 删除位置 0
+
+ringSize(r)              // 当前元素数
+ringToList(r)            // 转为数组
+ringClear(r)             // 清空
+```
+
+典型用途：滑动窗口、日志缓冲、实时数据采样。
+
+---
+
+## 21. 系统与环境
 
 ```sflang
 getEnv("HOME")                // 环境变量

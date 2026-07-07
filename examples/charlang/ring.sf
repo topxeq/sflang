@@ -1,0 +1,97 @@
+// Ring 环形缓冲区示例
+// 通用固定容量环形缓冲，可存储任意 Value
+// 对标 Charlang 的 byteQueue / stringRing / anyQueue（三者合一）
+
+pln("=== 1. 基本操作 ===")
+
+// 创建容量 3 的 ring
+r := newRing(3)
+pln("初始 size:", ringSize(r))
+
+ringPush(r, 10)
+ringPush(r, 20)
+ringPush(r, 30)
+pln("push 3 个后:", ringToList(r))
+
+// 超容量：自动淘汰头部最老的
+ringPush(r, 40)
+pln("push 第 4 个(淘汰 10):", ringToList(r))
+
+pln("")
+pln("=== 2. 查看元素（不删除）===")
+pln("get(0) 头部:", ringGet(r, 0))
+pln("get() 无参=头部:", ringGet(r))
+pln("get(-1) 尾部:", ringGet(r, -1))
+pln("get(99) 越界:", ringGet(r, 99))
+
+pln("")
+pln("=== 3. 取出元素（删除）===")
+pln("pick(头部):", ringPick(r))
+pln("pop(尾部):", ringPop(r))
+pln("取出后:", ringToList(r))
+
+pln("")
+pln("=== 4. Insert / Remove / Set ===")
+ringPush(r, 100)
+ringPush(r, 200)
+pln("push 后:", ringToList(r))
+
+ringInsert(r, 1, 999)
+pln("insert(1, 999):", ringToList(r))
+
+ringSet(r, 0, 111)
+pln("set(0, 111):", ringToList(r))
+
+ringRemove(r, 2)
+pln("remove(2):", ringToList(r))
+
+pln("")
+pln("=== 5. 通用类型（存任意值）===")
+r2 := newRing(5)
+ringPush(r2, "字符串")
+ringPush(r2, 42)
+ringPush(r2, 3.14)
+ringPush(r2, true)
+ringPush(r2, [1, 2, 3])
+ringPush(r2, {name: "Tom"})
+
+pln("混合类型 ring:")
+list := ringToList(r2)
+for i, v in list {
+    pl("  [%d] %s: %v\n", i, isType(v, "string") ? "string" : typeName(v), v)
+}
+
+pln("")
+pln("=== 6. isType 类型判断 ===")
+pln("isType(r, 'ring'):", isType(r, "ring"))
+pln("isType(42, 'int'):", isType(42, "int"))
+pln("isType('hi', 'STRING'):", isType("hi", "STRING"))  // 大小写不敏感
+pln("isTypeCode(r, 11):", isTypeCode(r, 11))  // Native
+
+pln("")
+pln("=== 7. 滑动窗口场景 ===")
+// 模拟传感器数据：只保留最近 5 个读数
+sensor := newRing(5)
+for i := 0; i < 10; i++ {
+    ringPush(sensor, i * 10)
+}
+pln("最近 5 个读数:", ringToList(sensor))
+pln("平均值:", func() {
+    list := ringToList(sensor)
+    sum := 0
+    for v in list { sum += v }
+    return sum / ringSize(sensor)
+}())
+
+pln("")
+pln("=== 8. Clear ===")
+ringClear(sensor)
+pln("clear 后 size:", ringSize(sensor))
+
+pln("")
+pln("=== 9. 无限容量 ===")
+big := newRing(0)  // cap <= 0 表示无限
+for i := 0; i < 1000; i++ {
+    ringPush(big, i)
+}
+pln("1000 个元素 size:", ringSize(big))
