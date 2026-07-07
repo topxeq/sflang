@@ -34,6 +34,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("range", bi_range);
     vm.register_builtin("assert", bi_assert);
     vm.register_builtin("sleep", bi_sleep);
+    vm.register_builtin("sleepMs", bi_sleep_ms);
     // ---- 实用函数（对标 charlang 常见编程任务）----
     vm.register_builtin("uuid", bi_uuid);
     vm.register_builtin("randomStr", bi_random_str);
@@ -513,12 +514,28 @@ fn bi_assert(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 }
 
 /// bi_sleep 睡眠（毫秒）。
+/// bi_sleep 睡眠指定秒数（支持小数）。
+///
+/// 用法：sleep(1.5) — 睡眠 1.5 秒
 fn bi_sleep(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
-        return Err(crate::value::error_value("sleep() 需要 1 个参数 (毫秒)"));
+        return Err(crate::value::error_value("sleep() 需要 1 个参数 (秒)"));
     }
-    let ms = args[0].to_int().ok_or_else(|| crate::value::error_value("sleep() 参数需为整数"))?;
-    std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+    let secs = args[0].to_f64().ok_or_else(|| crate::value::error_value("sleep() 参数需为数字"))?;
+    let dur = std::time::Duration::from_secs_f64(secs.max(0.0));
+    std::thread::sleep(dur);
+    Ok(Value::Undefined)
+}
+
+/// bi_sleep_ms 睡眠指定毫秒数（整数）。
+///
+/// 用法：sleepMs(500) — 睡眠 500 毫秒
+fn bi_sleep_ms(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.is_empty() {
+        return Err(crate::value::error_value("sleepMs() 需要 1 个参数 (毫秒)"));
+    }
+    let ms = args[0].to_int().ok_or_else(|| crate::value::error_value("sleepMs() 参数需为整数"))?;
+    std::thread::sleep(std::time::Duration::from_millis(ms.max(0) as u64));
     Ok(Value::Undefined)
 }
 

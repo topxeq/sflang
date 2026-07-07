@@ -1832,7 +1832,7 @@ func worker() {\n\
 run worker()\n\
 run worker()\n\
 worker()\n\
-sleep(150)\n\
+sleepMs(150)\n\
 return counter[0]\n\
 ").unwrap();
     let mut sf = Sflang::new();
@@ -1869,7 +1869,7 @@ func consumer() {\n\
 \n\
 run producer()\n\
 consumer()\n\
-sleep(100)\n\
+sleepMs(100)\n\
 return len(results)\n\
 ").unwrap();
     let mut sf = Sflang::new();
@@ -1888,7 +1888,7 @@ var greeting = \"hello\"\n\
 func shout() { println(greeting + \"!\") }\n\
 run shout()\n\
 shout()\n\
-sleep(50)\n\
+sleepMs(50)\n\
 return greeting\n\
 ").unwrap();
     let mut sf = Sflang::new();
@@ -1915,7 +1915,7 @@ var obj = chanRecv(ch)\n\
 return obj[\"name\"]\n\
 ").unwrap();
     let mut sf = Sflang::new();
-    sf.run_string("sleep(50)").ok();
+    sf.run_string("sleepMs(50)").ok();
     let r = sf.run_file(path.to_str().unwrap()).unwrap();
     assert_eq!(r, Value::str("sf"));
 }
@@ -1935,7 +1935,7 @@ func worker() {\n\
     while i < 300 { lock(mu); counter[0] = counter[0] + 1; unlock(mu); i = i + 1 }\n\
 }\n\
 run worker(); run worker(); worker()\n\
-sleep(300)\n\
+sleepMs(300)\n\
 return counter[0]\n\
 ").unwrap();
     let mut sf = Sflang::new();
@@ -1977,12 +1977,12 @@ func w() {\n\
     semAcquire(sem)\n\
     cur[0] = cur[0] + 1\n\
     if cur[0] > peak[0] { peak[0] = cur[0] }\n\
-    sleep(10)\n\
+    sleepMs(10)\n\
     cur[0] = cur[0] - 1\n\
     semRelease(sem)\n\
 }\n\
 run w(); run w(); run w()\n\
-sleep(150)\n\
+sleepMs(150)\n\
 return peak[0]\n\
 ").unwrap();
     let mut sf = Sflang::new();
@@ -2001,7 +2001,7 @@ var cnt = [0]\n\
 func initf() { cnt[0] = cnt[0] + 1 }\n\
 run onceDo(once, initf); run onceDo(once, initf)\n\
 onceDo(once, initf); onceDo(once, initf)\n\
-sleep(100)\n\
+sleepMs(100)\n\
 return cnt[0]\n\
 ").unwrap();
     let mut sf = Sflang::new();

@@ -11,7 +11,7 @@ func tickTask(state, limit) {
         pln("tick: now =", now(), " count =", state[0])
         state[0]++
         if state[0] <= limit {
-            sleep(1500)  // 1.5 秒（参数为毫秒）
+            sleep(1.5)
         }
     }
     pln("达到上限，停止")
@@ -21,5 +21,5 @@ func tickTask(state, limit) {
 run tickTask(a1, maxCount)
 
 // 主线程等待子线程完成（毫秒，10000ms = 10秒）
-sleep(10000)
+sleep(10)
 pln("主线程退出")
