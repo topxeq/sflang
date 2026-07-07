@@ -1,0 +1,35 @@
+// port of excelToCsv.char — 把 Excel 文件转为 CSV
+// 用法：sf excelToCsv.sf <xlsx文件路径> [sheet索引]
+
+filePath := getParam(argsG, 0, "")
+
+if filePath == "" {
+    pln("用法：sf excelToCsv.sf <xlsx文件路径> [sheet索引]")
+} elif !fileExists(filePath) {
+    pln("文件不存在:", filePath)
+} else {
+    sheetIdx := toInt(getParam(argsG, 1, "0"))
+
+    pl("打开 %v ...\n", filePath)
+
+    // 读取指定 sheet
+    rows := excelReadSheet(filePath, sheetIdx)
+
+    // 写为 CSV
+    csvPath := filePath + ".csv"
+    writeCsv(rows, csvPath)
+    pln("已转换:", csvPath)
+
+    // 显示前几行
+    pln("CSV 内容（前5行）:")
+    for i := 0; i < len(rows); i++ {
+        if i >= 5 { break }
+        row := rows[i]
+        line := ""
+        for j, cell in row {
+            if j > 0 { line += "," }
+            line += cell
+        }
+        pr(line + "\n")
+    }
+}

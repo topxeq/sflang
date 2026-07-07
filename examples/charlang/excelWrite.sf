@@ -1,0 +1,31 @@
+// port of excelWrite.char — 创建并写入 Excel 文件
+// 用法：sf excelWrite.sf [输出文件路径]
+
+filePath := getParam(argsG, 0, joinPath(getTempDir(), "sflang_excelwrite.xlsx"))
+
+pl("创建文件: %v ...\n", filePath)
+
+// 创建新工作簿
+wb := excelNew()
+
+// 准备数据
+rows := [
+    ["title1", "title2", "title3"],
+    ["value1", "value2", "value3"],
+    ["value4", "value5", "value6"]
+]
+
+// 写入第一个 sheet
+excelWriteSheet(wb, 0, rows)
+
+// 保存
+excelSaveAs(wb, filePath)
+pln("完成，已保存到:", filePath)
+
+// 读回验证
+pln("")
+pln("读回验证:")
+data := excelReadSheet(filePath)
+for row in data {
+    pln(row)
+}

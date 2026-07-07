@@ -1,0 +1,25 @@
+// port of excelRead.char — 读取 Excel 文件
+// 用法：sf excelRead.sf <xlsx文件路径>
+
+filePath := getParam(argsG, 0, "")
+
+if filePath == "" {
+    pln("用法：sf excelRead.sf <xlsx文件路径>")
+} elif !fileExists(filePath) {
+    pln("文件不存在:", filePath)
+} else {
+    pl("打开 %v ...\n", filePath)
+
+    // 读取第一个 sheet
+    rows := excelReadSheet(filePath, 0)
+    pln("第一个 sheet 的数据:")
+    pln(jsonEncode(rows))
+
+    // 也可以用 excelReadAll 读取所有 sheets
+    pln("")
+    all := excelReadAll(filePath)
+    pln("所有 sheets:")
+    for k, v in all {
+        pl("  %s: %d 行\n", k, len(v))
+    }
+}
