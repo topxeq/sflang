@@ -1,0 +1,53 @@
+// port of sqlite.char — SQLite 数据库操作
+// Sflang 用 dbConnect/dbExec/dbQuery/dbClose（对标 Charlang）
+
+// 用内存数据库演示（无需文件）
+db := dbConnect("sqlite3", ":memory:")
+
+// 建表
+dbExec(db, "CREATE TABLE test (id INTEGER PRIMARY KEY, code TEXT)")
+
+// 插入 5 条记录
+for i := 0; i < 5; i++ {
+    code := randomStr(8)
+    dbExec(db, "INSERT INTO test (id, code) VALUES (?, ?)", i, code)
+}
+pln("插入 5 条记录完成")
+
+// 查询全部
+pln("")
+pln("=== 查询全部 ===")
+rows := dbQuery(db, "SELECT * FROM test ORDER BY id")
+for row in rows {
+    pln("  id:", row["id"], "code:", row["code"])
+}
+
+// 参数化查询
+pln("")
+pln("=== 参数化查询 id > 2 ===")
+rows2 := dbQuery(db, "SELECT id, code FROM test WHERE id > ?", 2)
+pln("符合条件的记录数:", len(rows2))
+
+// 更新
+pln("")
+pln("=== 更新 ===")
+n := dbExec(db, "UPDATE test SET code = ? WHERE id = ?", "UPDATED", 0)
+pln("更新行数:", n)
+
+// 删除
+n2 := dbExec(db, "DELETE FROM test WHERE id = ?", 4)
+pln("删除行数:", n2)
+
+// JSON 输出
+pln("")
+pln("=== 最终数据 (JSON) ===")
+final := dbQuery(db, "SELECT * FROM test ORDER BY id")
+pln(jsonEncode(final))
+
+// 类型保留
+pln("")
+pln("=== 类型 ===")
+pln("isType database:", isType(db, "database"))
+
+dbClose(db)
+pln("数据库已关闭")

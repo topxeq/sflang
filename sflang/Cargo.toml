@@ -22,6 +22,8 @@ rust_xlsxwriter = { workspace = true }
 calamine = { workspace = true }
 # ZIP 压缩/解压（用于 docx 读写，docx 本质是 ZIP 包）
 zip = { workspace = true }
+# SQLite 数据库（bundled 模式，零配置）
+rusqlite = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }

@@ -2945,3 +2945,114 @@ fn test_docx_to_strs_from_bytes() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+// ---- SQLite 数据库 ----
+
+#[test]
+fn test_db_connect_memory() {
+    let r = eval("var db = dbConnect(\"sqlite3\", \":memory:\"); return isType(db, \"database\")");
+    assert_eq!(r, Value::Bool(true));
+}
+
+#[test]
+fn test_db_create_insert_query() {
+    let mut sf = Sflang::new();
+    sf.run_string("\
+        var db = dbConnect(\"sqlite3\", \":memory:\")\n\
+        dbExec(db, \"CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)\")\n\
+        dbExec(db, \"INSERT INTO test (id, name, age) VALUES (?, ?, ?)\", 1, \"Alice\", 30)\n\
+        dbExec(db, \"INSERT INTO test (id, name, age) VALUES (?, ?, ?)\", 2, \"Bob\", 25)\n\
+        var rows = dbQuery(db, \"SELECT * FROM test ORDER BY id\")\n\
+        var count = len(rows)\n\
+        var name0 = rows[0][\"name\"]\n\
+        var age1 = rows[1][\"age\"]").unwrap();
+
+    assert_eq!(sf.get_global("count").unwrap(), Value::Int(2));
+    assert_eq!(sf.get_global("name0").unwrap(), Value::str("Alice"));
+    assert_eq!(sf.get_global("age1").unwrap(), Value::Int(25));
+}
+
+#[test]
+fn test_db_query_with_params() {
+    let mut sf = Sflang::new();
+    sf.run_string("\
+        var db = dbConnect(\"sqlite3\", \":memory:\")\n\
+        dbExec(db, \"CREATE TABLE t (id INTEGER, val TEXT)\")\n\
+        dbExec(db, \"INSERT INTO t VALUES (1, 'a')\")\n\
+        dbExec(db, \"INSERT INTO t VALUES (2, 'b')\")\n\
+        dbExec(db, \"INSERT INTO t VALUES (3, 'c')\")\n\
+        var rows = dbQuery(db, \"SELECT * FROM t WHERE id > ?\", 1)\n\
+        var count = len(rows)").unwrap();
+
+    assert_eq!(sf.get_global("count").unwrap(), Value::Int(2));
+}
+
+#[test]
+fn test_db_update() {
+    let mut sf = Sflang::new();
+    sf.run_string("\
+        var db = dbConnect(\"sqlite3\", \":memory:\")\n\
+        dbExec(db, \"CREATE TABLE t (id INTEGER, name TEXT)\")\n\
+        dbExec(db, \"INSERT INTO t VALUES (1, \\\"old\\\")\")\n\
+        var affected = dbExec(db, \"UPDATE t SET name = ? WHERE id = ?\", \"new\", 1)\n\
+        var rows = dbQuery(db, \"SELECT name FROM t WHERE id = 1\")\n\
+        var name = rows[0][\"name\"]").unwrap();
+
+    assert_eq!(sf.get_global("affected").unwrap(), Value::Int(1));
+    assert_eq!(sf.get_global("name").unwrap(), Value::str("new"));
+}
+
+#[test]
+fn test_db_float_type() {
+    let mut sf = Sflang::new();
+    sf.run_string("\
+        var db = dbConnect(\"sqlite3\", \":memory:\")\n\
+        dbExec(db, \"CREATE TABLE t (val REAL)\")\n\
+        dbExec(db, \"INSERT INTO t VALUES (?)\", 3.14)\n\
+        var rows = dbQuery(db, \"SELECT val FROM t\")\n\
+        var val = rows[0][\"val\"]").unwrap();
+
+    match sf.get_global("val").unwrap() {
+        Value::Float(f) => assert!((f - 3.14).abs() < 0.001),
+        other => panic!("期望 float，得到 {:?}", other),
+    }
+}
+
+#[test]
+fn test_db_null_value() {
+    let mut sf = Sflang::new();
+    sf.run_string("\
+        var db = dbConnect(\"sqlite3\", \":memory:\")\n\
+        dbExec(db, \"CREATE TABLE t (id INTEGER, val TEXT)\")\n\
+        dbExec(db, \"INSERT INTO t VALUES (1, ?)\", undefined)\n\
+        var rows = dbQuery(db, \"SELECT val FROM t\")\n\
+        var val = rows[0][\"val\"]").unwrap();
+
+    // null → undefined
+    assert_eq!(sf.get_global("val").unwrap(), Value::Undefined);
+}
+
+#[test]
+fn test_db_file_database() {
+    let mut path = std::env::temp_dir();
+    path.push("sflang_sqlite_test.db");
+    let path_str = path.to_str().unwrap().replace('\\', "/");
+    let _ = std::fs::remove_file(&path);
+
+    let mut sf = Sflang::new();
+    let src = format!(
+        "var db = dbConnect(\"sqlite3\", \"{}\")\n\
+        dbExec(db, \"CREATE TABLE t (id INTEGER)\")\n\
+        dbExec(db, \"INSERT INTO t VALUES (42)\")\n\
+        dbClose(db)\n\
+        var db2 = dbConnect(\"sqlite3\", \"{}\")\n\
+        var rows = dbQuery(db2, \"SELECT * FROM t\")\n\
+        var val = rows[0][\"id\"]",
+        path_str, path_str,
+    );
+    sf.run_string(&src).unwrap();
+
+    assert_eq!(sf.get_global("val").unwrap(), Value::Int(42));
+
+    let _ = std::fs::remove_file(&path);
+}

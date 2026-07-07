@@ -629,6 +629,26 @@ placeholders := docxGetPlaceholders(template) // → ["{name}", "{date}"]
 docx 本质是 ZIP 包，内部 `word/document.xml` 存放正文。Sflang 通过 zip crate 解压，
 用字符串操作处理 `<w:t>` 标签文本，自动解码 XML 实体（`&amp;` → `&`）。
 
+### SQLite 数据库
+
+4 个核心函数（对标 Charlang，API 设计为通用多数据库形式，当前实现 SQLite）：
+
+```sflang
+db := dbConnect("sqlite3", ":memory:")        // 内存数据库
+db := dbConnect("sqlite3", "data.db")          // 文件数据库
+
+dbExec(db, "CREATE TABLE test (id INTEGER, name TEXT)")
+dbExec(db, "INSERT INTO test VALUES (?, ?)", 1, "Alice")  // 参数绑定，返回影响行数
+
+rows := dbQuery(db, "SELECT * FROM test WHERE id > ?", 0)
+// rows 是 array of map：[{"id": 1, "name": "Alice"}, ...]
+
+dbClose(db)
+```
+
+类型映射：SQLite INTEGER → int，REAL → float，TEXT → string，NULL → undefined。
+bundled 模式自带 SQLite 引擎，零配置跨平台。
+
 ---
 
 ## 18. JSON
