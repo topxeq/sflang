@@ -31,7 +31,7 @@ while true {
     if getValueByRef(flag1) == true && getValueByRef(flag2) == true {
         break
     }
-    sleep(0.001)
+    sleep(1)
 }
 
 pln("result:", getValueByRef(n1))
