@@ -634,8 +634,9 @@ docx 本质是 ZIP 包，内部 `word/document.xml` 存放正文。Sflang 通过
 4 个核心函数（对标 Charlang，API 设计为通用多数据库形式，当前实现 SQLite）：
 
 ```sflang
-db := dbConnect("sqlite3", ":memory:")        // 内存数据库
-db := dbConnect("sqlite3", "data.db")          // 文件数据库
+db := dbConnect("sqlite3", ":memory:")        // SQLite 内存数据库
+db := dbConnect("sqlite3", "data.db")          // SQLite 文件数据库
+db := dbConnect("mysql", "mysql://user:pass@localhost:3306/dbname")  // MySQL
 
 dbExec(db, "CREATE TABLE test (id INTEGER, name TEXT)")
 dbExec(db, "INSERT INTO test VALUES (?, ?)", 1, "Alice")  // 参数绑定，返回影响行数
@@ -646,8 +647,12 @@ rows := dbQuery(db, "SELECT * FROM test WHERE id > ?", 0)
 dbClose(db)
 ```
 
-类型映射：SQLite INTEGER → int，REAL → float，TEXT → string，NULL → undefined。
-bundled 模式自带 SQLite 引擎，零配置跨平台。
+支持数据库：
+- **sqlite3**（rusqlite bundled，零配置）：`:memory:` 或文件路径
+- **mysql**（纯 Rust，连接池）：`mysql://user:pass@host:port/db`
+
+类型映射：INTEGER → int，REAL/FLOAT → float，TEXT/VARCHAR → string，NULL → undefined。
+`?` 占位符参数绑定，支持 int/float/string/bool/null/bytes。
 
 ---
 

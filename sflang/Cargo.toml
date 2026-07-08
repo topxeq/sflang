@@ -24,6 +24,8 @@ calamine = { workspace = true }
 zip = { workspace = true }
 # SQLite 数据库（bundled 模式，零配置）
 rusqlite = { workspace = true }
+# MySQL 数据库（纯 Rust 同步驱动 + 连接池）
+mysql = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }

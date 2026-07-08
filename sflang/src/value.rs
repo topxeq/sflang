@@ -276,7 +276,7 @@ impl Value {
                 if n.downcast_ref::<std::sync::Arc<std::sync::Mutex<rust_xlsxwriter::Workbook>>>().is_some() {
                     return "workbook".to_string();
                 }
-                if n.downcast_ref::<std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>>().is_some() {
+                if n.downcast_ref::<crate::builtins_db::DatabaseConn>().is_some() {
                     return "database".to_string();
                 }
                 "native".to_string()

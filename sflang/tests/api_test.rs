@@ -3056,3 +3056,42 @@ fn test_db_file_database() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+// ---- MySQL（需要运行中的 MySQL 服务器，标记 #[ignore]） ----
+
+#[test]
+#[ignore]
+fn test_mysql_connect_and_crud() {
+    // 需要 MySQL 运行在 localhost:3306，用户 root，密码 root，数据库 test
+    // 运行：cargo test test_mysql_connect_and_crud -- --ignored
+    let mut sf = Sflang::new();
+    sf.run_string("\
+        var db = dbConnect(\"mysql\", \"mysql://root:root@localhost:3306/test\")\n\
+        dbExec(db, \"DROP TABLE IF EXISTS sflang_test\")\n\
+        dbExec(db, \"CREATE TABLE sflang_test (id INT PRIMARY KEY, name VARCHAR(100), score FLOAT)\")\n\
+        var affected = dbExec(db, \"INSERT INTO sflang_test VALUES (?, ?, ?)\", 1, \"Alice\", 95.5)\n\
+        var rows = dbQuery(db, \"SELECT * FROM sflang_test\")\n\
+        var count = len(rows)\n\
+        var name0 = rows[0][\"name\"]\n\
+        var score0 = rows[0][\"score\"]\n\
+        dbExec(db, \"DROP TABLE sflang_test\")\n\
+        dbClose(db)").unwrap();
+
+    assert_eq!(sf.get_global("affected").unwrap(), Value::Int(1));
+    assert_eq!(sf.get_global("count").unwrap(), Value::Int(1));
+    assert_eq!(sf.get_global("name0").unwrap(), Value::str("Alice"));
+    match sf.get_global("score0").unwrap() {
+        Value::Float(f) => assert!((f - 95.5).abs() < 0.1),
+        Value::Int(i) => assert!((i as f64 - 95.5).abs() < 0.1),
+        other => panic!("期望数字，得到 {:?}", other),
+    }
+}
+
+#[test]
+#[ignore]
+fn test_mysql_is_type() {
+    let mut sf = Sflang::new();
+    sf.run_string("var db = dbConnect(\"mysql\", \"mysql://root:root@localhost:3306/test\")").unwrap();
+    let r = sf.get_global("db").unwrap();
+    assert!(matches!(r, Value::Native(_)));
+}
