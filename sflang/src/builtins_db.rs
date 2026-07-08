@@ -31,6 +31,55 @@ pub enum DatabaseConn {
     Mysql(mysql::Pool),
 }
 
+/// parse_mysql_conn_str 手动解析 MySQL 连接字符串。
+///
+/// 当 mysql::Opts::from_url 因密码含特殊字符（如 #、@、/ 等）而失败时使用。
+/// 格式：mysql://user:pass@host:port/db
+///
+/// 返回 None 表示格式完全无法识别。
+fn parse_mysql_conn_str(s: &str) -> Option<mysql::OptsBuilder> {
+    // 去掉 mysql:// 前缀
+    let rest = s.strip_prefix("mysql://")?;
+
+    // 找最后一个 @（密码中可能含 @，取最后一个作为分隔）
+    let at_pos = rest.rfind('@')?;
+    let user_pass = &rest[..at_pos];
+    let host_db = &rest[at_pos + 1..];
+
+    // 解析 user:pass
+    let (user, pass) = match user_pass.find(':') {
+        Some(pos) => (&user_pass[..pos], &user_pass[pos + 1..]),
+        None => (user_pass, ""),
+    };
+
+    // 解析 host:port/db
+    // 先分离 db（最后一个 / 之后）
+    let (host_port, db) = match host_db.rfind('/') {
+        Some(pos) => (&host_db[..pos], &host_db[pos + 1..]),
+        None => (host_db, ""),
+    };
+
+    // 解析 host:port
+    let (host, port) = match host_port.rfind(':') {
+        Some(pos) => {
+            let p: u16 = host_port[pos + 1..].parse().ok()?;
+            (&host_port[..pos], p)
+        }
+        None => (host_port, 3306u16),
+    };
+
+    let mut builder = mysql::OptsBuilder::default();
+    builder = builder.ip_or_hostname(Some(host.to_string()))
+        .tcp_port(port)
+        .user(Some(user.to_string()))
+        .pass(Some(pass.to_string()));  // 原始密码，不做 URL 解码
+    if !db.is_empty() {
+        builder = builder.db_name(Some(db.to_string()));
+    }
+
+    Some(builder)
+}
+
 /// register 注册所有数据库内置函数。
 pub fn register(vm: &mut crate::vm::VM) {
     vm.register_builtin("dbConnect", bi_db_connect);
@@ -148,11 +197,18 @@ fn bi_db_connect(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value
             }
         }
         "mysql" => {
+            // 先尝试 URL 解析，失败则用 OptsBuilder 手动解析（支持密码含特殊字符）
             let opts = match mysql::Opts::from_url(conn_str) {
                 Ok(o) => o,
-                Err(e) => return Ok(crate::value::error_value(format!(
-                    "dbConnect() MySQL 连接字符串解析失败: {} (格式: mysql://user:pass@host:port/db)", e,
-                ))),
+                Err(_) => {
+                    // URL 解析失败，用手动解析
+                    match parse_mysql_conn_str(conn_str) {
+                        Some(builder) => mysql::Opts::from(builder),
+                        None => return Ok(crate::value::error_value(format!(
+                            "dbConnect() MySQL 连接字符串解析失败: '{}' (格式: mysql://user:pass@host:port/db)", conn_str,
+                        ))),
+                    }
+                }
             };
             match mysql::Pool::new(opts) {
                 Ok(pool) => Ok(db_value(DatabaseConn::Mysql(pool))),
