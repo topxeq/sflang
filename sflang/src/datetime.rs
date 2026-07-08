@@ -200,7 +200,17 @@ impl DateTime {
             };
             match matched {
                 Some(n) => i += n,
-                None => { out.push(bytes[i] as char); i += 1; }
+                None => {
+                    // 未匹配占位符：按完整 UTF-8 字符前进（处理中文等多字节字符）
+                    let ch_len = utf8_char_len(bytes[i]);
+                    let end = (i + ch_len).min(bytes.len());
+                    if let Ok(s) = std::str::from_utf8(&bytes[i..end]) {
+                        out.push_str(s);
+                    } else {
+                        out.push(bytes[i] as char); // 回退
+                    }
+                    i = end;
+                }
             }
         }
         out
@@ -214,6 +224,15 @@ impl DateTime {
             self.format("2006-01-02 15:04:05.000 -0700")
         }
     }
+}
+
+/// utf8_char_len 根据 UTF-8 首字节返回字符长度。
+fn utf8_char_len(b: u8) -> usize {
+    if b < 0x80 { 1 }
+    else if b < 0xC0 { 1 }
+    else if b < 0xE0 { 2 }
+    else if b < 0xF0 { 3 }
+    else { 4 }
 }
 
 /// days_from_civil 公历年月日 → Unix 天数（Howard Hinnant 算法，O(1)）。
