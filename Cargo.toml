@@ -37,6 +37,14 @@ mysql = "26"
 postgres = "0.19"
 # postgres-types：PostgreSQL 类型转换（MIT OR Apache-2.0, postgres crate 的子 crate）。
 postgres-types = "0.2"
+# tiberius：纯 Rust MSSQL/SQL Server 驱动（MIT），异步 API，用 tokio 桥接为同步。
+tiberius = "0.12"
+# tokio：异步运行时（MIT），postgres 和 tiberius 间接依赖，显式声明用于 block_on 桥接。
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util"] }
+# tokio-util：tokio 工具（MIT），tiberius 需要 compat 层桥接 tokio TcpStream。
+tokio-util = { version = "0.7", features = ["compat"] }
+# futures-util：Stream 处理（MIT），tiberius 查询结果收集。
+futures-util = "0.3"
 
 # 编译优化配置：release 模式启用 LTO 与单代码生成单元，最大化优化
 [profile.release]

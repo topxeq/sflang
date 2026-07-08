@@ -7,6 +7,7 @@
 //!   - sqlite3 / sqlite — rusqlite（bundled，零配置）
 //!   - mysql — mysql crate（纯 Rust，连接池）
 //!   - postgres — postgres crate（同步 API）
+//!   - mssql / sqlserver — tiberius crate（纯 Rust TDS，tokio 桥接同步）
 //!
 //! 函数：
 //!   dbConnect(driver, connStr)      — 连接数据库
@@ -38,6 +39,9 @@ pub enum DatabaseConn {
     Mysql(mysql::Pool),
     /// PostgreSQL 连接（postgres crate，同步 Client）。
     Postgres(Mutex<postgres::Client>),
+    /// MSSQL 连接（tiberius crate，异步 Client + tokio runtime 桥接同步）。
+    /// Client 的泛型参数是 compat 后的 TcpStream（futures AsyncRead/Write）。
+    Mssql(Mutex<tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>>, tokio::runtime::Runtime),
 }
 
 /// parse_mysql_conn_str 手动解析 MySQL 连接字符串。
@@ -284,6 +288,135 @@ fn convert_pg_placeholders(sql: &str) -> String {
     result
 }
 
+// ---- 辅助：MSSQL (tiberius) 值转换与连接 ----
+
+/// parse_mssql_conn_str 解析 MSSQL 连接字符串。
+///
+/// 支持两种格式：
+///   1. URL 格式: mssql://user:pass@host:port/database
+///   2. key=value 格式: server=host,port=1433,user=sa,password=pass,database=db
+///
+/// 返回 (Config, host, port)。
+fn parse_mssql_conn_str(s: &str) -> Result<(tiberius::Config, String, u16), String> {
+    let mut config = tiberius::Config::new();
+    let mut host = String::from("localhost");
+    let mut port: u16 = 1433;
+
+    if let Some(rest) = s.strip_prefix("mssql://").or_else(|| s.strip_prefix("sqlserver://")) {
+        // URL 格式: mssql://user:pass@host:port/database
+        let at_pos = rest.rfind('@').ok_or("缺少 @")?;
+        let user_pass = &rest[..at_pos];
+        let host_db = &rest[at_pos + 1..];
+
+        let (user, pass) = match user_pass.find(':') {
+            Some(p) => (&user_pass[..p], &user_pass[p + 1..]),
+            None => (user_pass, ""),
+        };
+
+        let (host_port, db) = match host_db.rfind('/') {
+            Some(p) => (&host_db[..p], &host_db[p + 1..]),
+            None => (host_db, ""),
+        };
+
+        let (h, p) = match host_port.rfind(':') {
+            Some(pos) => {
+                let p: u16 = host_port[pos + 1..].parse().map_err(|_| "无效端口")?;
+                (&host_port[..pos], p)
+            }
+            None => (host_port, 1433u16),
+        };
+        host = h.to_string();
+        port = p;
+
+        config.host(&host);
+        config.port(port);
+        config.authentication(tiberius::AuthMethod::sql_server(user, pass));
+        if !db.is_empty() {
+            config.database(db);
+        }
+    } else {
+        // key=value 格式: server=host,port=1433,user=sa,password=pass,database=db
+        let mut user = String::new();
+        let mut pass = String::new();
+        for part in s.split(|c| c == ',' || c == ';') {
+            let part = part.trim();
+            if let Some(eq) = part.find('=') {
+                let key = part[..eq].trim().to_lowercase();
+                let val = part[eq + 1..].trim();
+                match key.as_str() {
+                    "server" | "host" | "addr" => { host = val.to_string(); config.host(&host); }
+                    "port" => {
+                        if let Ok(p) = val.parse::<u16>() { port = p; config.port(port); }
+                    }
+                    "user" | "uid" | "username" => user = val.to_string(),
+                    "password" | "pwd" => pass = val.to_string(),
+                    "database" | "db" => config.database(val),
+                    _ => {}
+                }
+            }
+        }
+        if !user.is_empty() {
+            config.authentication(tiberius::AuthMethod::sql_server(&user, &pass));
+        }
+    }
+
+    Ok((config, host, port))
+}
+
+/// mssql_get_row_value 从 tiberius Row 中按列索引取值。
+///
+/// 使用列的列名作为 key，按类型尝试取值。tiberius 的 try_get 接受列名或索引。
+fn mssql_get_row_value(row: &tiberius::Row, col: &tiberius::Column) -> Value {
+    use tiberius::ColumnType;
+    let name = col.name();
+    match col.column_type() {
+        ColumnType::Bit | ColumnType::Bitn => {
+            row.try_get::<bool, _>(name).unwrap_or(None)
+                .map(Value::Bool).unwrap_or(Value::Undefined)
+        }
+        ColumnType::Int1 | ColumnType::Int2 | ColumnType::Int4 | ColumnType::Intn => {
+            row.try_get::<i32, _>(name).unwrap_or(None)
+                .map(|v| Value::Int(v as i64)).unwrap_or(Value::Undefined)
+        }
+        ColumnType::Int8 => {
+            row.try_get::<i64, _>(name).unwrap_or(None)
+                .map(Value::Int).unwrap_or(Value::Undefined)
+        }
+        ColumnType::Float4 | ColumnType::Floatn => {
+            row.try_get::<f32, _>(name).unwrap_or(None)
+                .map(|v| Value::Float(v as f64)).unwrap_or(Value::Undefined)
+        }
+        ColumnType::Float8 => {
+            row.try_get::<f64, _>(name).unwrap_or(None)
+                .map(Value::Float).unwrap_or(Value::Undefined)
+        }
+        ColumnType::NVarchar | ColumnType::NChar | ColumnType::BigVarChar | ColumnType::BigChar | ColumnType::Text | ColumnType::NText => {
+            row.try_get::<&str, _>(name).unwrap_or(None)
+                .map(Value::str).unwrap_or(Value::Undefined)
+        }
+        ColumnType::BigVarBin | ColumnType::BigBinary | ColumnType::Image => {
+            row.try_get::<&[u8], _>(name).unwrap_or(None)
+                .map(|v| Value::Bytes(Arc::new(v.to_vec()))).unwrap_or(Value::Undefined)
+        }
+        _ => {
+            row.try_get::<&str, _>(name).unwrap_or(None)
+                .map(Value::str).unwrap_or(Value::Undefined)
+        }
+    }
+}
+
+/// value_to_mssql 将 Sflang Value 转为 tiberius 能接受的参数。
+fn value_to_mssql(v: &Value) -> Box<dyn tiberius::ToSql> {
+    match v {
+        Value::Int(i) => Box::new(*i),
+        Value::Float(f) => Box::new(*f),
+        Value::Str(s) => Box::new(s.as_ref().to_string()),
+        Value::Bool(b) => Box::new(*b),
+        Value::Undefined | Value::Error(_) => Box::new(Option::<i32>::None),
+        other => Box::new(other.to_str()),
+    }
+}
+
 // ---- 内置函数 ----
 
 /// bi_db_connect 连接数据库。
@@ -337,8 +470,34 @@ fn bi_db_connect(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value
                 ))),
             }
         }
+        "mssql" | "sqlserver" | "mssqlserver" => {
+            use tokio_util::compat::TokioAsyncReadCompatExt;
+            let (config, host, port) = match parse_mssql_conn_str(conn_str) {
+                Ok(v) => v,
+                Err(e) => return Ok(crate::value::error_value(format!(
+                    "dbConnect() MSSQL 连接字符串解析失败: {} (格式: mssql://user:pass@host:port/db)", e,
+                ))),
+            };
+            let runtime = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => return Ok(crate::value::error_value(format!(
+                    "dbConnect() 创建 tokio runtime 失败: {}", e,
+                ))),
+            };
+            let result = runtime.block_on(async move {
+                let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await?;
+                tcp.set_nodelay(true).ok();
+                tiberius::Client::connect(config, tcp.compat()).await
+            });
+            match result {
+                Ok(client) => Ok(db_value(DatabaseConn::Mssql(Mutex::new(client), runtime))),
+                Err(e) => Ok(crate::value::error_value(format!(
+                    "dbConnect() 连接 MSSQL 失败: {} (可能原因：网络不通、认证失败、数据库不存在)", e,
+                ))),
+            }
+        }
         _ => Ok(crate::value::error_value(format!(
-            "dbConnect() 不支持的数据库类型 '{}' (当前支持: sqlite3, mysql, postgres)", driver,
+            "dbConnect() 不支持的数据库类型 '{}' (当前支持: sqlite3, mysql, postgres, mssql)", driver,
         ))),
     }
 }
@@ -406,10 +565,28 @@ fn bi_db_exec(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
                 ))),
             }
         }
+        DatabaseConn::Mssql(client, runtime) => {
+            let mut guard = client.lock().map_err(|e| crate::value::error_value(format!(
+                "dbExec() 数据库锁异常: {}", e,
+            )))?;
+            let mssql_params: Vec<Box<dyn tiberius::ToSql>> = params.iter().map(value_to_mssql).collect();
+            let param_refs: Vec<&dyn tiberius::ToSql> = mssql_params.iter().map(|b| b.as_ref()).collect();
+            let result = runtime.block_on(async {
+                if param_refs.is_empty() {
+                    guard.simple_query(sql).await.map(|_| 0i64)
+                } else {
+                    guard.execute(sql, &param_refs).await.map(|r| r.total() as i64)
+                }
+            });
+            match result {
+                Ok(n) => Ok(Value::Int(n)),
+                Err(e) => Ok(crate::value::error_value(format!(
+                    "dbExec() SQL 执行失败: {} (SQL: {})", e, sql,
+                ))),
+            }
+        }
     }
 }
-
-/// bi_db_query 查询数据库，返回 array of map（每行一个 map，列名→值）。
 ///
 /// 用法：dbQuery(db, sql) 或 dbQuery(db, sql, param1, param2, ...)
 fn bi_db_query(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
@@ -504,6 +681,52 @@ fn bi_db_query(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> 
                 result.push(Value::Map(Arc::new(Mutex::new(pg_row_to_ordmap(row)))));
             }
             Ok(Value::Array(Arc::new(Mutex::new(result))))
+        }
+        DatabaseConn::Mssql(client, runtime) => {
+            let mut guard = client.lock().map_err(|e| crate::value::error_value(format!(
+                "dbQuery() 数据库锁异常: {}", e,
+            )))?;
+            let mssql_params: Vec<Box<dyn tiberius::ToSql>> = params.iter().map(value_to_mssql).collect();
+            let param_refs: Vec<&dyn tiberius::ToSql> = mssql_params.iter().map(|b| b.as_ref()).collect();
+
+            let result = runtime.block_on(async {
+                let stream = if param_refs.is_empty() {
+                    guard.simple_query(sql).await
+                } else {
+                    guard.query(sql, &param_refs).await
+                };
+                match stream {
+                    Ok(s) => {
+                        use futures_util::TryStreamExt;
+                        use tiberius::QueryItem;
+                        let items: Vec<QueryItem> = s.try_collect().await?;
+                        let rows: Vec<tiberius::Row> = items.into_iter().filter_map(|item| {
+                            if let QueryItem::Row(row) = item { Some(row) } else { None }
+                        }).collect();
+                        Ok(rows)
+                    }
+                    Err(e) => Err(e),
+                }
+            });
+
+            match result {
+                Ok(rows) => {
+                    let mut result: Vec<Value> = Vec::new();
+                    for row in &rows {
+                        let mut m = crate::ord_map::OrdMap::new();
+                        for col in row.columns() {
+                            let name = col.name().to_string();
+                            let val = mssql_get_row_value(row, col);
+                            m.set(name, val);
+                        }
+                        result.push(Value::Map(Arc::new(Mutex::new(m))));
+                    }
+                    Ok(Value::Array(Arc::new(Mutex::new(result))))
+                }
+                Err(e) => Ok(crate::value::error_value(format!(
+                    "dbQuery() 查询失败: {} (SQL: {})", e, sql,
+                ))),
+            }
         }
     }
 }
@@ -622,6 +845,58 @@ fn bi_db_query_recs(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Va
             }
             Ok(Value::Array(Arc::new(Mutex::new(result))))
         }
+        DatabaseConn::Mssql(client, runtime) => {
+            let mut guard = client.lock().map_err(|e| crate::value::error_value(format!(
+                "dbQueryRecs() 数据库锁异常: {}", e,
+            )))?;
+            let mssql_params: Vec<Box<dyn tiberius::ToSql>> = params.iter().map(value_to_mssql).collect();
+            let param_refs: Vec<&dyn tiberius::ToSql> = mssql_params.iter().map(|b| b.as_ref()).collect();
+
+            let result = runtime.block_on(async {
+                let stream = if param_refs.is_empty() {
+                    guard.simple_query(sql).await
+                } else {
+                    guard.query(sql, &param_refs).await
+                };
+                match stream {
+                    Ok(s) => {
+                        use futures_util::TryStreamExt;
+                        use tiberius::QueryItem;
+                        let items: Vec<QueryItem> = s.try_collect().await?;
+                        let rows: Vec<tiberius::Row> = items.into_iter().filter_map(|item| {
+                            if let QueryItem::Row(row) = item { Some(row) } else { None }
+                        }).collect();
+                        Ok(rows)
+                    }
+                    Err(e) => Err(e),
+                }
+            });
+
+            match result {
+                Ok(rows) => {
+                    let mut result: Vec<Value> = Vec::new();
+                    if !rows.is_empty() {
+                        // 第一行：列名
+                        let col_names: Vec<Value> = rows[0].columns().iter()
+                            .map(|c| Value::str_from(c.name().to_string()))
+                            .collect();
+                        result.push(Value::Array(Arc::new(Mutex::new(col_names))));
+                        // 数据行
+                        for row in &rows {
+                            let mut rec: Vec<Value> = Vec::new();
+                            for col in row.columns() {
+                                rec.push(mssql_get_row_value(row, col));
+                            }
+                            result.push(Value::Array(Arc::new(Mutex::new(rec))));
+                        }
+                    }
+                    Ok(Value::Array(Arc::new(Mutex::new(result))))
+                }
+                Err(e) => Ok(crate::value::error_value(format!(
+                    "dbQueryRecs() 查询失败: {} (SQL: {})", e, sql,
+                ))),
+            }
+        }
     }
 }
 
@@ -638,6 +913,7 @@ fn bi_db_close(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> 
         DatabaseConn::Sqlite(_) => {}
         DatabaseConn::Mysql(_) => {}
         DatabaseConn::Postgres(_) => {}
+        DatabaseConn::Mssql(_, _) => {}
     }
     Ok(Value::Undefined)
 }
