@@ -352,10 +352,11 @@ fn bi_db_query(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> 
     }
 }
 
-/// bi_db_query_recs 查询数据库，返回 array of array（按列顺序，无列名）。
+/// bi_db_query_recs 查询数据库，返回二维数组（第一行是列名，后续是数据行）。
 ///
-/// 与 dbQuery 的区别：dbQuery 返回 map（列名→值），dbQueryRecs 返回纯数组（按位置）。
-/// 适合不需要列名、按位置访问的场景，性能略高。
+/// 与 dbQuery 的区别：
+///   dbQuery     → [{"col1": v1, "col2": v2}, ...]（array of map）
+///   dbQueryRecs → [["col1", "col2"], [v1, v2], ...]（array of array，第一行列名）
 ///
 /// 用法：dbQueryRecs(db, sql) 或 dbQueryRecs(db, sql, param1, param2, ...)
 fn bi_db_query_recs(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
@@ -373,6 +374,10 @@ fn bi_db_query_recs(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Va
                 crate::value::error_value(format!("dbQueryRecs() SQL 预处理失败: {} (SQL: {})", e, sql))
             })?;
             let col_count = stmt.column_count();
+            // 收集列名
+            let col_names: Vec<Value> = (0..col_count)
+                .map(|i| Value::str_from(stmt.column_name(i).unwrap_or_default().to_string()))
+                .collect();
             let sql_params: Vec<rusqlite::types::Value> = params.iter().map(value_to_sqlite).collect();
             let rows = stmt.query_map(rusqlite::params_from_iter(sql_params.iter()), |row| {
                 let mut rec: Vec<Value> = Vec::with_capacity(col_count);
@@ -386,6 +391,9 @@ fn bi_db_query_recs(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Va
             })?;
 
             let mut result: Vec<Value> = Vec::new();
+            // 第一行：列名
+            result.push(Value::Array(Arc::new(Mutex::new(col_names))));
+            // 数据行
             for row_result in rows {
                 let rec = row_result.map_err(|e| {
                     crate::value::error_value(format!("dbQueryRecs() 读取行失败: {}", e))
@@ -405,8 +413,13 @@ fn bi_db_query_recs(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Va
             })?;
             let cols = result_set.columns();
             let col_count = cols.as_ref().len();
+            // 第一行：列名
+            let col_names: Vec<Value> = cols.as_ref().iter()
+                .map(|c| Value::str_from(c.name_str().to_string()))
+                .collect();
 
             let mut result: Vec<Value> = Vec::new();
+            result.push(Value::Array(Arc::new(Mutex::new(col_names))));
             for row_result in result_set.by_ref() {
                 let row = row_result.map_err(|e| {
                     crate::value::error_value(format!("dbQueryRecs() 读取行失败: {}", e))
