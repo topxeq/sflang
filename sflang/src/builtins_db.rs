@@ -8,6 +8,7 @@
 //!   - mysql — mysql crate（纯 Rust，连接池）
 //!   - postgres — postgres crate（同步 API）
 //!   - mssql / sqlserver — tiberius crate（纯 Rust TDS，tokio 桥接同步）
+//!   - oracle — oracle-rs crate（纯 Rust TNS，tokio 桥接同步）
 //!
 //! 函数：
 //!   dbConnect(driver, connStr)      — 连接数据库
@@ -42,6 +43,8 @@ pub enum DatabaseConn {
     /// MSSQL 连接（tiberius crate，异步 Client + tokio runtime 桥接同步）。
     /// Client 的泛型参数是 compat 后的 TcpStream（futures AsyncRead/Write）。
     Mssql(Mutex<tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>>, tokio::runtime::Runtime),
+    /// Oracle 连接（oracle-rs crate，异步 Connection + tokio runtime 桥接同步）。
+    Oracle(Mutex<oracle_rs::Connection>, tokio::runtime::Runtime),
 }
 
 /// parse_mysql_conn_str 手动解析 MySQL 连接字符串。
@@ -417,6 +420,87 @@ fn value_to_mssql(v: &Value) -> Box<dyn tiberius::ToSql> {
     }
 }
 
+// ---- 辅助：Oracle (oracle-rs) 值转换 ----
+
+/// parse_oracle_conn_str 解析 Oracle 连接字符串。
+///
+/// 格式: oracle://user:pass@host:port/service
+/// 或:   user/pass@host:port/service
+fn parse_oracle_conn_str(s: &str) -> Result<(String, u16, String, String, String), String> {
+    let rest = if let Some(r) = s.strip_prefix("oracle://") {
+        r
+    } else {
+        s
+    };
+
+    let at_pos = rest.rfind('@').ok_or("缺少 @")?;
+    let user_pass = &rest[..at_pos];
+    let host_rest = &rest[at_pos + 1..];
+
+    let (user, pass) = match user_pass.find(':') {
+        Some(p) => (&user_pass[..p], &user_pass[p + 1..]),
+        None => {
+            // 也支持 user/pass 格式
+            match user_pass.find('/') {
+                Some(p) => (&user_pass[..p], &user_pass[p + 1..]),
+                None => (user_pass, ""),
+            }
+        }
+    };
+
+    let (host_port, service) = match host_rest.rfind('/') {
+        Some(p) => (&host_rest[..p], &host_rest[p + 1..]),
+        None => (host_rest, ""),
+    };
+
+    let (host, port) = match host_port.rfind(':') {
+        Some(p) => {
+            let port: u16 = host_port[p + 1..].parse().map_err(|_| "无效端口")?;
+            (&host_port[..p], port)
+        }
+        None => (host_port, 1521u16),
+    };
+
+    if service.is_empty() {
+        return Err("缺少服务名/SID".to_string());
+    }
+
+    Ok((host.to_string(), port, service.to_string(), user.to_string(), pass.to_string()))
+}
+
+/// oracle_value_to_sflang 将 oracle-rs Value 转为 Sflang Value。
+fn oracle_to_value(v: &oracle_rs::row::Value) -> crate::value::Value {
+    use oracle_rs::row::Value as OraVal;
+    use crate::value::Value as SfVal;
+    match v {
+        OraVal::Null => SfVal::Undefined,
+        OraVal::Integer(i) => SfVal::Int(*i),
+        OraVal::Float(f) => SfVal::Float(*f),
+        OraVal::String(s) => SfVal::str(s),
+        OraVal::Boolean(b) => SfVal::Bool(*b),
+        OraVal::Bytes(b) => SfVal::Bytes(Arc::new(b.clone())),
+        OraVal::Number(n) => SfVal::str_from(format!("{:?}", n)),
+        OraVal::Date(_) => SfVal::Undefined,  // 简化处理
+        OraVal::Timestamp(_) => SfVal::Undefined,
+        _ => SfVal::Undefined,
+    }
+}
+
+/// sflang_value_to_oracle 将 Sflang Value 转为 oracle-rs Value。
+fn sflang_to_oracle(v: &crate::value::Value) -> oracle_rs::row::Value {
+    use oracle_rs::row::Value as OraVal;
+    use crate::value::Value as SfVal;
+    match v {
+        SfVal::Int(i) => OraVal::Integer(*i),
+        SfVal::Float(f) => OraVal::Float(*f),
+        SfVal::Str(s) => OraVal::String(s.as_ref().to_string()),
+        SfVal::Bool(b) => OraVal::Boolean(*b),
+        SfVal::Undefined | SfVal::Error(_) => OraVal::Null,
+        SfVal::Bytes(b) => OraVal::Bytes(b.as_ref().clone()),
+        other => OraVal::String(other.to_str()),
+    }
+}
+
 // ---- 内置函数 ----
 
 /// bi_db_connect 连接数据库。
@@ -496,8 +580,32 @@ fn bi_db_connect(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value
                 ))),
             }
         }
+        "oracle" => {
+            let (host, port, service, user, pass) = match parse_oracle_conn_str(conn_str) {
+                Ok(v) => v,
+                Err(e) => return Ok(crate::value::error_value(format!(
+                    "dbConnect() Oracle 连接字符串解析失败: {} (格式: oracle://user:pass@host:port/service)", e,
+                ))),
+            };
+            let runtime = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => return Ok(crate::value::error_value(format!(
+                    "dbConnect() 创建 tokio runtime 失败: {}", e,
+                ))),
+            };
+            let config = oracle_rs::Config::new(&host, port, &service, &user, &pass);
+            let result = runtime.block_on(async {
+                oracle_rs::Connection::connect_with_config(config).await
+            });
+            match result {
+                Ok(conn) => Ok(db_value(DatabaseConn::Oracle(Mutex::new(conn), runtime))),
+                Err(e) => Ok(crate::value::error_value(format!(
+                    "dbConnect() 连接 Oracle 失败: {} (可能原因：网络不通、认证失败、服务名错误)", e,
+                ))),
+            }
+        }
         _ => Ok(crate::value::error_value(format!(
-            "dbConnect() 不支持的数据库类型 '{}' (当前支持: sqlite3, mysql, postgres, mssql)", driver,
+            "dbConnect() 不支持的数据库类型 '{}' (当前支持: sqlite3, mysql, postgres, mssql, oracle)", driver,
         ))),
     }
 }
@@ -585,10 +693,23 @@ fn bi_db_exec(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
                 ))),
             }
         }
+        DatabaseConn::Oracle(conn, runtime) => {
+            let guard = conn.lock().map_err(|e| crate::value::error_value(format!(
+                "dbExec() 数据库锁异常: {}", e,
+            )))?;
+            let ora_params: Vec<oracle_rs::row::Value> = params.iter().map(sflang_to_oracle).collect();
+            let result = runtime.block_on(async {
+                guard.execute_dml_sql(sql, &ora_params).await
+            });
+            match result {
+                Ok(n) => Ok(Value::Int(n as i64)),
+                Err(e) => Ok(crate::value::error_value(format!(
+                    "dbExec() SQL 执行失败: {} (SQL: {})", e, sql,
+                ))),
+            }
+        }
     }
 }
-///
-/// 用法：dbQuery(db, sql) 或 dbQuery(db, sql, param1, param2, ...)
 fn bi_db_query(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
     bh::require_arg(args, 0, "dbQuery")?;
     let sql = bh::as_str(args, 1, "dbQuery")?;
@@ -728,10 +849,35 @@ fn bi_db_query(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> 
                 ))),
             }
         }
+        DatabaseConn::Oracle(conn, runtime) => {
+            let guard = conn.lock().map_err(|e| crate::value::error_value(format!(
+                "dbQuery() 数据库锁异常: {}", e,
+            )))?;
+            let ora_params: Vec<oracle_rs::row::Value> = params.iter().map(sflang_to_oracle).collect();
+            let result = runtime.block_on(async {
+                guard.query(sql, &ora_params).await
+            });
+            match result {
+                Ok(qr) => {
+                    let col_names: Vec<String> = qr.columns.iter().map(|c| c.name.clone()).collect();
+                    let mut result: Vec<Value> = Vec::new();
+                    for row in &qr.rows {
+                        let mut m = crate::ord_map::OrdMap::new();
+                        for (i, name) in col_names.iter().enumerate() {
+                            let val = row.get(i).map(oracle_to_value).unwrap_or(Value::Undefined);
+                            m.set(name.clone(), val);
+                        }
+                        result.push(Value::Map(Arc::new(Mutex::new(m))));
+                    }
+                    Ok(Value::Array(Arc::new(Mutex::new(result))))
+                }
+                Err(e) => Ok(crate::value::error_value(format!(
+                    "dbQuery() 查询失败: {} (SQL: {})", e, sql,
+                ))),
+            }
+        }
     }
 }
-
-/// bi_db_query_recs 查询数据库，返回二维数组（第一行是列名，后续是数据行）。
 ///
 /// 与 dbQuery 的区别：
 ///   dbQuery     → [{"col1": v1, "col2": v2}, ...]（array of map）
@@ -897,6 +1043,40 @@ fn bi_db_query_recs(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Va
                 ))),
             }
         }
+        DatabaseConn::Oracle(conn, runtime) => {
+            let guard = conn.lock().map_err(|e| crate::value::error_value(format!(
+                "dbQueryRecs() 数据库锁异常: {}", e,
+            )))?;
+            let ora_params: Vec<oracle_rs::row::Value> = params.iter().map(sflang_to_oracle).collect();
+            let result = runtime.block_on(async {
+                guard.query(sql, &ora_params).await
+            });
+            match result {
+                Ok(qr) => {
+                    let mut result: Vec<Value> = Vec::new();
+                    if !qr.rows.is_empty() {
+                        // 第一行：列名
+                        let col_names: Vec<Value> = qr.columns.iter()
+                            .map(|c| Value::str_from(c.name.clone()))
+                            .collect();
+                        result.push(Value::Array(Arc::new(Mutex::new(col_names))));
+                        // 数据行
+                        for row in &qr.rows {
+                            let mut rec: Vec<Value> = Vec::new();
+                            for i in 0..qr.columns.len() {
+                                let val = row.get(i).map(oracle_to_value).unwrap_or(Value::Undefined);
+                                rec.push(val);
+                            }
+                            result.push(Value::Array(Arc::new(Mutex::new(rec))));
+                        }
+                    }
+                    Ok(Value::Array(Arc::new(Mutex::new(result))))
+                }
+                Err(e) => Ok(crate::value::error_value(format!(
+                    "dbQueryRecs() 查询失败: {} (SQL: {})", e, sql,
+                ))),
+            }
+        }
     }
 }
 
@@ -914,6 +1094,7 @@ fn bi_db_close(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> 
         DatabaseConn::Mysql(_) => {}
         DatabaseConn::Postgres(_) => {}
         DatabaseConn::Mssql(_, _) => {}
+        DatabaseConn::Oracle(_, _) => {}
     }
     Ok(Value::Undefined)
 }

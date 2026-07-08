@@ -652,6 +652,7 @@ dbClose(db)
 - **mysql**（纯 Rust，连接池）：`mysql://user:pass@host:port/db`
 - **postgres**（同步驱动）：`postgresql://user:pass@host:5432/db`
 - **mssql**（纯 Rust TDS，tokio 桥接）：`mssql://user:pass@host:port/db`
+- **oracle**（纯 Rust TNS，tokio 桥接）：`oracle://user:pass@host:port/service`
 
 类型映射：INTEGER → int，REAL/FLOAT → float，TEXT/VARCHAR → string，NULL → undefined。
 `?` 占位符参数绑定（PostgreSQL 的 `$1`、MSSQL 的 `@P1` 格式自动转换），支持 int/float/string/bool/null/bytes。

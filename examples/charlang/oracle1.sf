@@ -1,0 +1,86 @@
+// Oracle 数据库示例
+// 用法：sf oracle1.sf "oracle://用户名:密码@主机:端口/服务名"
+// 示例：sf oracle1.sf "oracle://scott:tiger@localhost:1521/FREEPDB1"
+
+// 从命令行参数获取连接字符串
+connStr := getParam(argsG, 0, "")
+
+if connStr == "" {
+    pln("用法：sf oracle1.sf \"oracle://用户名:密码@主机:端口/服务名\"")
+    pln("示例：sf oracle1.sf \"oracle://scott:tiger@localhost:1521/FREEPDB1\"")
+} else {
+
+// 1. 连接数据库
+db := dbConnect("oracle", connStr)
+
+if isErr(db) {
+    pln("连接失败:", getErrStr(db))
+    pln("请检查连接信息: 主机、端口、用户名、密码、服务名")
+} else {
+
+pln("Oracle 连接成功")
+
+// 2. 建表（先删除已存在的）
+dbExec(db, "BEGIN EXECUTE IMMEDIATE 'DROP TABLE sflang_demo'; EXCEPTION WHEN OTHERS THEN NULL; END;")
+dbExec(db, "CREATE TABLE sflang_demo (
+    id NUMBER PRIMARY KEY,
+    name VARCHAR2(100) NOT NULL,
+    age NUMBER,
+    score BINARY_DOUBLE
+)")
+pln("表 sflang_demo 已创建")
+
+// 3. 插入记录（参数绑定）
+dbExec(db, "INSERT INTO sflang_demo VALUES (:1, :2, :3, :4)", 1, "张三", 28, 92.5)
+dbExec(db, "INSERT INTO sflang_demo VALUES (:1, :2, :3, :4)", 2, "李四", 35, 88.0)
+dbExec(db, "INSERT INTO sflang_demo VALUES (:1, :2, :3, :4)", 3, "王五", 22, 95.5)
+pln("已插入 3 条记录")
+
+// 4. 查询全部
+pln("")
+pln("=== 全部记录 ===")
+rows := dbQuery(db, "SELECT * FROM sflang_demo ORDER BY score DESC")
+for row in rows {
+    pl("  id=%v | %s | %d岁 | %.1f分\n",
+       row["ID"], row["NAME"], row["AGE"], row["SCORE"])
+}
+
+// 5. 参数化查询
+pln("")
+pln("=== 年龄 > 25 ===")
+rows2 := dbQuery(db, "SELECT name, score FROM sflang_demo WHERE age > :1", 25)
+pln("符合条件的记录数:", len(rows2))
+for row in rows2 {
+    pl("  %s\n", row["NAME"])
+}
+
+// 6. dbQueryCount
+pln("")
+pln("=== dbQueryCount ===")
+pln("  总人数:", dbQueryCount(db, "SELECT COUNT(*) FROM sflang_demo"))
+
+// 7. 更新和删除
+pln("")
+pln("=== 更新李四的分数 ===")
+n := dbExec(db, "UPDATE sflang_demo SET score = :1 WHERE name = :2", 90.0, "李四")
+pln("影响行数:", n)
+
+pln("")
+pln("=== 删除王五 ===")
+n2 := dbExec(db, "DELETE FROM sflang_demo WHERE name = :1", "王五")
+pln("影响行数:", n2)
+
+// 8. 最终数据
+pln("")
+pln("=== 最终数据 (JSON) ===")
+final := dbQuery(db, "SELECT * FROM sflang_demo ORDER BY id")
+pln(jsonEncode(final))
+
+// 9. 清理
+dbExec(db, "DROP TABLE sflang_demo")
+dbClose(db)
+pln("")
+pln("完成，表已清理，连接已关闭")
+
+} // end if !isErr(db)
+} // end if connStr != ""
