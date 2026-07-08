@@ -26,6 +26,9 @@ zip = { workspace = true }
 rusqlite = { workspace = true }
 # MySQL 数据库（纯 Rust 同步驱动 + 连接池）
 mysql = { workspace = true }
+# PostgreSQL 数据库（同步驱动）
+postgres = { workspace = true }
+postgres-types = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }

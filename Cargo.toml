@@ -33,6 +33,10 @@ zip = "2.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 # mysql：纯 Rust MySQL 驱动（MIT/MPL-2.0），同步 API + 连接池。
 mysql = "26"
+# postgres：PostgreSQL 同步驱动（MIT OR Apache-2.0, sfackler）。
+postgres = "0.19"
+# postgres-types：PostgreSQL 类型转换（MIT OR Apache-2.0, postgres crate 的子 crate）。
+postgres-types = "0.2"
 
 # 编译优化配置：release 模式启用 LTO 与单代码生成单元，最大化优化
 [profile.release]

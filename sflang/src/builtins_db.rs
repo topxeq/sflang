@@ -6,6 +6,7 @@
 //! 当前支持：
 //!   - sqlite3 / sqlite — rusqlite（bundled，零配置）
 //!   - mysql — mysql crate（纯 Rust，连接池）
+//!   - postgres — postgres crate（同步 API）
 //!
 //! 函数：
 //!   dbConnect(driver, connStr)      — 连接数据库
@@ -35,6 +36,8 @@ pub enum DatabaseConn {
     /// MySQL 连接池（mysql crate）。
     /// Pool 内部是 Arc 共享的，本身线程安全，无需额外 Mutex。
     Mysql(mysql::Pool),
+    /// PostgreSQL 连接（postgres crate，同步 Client）。
+    Postgres(Mutex<postgres::Client>),
 }
 
 /// parse_mysql_conn_str 手动解析 MySQL 连接字符串。
@@ -186,6 +189,101 @@ fn mysql_to_value(v: &mysql::Value) -> Value {
     }
 }
 
+// ---- 辅助：PostgreSQL 值转换 ----
+
+/// value_to_pg 将 Sflang Value 转为 postgres 能接受的 Box<dyn ToSql + Sync>。
+fn value_to_pg_type(v: &Value) -> Box<dyn postgres_types::ToSql + Sync> {
+    match v {
+        Value::Int(i) => Box::new(*i as i32),  // PG 默认用 i32
+        Value::Float(f) => Box::new(*f as f64),
+        Value::Str(s) => Box::new(s.as_ref().to_string()),
+        Value::Bool(b) => Box::new(*b),
+        Value::Undefined | Value::Error(_) => Box::new(Option::<String>::None),
+        other => Box::new(other.to_str()),
+    }
+}
+
+/// pg_row_to_ordmap 将 postgres Row 转为 OrdMap。
+fn pg_row_to_ordmap(row: &postgres::Row) -> crate::ord_map::OrdMap {
+    let mut m = crate::ord_map::OrdMap::new();
+    for (i, col) in row.columns().iter().enumerate() {
+        let name = col.name().to_string();
+        let val = pg_get_value(row, i, col.type_());
+        m.set(name, val);
+    }
+    m
+}
+
+/// pg_get_value 从 postgres Row 中按类型安全地取值。
+fn pg_get_value(row: &postgres::Row, idx: usize, ty: &postgres::types::Type) -> Value {
+    use postgres::types::Type;
+    match *ty {
+        Type::INT2 => {
+            let v: Option<i16> = row.try_get(idx).unwrap_or(None);
+            match v { Some(i) => Value::Int(i as i64), None => Value::Undefined }
+        }
+        Type::INT4 => {
+            let v: Option<i32> = row.try_get(idx).unwrap_or(None);
+            match v { Some(i) => Value::Int(i as i64), None => Value::Undefined }
+        }
+        Type::INT8 => {
+            let v: Option<i64> = row.try_get(idx).unwrap_or(None);
+            match v { Some(i) => Value::Int(i), None => Value::Undefined }
+        }
+        Type::FLOAT4 => {
+            let v: Option<f32> = row.try_get(idx).unwrap_or(None);
+            match v { Some(f) => Value::Float(f as f64), None => Value::Undefined }
+        }
+        Type::FLOAT8 => {
+            let v: Option<f64> = row.try_get(idx).unwrap_or(None);
+            match v { Some(f) => Value::Float(f), None => Value::Undefined }
+        }
+        Type::BOOL => {
+            let v: Option<bool> = row.try_get(idx).unwrap_or(None);
+            match v { Some(b) => Value::Bool(b), None => Value::Undefined }
+        }
+        Type::TEXT | Type::VARCHAR | Type::NAME => {
+            let v: Option<String> = row.try_get(idx).unwrap_or(None);
+            match v { Some(s) => Value::str_from(s), None => Value::Undefined }
+        }
+        Type::BYTEA => {
+            let v: Option<Vec<u8>> = row.try_get(idx).unwrap_or(None);
+            match v { Some(b) => Value::Bytes(Arc::new(b)), None => Value::Undefined }
+        }
+        _ => {
+            // 其他类型尝试作为字符串
+            let v: Option<String> = row.try_get(idx).unwrap_or(None);
+            match v { Some(s) => Value::str_from(s), None => Value::Undefined }
+        }
+    }
+}
+
+/// convert_placeholders 将 SQL 中的 ? 占位符转换为 PostgreSQL 的 $N 格式。
+///
+/// PostgreSQL 用 $1 $2 $3...，我们统一暴露 ? 给用户。
+fn convert_pg_placeholders(sql: &str) -> String {
+    let mut result = String::with_capacity(sql.len());
+    let mut param_num = 0;
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'?' {
+            param_num += 1;
+            result.push_str(&format!("${}", param_num));
+        } else {
+            // 安全处理多字节字符
+            let ch_len = if bytes[i] < 0x80 { 1 } else if bytes[i] < 0xC0 { 1 } else if bytes[i] < 0xE0 { 2 } else if bytes[i] < 0xF0 { 3 } else { 4 };
+            let end = (i + ch_len).min(bytes.len());
+            if let Ok(s) = std::str::from_utf8(&bytes[i..end]) {
+                result.push_str(s);
+            }
+            i = end - 1; // 循环末尾会 +1
+        }
+        i += 1;
+    }
+    result
+}
+
 // ---- 内置函数 ----
 
 /// bi_db_connect 连接数据库。
@@ -230,8 +328,17 @@ fn bi_db_connect(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value
                 ))),
             }
         }
+        "postgres" | "postgresql" | "pg" => {
+            use postgres::NoTls;
+            match postgres::Client::connect(conn_str, NoTls) {
+                Ok(client) => Ok(db_value(DatabaseConn::Postgres(Mutex::new(client)))),
+                Err(e) => Ok(crate::value::error_value(format!(
+                    "dbConnect() 连接 PostgreSQL 失败: {} (可能原因：网络不通、认证失败、数据库不存在)", e,
+                ))),
+            }
+        }
         _ => Ok(crate::value::error_value(format!(
-            "dbConnect() 不支持的数据库类型 '{}' (当前支持: sqlite3, mysql)", driver,
+            "dbConnect() 不支持的数据库类型 '{}' (当前支持: sqlite3, mysql, postgres)", driver,
         ))),
     }
 }
@@ -279,6 +386,24 @@ fn bi_db_exec(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
                     crate::value::error_value(format!("dbExec() SQL 执行失败: {} (SQL: {})", e, sql))
                 })?;
                 Ok(Value::Int(conn.affected_rows() as i64))
+            }
+        }
+        DatabaseConn::Postgres(client) => {
+            let mut guard = client.lock().map_err(|e| crate::value::error_value(format!(
+                "dbExec() 数据库锁异常: {}", e,
+            )))?;
+            let pg_sql = convert_pg_placeholders(sql);
+            // 构建 &dyn ToSql 参数
+            let pg_params: Vec<Box<dyn postgres::types::ToSql + Sync>> =
+                params.iter().map(value_to_pg_type).collect();
+            let pg_refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
+                pg_params.iter().map(|b| b.as_ref()).collect();
+            let result = guard.execute(&pg_sql, &pg_refs[..]);
+            match result {
+                Ok(n) => Ok(Value::Int(n as i64)),
+                Err(e) => Ok(crate::value::error_value(format!(
+                    "dbExec() SQL 执行失败: {} (SQL: {})", e, sql,
+                ))),
             }
         }
     }
@@ -357,6 +482,26 @@ fn bi_db_query(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> 
                     m.set(name.clone(), mysql_to_value(val));
                 }
                 result.push(Value::Map(Arc::new(Mutex::new(m))));
+            }
+            Ok(Value::Array(Arc::new(Mutex::new(result))))
+        }
+        DatabaseConn::Postgres(client) => {
+            let mut guard = client.lock().map_err(|e| crate::value::error_value(format!(
+                "dbQuery() 数据库锁异常: {}", e,
+            )))?;
+            let pg_sql = convert_pg_placeholders(sql);
+            let pg_params: Vec<Box<dyn postgres::types::ToSql + Sync>> =
+                params.iter().map(value_to_pg_type).collect();
+            let pg_refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
+                pg_params.iter().map(|b| b.as_ref()).collect();
+
+            let rows = guard.query(&pg_sql, &pg_refs[..]).map_err(|e| {
+                crate::value::error_value(format!("dbQuery() 查询失败: {} (SQL: {})", e, sql))
+            })?;
+
+            let mut result: Vec<Value> = Vec::new();
+            for row in &rows {
+                result.push(Value::Map(Arc::new(Mutex::new(pg_row_to_ordmap(row)))));
             }
             Ok(Value::Array(Arc::new(Mutex::new(result))))
         }
@@ -445,6 +590,38 @@ fn bi_db_query_recs(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Va
             }
             Ok(Value::Array(Arc::new(Mutex::new(result))))
         }
+        DatabaseConn::Postgres(client) => {
+            let mut guard = client.lock().map_err(|e| crate::value::error_value(format!(
+                "dbQueryRecs() 数据库锁异常: {}", e,
+            )))?;
+            let pg_sql = convert_pg_placeholders(sql);
+            let pg_params: Vec<Box<dyn postgres::types::ToSql + Sync>> =
+                params.iter().map(value_to_pg_type).collect();
+            let pg_refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
+                pg_params.iter().map(|b| b.as_ref()).collect();
+
+            let rows = guard.query(&pg_sql, &pg_refs[..]).map_err(|e| {
+                crate::value::error_value(format!("dbQueryRecs() 查询失败: {} (SQL: {})", e, sql))
+            })?;
+
+            let mut result: Vec<Value> = Vec::new();
+            if !rows.is_empty() {
+                // 第一行：列名
+                let col_names: Vec<Value> = rows[0].columns().iter()
+                    .map(|c| Value::str_from(c.name().to_string()))
+                    .collect();
+                result.push(Value::Array(Arc::new(Mutex::new(col_names))));
+                // 数据行
+                for row in &rows {
+                    let mut rec: Vec<Value> = Vec::new();
+                    for (i, col) in row.columns().iter().enumerate() {
+                        rec.push(pg_get_value(row, i, col.type_()));
+                    }
+                    result.push(Value::Array(Arc::new(Mutex::new(rec))));
+                }
+            }
+            Ok(Value::Array(Arc::new(Mutex::new(result))))
+        }
     }
 }
 
@@ -460,6 +637,7 @@ fn bi_db_close(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> 
     match db {
         DatabaseConn::Sqlite(_) => {}
         DatabaseConn::Mysql(_) => {}
+        DatabaseConn::Postgres(_) => {}
     }
     Ok(Value::Undefined)
 }
