@@ -34,7 +34,8 @@ tiberius = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures-util = { workspace = true }
-oracle-rs = "0.1"
+# Oracle 数据库（纯 Rust TNS 驱动，无 OCI 依赖）
+oracle-rs = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }

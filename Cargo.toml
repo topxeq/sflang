@@ -45,6 +45,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 # futures-util：Stream 处理（MIT），tiberius 查询结果收集。
 futures-util = "0.3"
+# oracle-rs：纯 Rust Oracle TNS 驱动（MIT OR Apache-2.0），无 OCI 依赖。
+oracle-rs = "0.1"
 
 # 编译优化配置：release 模式启用 LTO 与单代码生成单元，最大化优化
 [profile.release]
