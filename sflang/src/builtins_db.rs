@@ -8,11 +8,16 @@
 //!   - mysql — mysql crate（纯 Rust，连接池）
 //!
 //! 函数：
-//!   dbConnect(driver, connStr)     — 连接数据库
-//!   dbExec(db, sql, params...)     — 执行非查询 SQL
-//!   dbQuery(db, sql, params...)    — 查询，返回 array of map（列名→值）
-//!   dbQueryRecs(db, sql, params...)— 查询，返回 array of array（按列顺序，无列名）
-//!   dbClose(db)                    — 关闭连接
+//!   dbConnect(driver, connStr)      — 连接数据库
+//!   dbExec(db, sql, params...)      — 执行非查询 SQL
+//!   dbQuery(db, sql, params...)     — 查询，返回 array of map（列名→值）
+//!   dbQueryRecs(db, sql, params...) — 查询，返回二维数组（首行列名+数据行）
+//!   dbQueryCount(db, sql, params..) — 查询单值→int（如 COUNT）
+//!   dbQueryFloat(db, sql, params..) — 查询单值→float（如 AVG/SUM）
+//!   dbQueryString(db, sql, params..)— 查询单值→string（如取名称）
+//!   dbQueryMap(db, keyCol, sql...)  — 按指定列索引→map（一对一）
+//!   dbQueryMapArray(db, keyCol, ...)— 按指定列分组→map（一对多）
+//!   dbClose(db)                     — 关闭连接
 
 use std::sync::{Arc, Mutex};
 
@@ -87,6 +92,12 @@ pub fn register(vm: &mut crate::vm::VM) {
     vm.register_builtin("dbExec", bi_db_exec);
     vm.register_builtin("dbQuery", bi_db_query);
     vm.register_builtin("dbQueryRecs", bi_db_query_recs);
+    vm.register_builtin("dbQueryCount", bi_db_query_count);
+    vm.register_builtin("dbQueryFloat", bi_db_query_float);
+    vm.register_builtin("dbQueryString", bi_db_query_string);
+    vm.register_builtin("dbQueryStr", bi_db_query_string);  // Charlang 兼容别名
+    vm.register_builtin("dbQueryMap", bi_db_query_map);
+    vm.register_builtin("dbQueryMapArray", bi_db_query_map_array);
     vm.register_builtin("dbClose", bi_db_close);
 }
 
@@ -451,4 +462,153 @@ fn bi_db_close(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> 
         DatabaseConn::Mysql(_) => {}
     }
     Ok(Value::Undefined)
+}
+
+// ---- 便捷查询函数 ----
+//
+// 这 5 个函数都是对 dbQuery 的一层薄封装，提取常用模式。
+// 所有参数绑定的逻辑与 dbQuery 完全一致（复用内部查询逻辑）。
+
+/// db_query_scalar 执行查询并返回第一行第一列的值（内部辅助）。
+///
+/// 用于 dbQueryCount/Float/String 的公共逻辑。
+fn db_query_scalar(vm: &mut crate::vm::VM, fn_name: &str, args: &[Value]) -> Result<Value, Value> {
+    // 复用 dbQuery 的逻辑
+    let rows = bi_db_query(vm, args)?;
+    match &rows {
+        Value::Array(a) => {
+            let g = a.lock().unwrap();
+            if g.is_empty() {
+                return Ok(Value::Undefined);
+            }
+            match &g[0] {
+                Value::Map(m) => {
+                    let mg = m.lock().unwrap();
+                    // 取第一个值
+                    match mg.values().into_iter().next() {
+                        Some(v) => Ok(v.clone()),
+                        None => Ok(Value::Undefined),
+                    }
+                }
+                _ => Ok(Value::Undefined),
+            }
+        }
+        _ => Err(crate::value::error_value(format!(
+            "{}() 内部错误: dbQuery 返回了非数组类型", fn_name,
+        ))),
+    }
+}
+
+/// bi_db_query_count 执行 COUNT 查询，返回整数。
+///
+/// 用法：dbQueryCount(db, sql, params...)
+/// 示例：dbQueryCount(db, "SELECT COUNT(*) FROM users WHERE age > ?", 18)
+fn bi_db_query_count(vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
+    let v = db_query_scalar(vm, "dbQueryCount", args)?;
+    match v {
+        Value::Int(_) => Ok(v),
+        Value::Float(f) => Ok(Value::Int(f as i64)),
+        Value::Str(s) => Ok(s.parse::<i64>().map(Value::Int).unwrap_or(Value::Int(0))),
+        Value::Undefined => Ok(Value::Int(0)),
+        other => Ok(Value::Int(other.to_int().unwrap_or(0))),
+    }
+}
+
+/// bi_db_query_float 执行查询，返回单个浮点值。
+///
+/// 用法：dbQueryFloat(db, sql, params...)
+/// 示例：dbQueryFloat(db, "SELECT AVG(score) FROM students WHERE class = ?", "A")
+fn bi_db_query_float(vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
+    let v = db_query_scalar(vm, "dbQueryFloat", args)?;
+    match v {
+        Value::Float(_) => Ok(v),
+        Value::Int(i) => Ok(Value::Float(i as f64)),
+        Value::Str(s) => Ok(s.parse::<f64>().map(Value::Float).unwrap_or(Value::Float(0.0))),
+        Value::Undefined => Ok(Value::Float(0.0)),
+        other => match other.to_f64() {
+            Some(f) => Ok(Value::Float(f)),
+            None => Ok(Value::Float(0.0)),
+        },
+    }
+}
+
+/// bi_db_query_string 执行查询，返回单个字符串值。
+///
+/// 用法：dbQueryString(db, sql, params...)
+/// 示例：dbQueryString(db, "SELECT name FROM users WHERE id = ?", 1)
+fn bi_db_query_string(vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
+    let v = db_query_scalar(vm, "dbQueryString", args)?;
+    Ok(Value::str_from(v.to_str()))
+}
+
+/// bi_db_query_map 执行查询，按指定列的值作为 key 组织为 map（一对一）。
+///
+/// 用法：dbQueryMap(db, keyColumn, sql, params...)
+/// 结果: {keyValue: {col1: v1, col2: v2, ...}, ...}
+///
+/// 示例：
+///   dbQueryMap(db, "id", "SELECT id, name, age FROM users")
+///   → {"1": {"name":"Alice","age":30}, "2": {"name":"Bob","age":25}}
+fn bi_db_query_map(vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "dbQueryMap")?;
+    let key_col = bh::as_str(args, 1, "dbQueryMap")?;
+    // 把 db 和 sql 之后的参数传给 dbQuery（args[0]=db, args[2]=sql, args[3..]=params）
+    let query_args: Vec<Value> = vec![args[0].clone(), args[2].clone()];
+    let query_args: Vec<Value> = query_args.into_iter()
+        .chain(args.get(3..).unwrap_or(&[]).iter().cloned())
+        .collect();
+    let rows = bi_db_query(vm, &query_args)?;
+
+    let mut result = crate::ord_map::OrdMap::new();
+    if let Value::Array(a) = &rows {
+        for row_val in a.lock().unwrap().iter() {
+            if let Value::Map(m) = row_val {
+                let mg = m.lock().unwrap();
+                if let Some(key_val) = mg.get(key_col) {
+                    let key = key_val.to_str();
+                    result.set(key, row_val.clone());
+                }
+            }
+        }
+    }
+    Ok(Value::Map(Arc::new(Mutex::new(result))))
+}
+
+/// bi_db_query_map_array 执行查询，按指定列的值作为 key 组织为 map（一对多）。
+///
+/// 用法：dbQueryMapArray(db, keyColumn, sql, params...)
+/// 结果: {keyValue: [row1, row2, ...], ...}
+///
+/// 示例：
+///   dbQueryMapArray(db, "dept", "SELECT dept, name FROM employees")
+///   → {"销售部": [{"name":"张三"}, ...], "技术部": [{"name":"王五"}, ...]}
+fn bi_db_query_map_array(vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "dbQueryMapArray")?;
+    let key_col = bh::as_str(args, 1, "dbQueryMapArray")?;
+    let query_args: Vec<Value> = vec![args[0].clone(), args[2].clone()];
+    let query_args: Vec<Value> = query_args.into_iter()
+        .chain(args.get(3..).unwrap_or(&[]).iter().cloned())
+        .collect();
+    let rows = bi_db_query(vm, &query_args)?;
+
+    let mut result = crate::ord_map::OrdMap::new();
+    if let Value::Array(a) = &rows {
+        for row_val in a.lock().unwrap().iter() {
+            if let Value::Map(m) = row_val {
+                let mg = m.lock().unwrap();
+                if let Some(key_val) = mg.get(key_col) {
+                    let key = key_val.to_str();
+                    // 追加到数组（不存在则创建）
+                    let existing = result.get(&key);
+                    let mut arr = match existing {
+                        Some(Value::Array(a)) => a.lock().unwrap().clone(),
+                        _ => Vec::new(),
+                    };
+                    arr.push(row_val.clone());
+                    result.set(key, Value::Array(Arc::new(Mutex::new(arr))));
+                }
+            }
+        }
+    }
+    Ok(Value::Map(Arc::new(Mutex::new(result))))
 }
