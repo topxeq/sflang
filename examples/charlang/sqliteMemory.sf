@@ -1,0 +1,66 @@
+// SQLite 内存数据库示例
+// 使用 ":memory:" 内存模式，无需文件，脚本结束即释放
+
+pln("=== SQLite 内存数据库 ===")
+pln("")
+
+// 连接内存数据库（无需文件路径）
+db := dbConnect("sqlite3", ":memory:")
+
+if isErr(db) {
+    pln("连接失败:", getErrStr(db))
+} else {
+    pln("内存数据库已连接")
+
+    // 建表
+    dbExec(db, "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL, stock INTEGER)")
+    pln("表 products 已创建")
+
+    // 批量插入
+    dbExec(db, "INSERT INTO products VALUES (1, '键盘', 199.0, 50)")
+    dbExec(db, "INSERT INTO products VALUES (2, '鼠标', 89.5, 200)")
+    dbExec(db, "INSERT INTO products VALUES (3, '显示器', 1299.0, 15)")
+    dbExec(db, "INSERT INTO products VALUES (4, '耳机', 399.0, 80)")
+    pln("已插入 4 条产品记录")
+
+    // 查询：价格区间
+    pln("")
+    pln("=== 价格 100~500 的产品 ===")
+    rows := dbQuery(db, "SELECT name, price FROM products WHERE price >= ? AND price <= ? ORDER BY price", 100.0, 500.0)
+    for row in rows {
+        pl("  %-8s %.1f元\n", row["name"], row["price"])
+    }
+
+    // 查询：库存低于阈值的
+    pln("")
+    pln("=== 库存 < 50 ===")
+    rows2 := dbQuery(db, "SELECT name, stock FROM products WHERE stock < ? ORDER BY stock", 50)
+    for row in rows2 {
+        pl("  %-8s 剩余 %v 件\n", row["name"], row["stock"])
+    }
+
+    // 聚合查询
+    pln("")
+    pln("=== 统计 ===")
+    stats := dbQuery(db, "SELECT COUNT(*) as total, SUM(price * stock) as total_value FROM products")
+    pln("  产品总数:", stats[0]["total"])
+    pln("  库存总值:", stats[0]["total_value"])
+
+    // 事务操作（SQLite 支持 BEGIN/COMMIT）
+    pln("")
+    pln("=== 事务：批量更新 ===")
+    dbExec(db, "BEGIN")
+    dbExec(db, "UPDATE products SET stock = stock + ? WHERE stock < ?", 10, 50)
+    dbExec(db, "COMMIT")
+    pln("低库存产品已补货 +10")
+
+    // 验证
+    rows3 := dbQuery(db, "SELECT name, stock FROM products WHERE stock <= ?", 60)
+    for row in rows3 {
+        pl("  %-8s 现在 %v 件\n", row["name"], row["stock"])
+    }
+
+    dbClose(db)
+    pln("")
+    pln("内存数据库已关闭（数据自动释放）")
+}

@@ -1,0 +1,82 @@
+// 数据库参数占位符示例
+// 不同数据库的占位符写法不同，Sflang 统一使用 ? 占位符
+//
+// 注意各数据库原生占位符写法对比：
+//   SQLite:  ?         （原生就是 ?）
+//   MySQL:   ?         （原生也是 ?）
+//   PostgreSQL: $1 $2  （但 Sflang 统一用 ?，内部转换）
+//   MSSQL:   @p1 @p2   （但 Sflang 统一用 ?，内部转换）
+//   Oracle:  :1 :2     （但 Sflang 统一用 ?，内部转换）
+//
+// 在 Sflang 中，所有数据库统一用 ? 占位符，无需关心底层差异。
+//
+// 用法（示例用 SQLite 内存库，无需额外环境）：
+
+pln("=== 占位符参数绑定示例 ===")
+pln("")
+
+db := dbConnect("sqlite3", ":memory:")
+
+if isErr(db) {
+    pln("连接失败:", getErrStr(db))
+} else {
+
+dbExec(db, "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER, city TEXT)")
+
+// 插入：每条用 ? 占位符绑定不同类型参数
+dbExec(db, "INSERT INTO users VALUES (?, ?, ?, ?)", 1, "张三", 28, "北京")
+dbExec(db, "INSERT INTO users VALUES (?, ?, ?, ?)", 2, "李四", 35, "上海")
+dbExec(db, "INSERT INTO users VALUES (?, ?, ?, ?)", 3, "王五", 22, "广州")
+dbExec(db, "INSERT INTO users VALUES (?, ?, ?, ?)", 4, "赵六", 30, "北京")
+pln("已插入 4 条记录")
+
+pln("")
+pln("--- 单参数查询 ---")
+// 一个 ? 占位符
+rows := dbQuery(db, "SELECT name, age FROM users WHERE city = ?", "北京")
+pln("北京的:", rows)
+
+pln("")
+pln("--- 多参数查询 ---")
+// 多个 ? 占位符，按顺序绑定
+rows2 := dbQuery(db, "SELECT name, age FROM users WHERE age >= ? AND age <= ? ORDER BY age", 25, 32)
+pln("25~32岁:")
+for row in rows2 {
+    pl("  %s (%d岁)\n", row["name"], row["age"])
+}
+
+pln("")
+pln("--- 零参数查询 ---")
+// 无参数时不需要占位符
+rows3 := dbQuery(db, "SELECT COUNT(*) as total FROM users")
+pln("总人数:", rows3[0]["total"])
+
+pln("")
+pln("--- 参数含特殊字符 ---")
+// 参数中的特殊字符会被正确转义，防止 SQL 注入
+dbExec(db, "INSERT INTO users VALUES (?, ?, ?, ?)", 5, "O'Brien", 40, "It's a \"city\"")
+rows4 := dbQuery(db, "SELECT name, city FROM users WHERE id = ?", 5)
+pln("特殊字符:", rows4[0]["name"], "/", rows4[0]["city"])
+
+pln("")
+pln("--- 参数化更新和删除 ---")
+dbExec(db, "UPDATE users SET age = ? WHERE name = ?", 29, "张三")
+dbExec(db, "DELETE FROM users WHERE age < ?", 25)
+pln("更新张三年龄=29，删除<25岁后:")
+rows5 := dbQuery(db, "SELECT name, age FROM users ORDER BY id")
+for row in rows5 {
+    pl("  %s (%d岁)\n", row["name"], row["age"])
+}
+
+pln("")
+pln("--- 占位符参数类型映射 ---")
+pln("  int  → 直接绑定:  dbQuery(db, \"... WHERE id = ?\", 42)")
+pln("  float→ 直接绑定:  dbQuery(db, \"... WHERE price > ?\", 99.5)")
+pln("  str  → 安全转义:  dbQuery(db, \"... WHERE name = ?\", \"O'Brien\")")
+pln("  null → NULL 绑定: dbQuery(db, \"... WHERE col = ?\", undefined)")
+
+dbClose(db)
+pln("")
+pln("完成")
+
+} // end if !isErr
