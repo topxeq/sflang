@@ -10,7 +10,8 @@
 //! 函数：
 //!   dbConnect(driver, connStr)     — 连接数据库
 //!   dbExec(db, sql, params...)     — 执行非查询 SQL
-//!   dbQuery(db, sql, params...)    — 查询，返回 array of map
+//!   dbQuery(db, sql, params...)    — 查询，返回 array of map（列名→值）
+//!   dbQueryRecs(db, sql, params...)— 查询，返回 array of array（按列顺序，无列名）
 //!   dbClose(db)                    — 关闭连接
 
 use std::sync::{Arc, Mutex};
@@ -85,6 +86,7 @@ pub fn register(vm: &mut crate::vm::VM) {
     vm.register_builtin("dbConnect", bi_db_connect);
     vm.register_builtin("dbExec", bi_db_exec);
     vm.register_builtin("dbQuery", bi_db_query);
+    vm.register_builtin("dbQueryRecs", bi_db_query_recs);
     vm.register_builtin("dbClose", bi_db_close);
 }
 
@@ -344,6 +346,78 @@ fn bi_db_query(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> 
                     m.set(name.clone(), mysql_to_value(val));
                 }
                 result.push(Value::Map(Arc::new(Mutex::new(m))));
+            }
+            Ok(Value::Array(Arc::new(Mutex::new(result))))
+        }
+    }
+}
+
+/// bi_db_query_recs 查询数据库，返回 array of array（按列顺序，无列名）。
+///
+/// 与 dbQuery 的区别：dbQuery 返回 map（列名→值），dbQueryRecs 返回纯数组（按位置）。
+/// 适合不需要列名、按位置访问的场景，性能略高。
+///
+/// 用法：dbQueryRecs(db, sql) 或 dbQueryRecs(db, sql, param1, param2, ...)
+fn bi_db_query_recs(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "dbQueryRecs")?;
+    let sql = bh::as_str(args, 1, "dbQueryRecs")?;
+    let db = db_downcast(&args[0], "dbQueryRecs")?;
+    let params: &[Value] = if args.len() > 2 { &args[2..] } else { &[] };
+
+    match db {
+        DatabaseConn::Sqlite(conn) => {
+            let guard = conn.lock().map_err(|e| crate::value::error_value(format!(
+                "dbQueryRecs() 数据库锁异常: {}", e,
+            )))?;
+            let mut stmt = guard.prepare(sql).map_err(|e| {
+                crate::value::error_value(format!("dbQueryRecs() SQL 预处理失败: {} (SQL: {})", e, sql))
+            })?;
+            let col_count = stmt.column_count();
+            let sql_params: Vec<rusqlite::types::Value> = params.iter().map(value_to_sqlite).collect();
+            let rows = stmt.query_map(rusqlite::params_from_iter(sql_params.iter()), |row| {
+                let mut rec: Vec<Value> = Vec::with_capacity(col_count);
+                for i in 0..col_count {
+                    let val: ValueRef = row.get_ref(i)?;
+                    rec.push(sqlite_to_value(val));
+                }
+                Ok(rec)
+            }).map_err(|e| {
+                crate::value::error_value(format!("dbQueryRecs() 查询失败: {} (SQL: {})", e, sql))
+            })?;
+
+            let mut result: Vec<Value> = Vec::new();
+            for row_result in rows {
+                let rec = row_result.map_err(|e| {
+                    crate::value::error_value(format!("dbQueryRecs() 读取行失败: {}", e))
+                })?;
+                result.push(Value::Array(Arc::new(Mutex::new(rec))));
+            }
+            Ok(Value::Array(Arc::new(Mutex::new(result))))
+        }
+        DatabaseConn::Mysql(pool) => {
+            use mysql::prelude::*;
+            let mut conn = pool.get_conn().map_err(|e| {
+                crate::value::error_value(format!("dbQueryRecs() 获取 MySQL 连接失败: {}", e))
+            })?;
+            let mysql_params: Vec<mysql::Value> = params.iter().map(value_to_mysql).collect();
+            let mut result_set = conn.exec_iter(sql, mysql_params).map_err(|e| {
+                crate::value::error_value(format!("dbQueryRecs() 查询失败: {} (SQL: {})", e, sql))
+            })?;
+            let cols = result_set.columns();
+            let col_count = cols.as_ref().len();
+
+            let mut result: Vec<Value> = Vec::new();
+            for row_result in result_set.by_ref() {
+                let row = row_result.map_err(|e| {
+                    crate::value::error_value(format!("dbQueryRecs() 读取行失败: {}", e))
+                })?;
+                let values = row.unwrap();
+                let mut rec: Vec<Value> = Vec::with_capacity(col_count);
+                for i in 0..col_count {
+                    let val = values.get(i).unwrap_or(&mysql::Value::NULL);
+                    rec.push(mysql_to_value(val));
+                }
+                result.push(Value::Array(Arc::new(Mutex::new(rec))));
             }
             Ok(Value::Array(Arc::new(Mutex::new(result))))
         }
