@@ -137,29 +137,31 @@ fn bi_db_connect(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value
     let driver = bh::as_str(args, 0, "dbConnect")?;
     let conn_str = bh::as_str(args, 1, "dbConnect")?;
 
+    // dbConnect 的错误返回错误对象（不抛异常），符合 Sflang "一般返回错误对象为主" 的原则
     match driver {
         "sqlite3" | "sqlite" => {
-            let conn = rusqlite::Connection::open(conn_str).map_err(|e| {
-                crate::value::error_value(format!(
+            match rusqlite::Connection::open(conn_str) {
+                Ok(conn) => Ok(db_value(DatabaseConn::Sqlite(Mutex::new(conn)))),
+                Err(e) => Ok(crate::value::error_value(format!(
                     "dbConnect() 连接 SQLite '{}' 失败: {} (可能原因：路径无效或权限不足)", conn_str, e,
-                ))
-            })?;
-            Ok(db_value(DatabaseConn::Sqlite(Mutex::new(conn))))
+                ))),
+            }
         }
         "mysql" => {
-            let opts = mysql::Opts::from_url(conn_str).map_err(|e| {
-                crate::value::error_value(format!(
+            let opts = match mysql::Opts::from_url(conn_str) {
+                Ok(o) => o,
+                Err(e) => return Ok(crate::value::error_value(format!(
                     "dbConnect() MySQL 连接字符串解析失败: {} (格式: mysql://user:pass@host:port/db)", e,
-                ))
-            })?;
-            let pool = mysql::Pool::new(opts).map_err(|e| {
-                crate::value::error_value(format!(
+                ))),
+            };
+            match mysql::Pool::new(opts) {
+                Ok(pool) => Ok(db_value(DatabaseConn::Mysql(pool))),
+                Err(e) => Ok(crate::value::error_value(format!(
                     "dbConnect() 连接 MySQL 失败: {} (可能原因：网络不通、认证失败、数据库不存在)", e,
-                ))
-            })?;
-            Ok(db_value(DatabaseConn::Mysql(pool)))
+                ))),
+            }
         }
-        _ => Err(crate::value::error_value(format!(
+        _ => Ok(crate::value::error_value(format!(
             "dbConnect() 不支持的数据库类型 '{}' (当前支持: sqlite3, mysql)", driver,
         ))),
     }
