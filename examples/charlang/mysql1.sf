@@ -1,0 +1,80 @@
+// MySQL 数据库示例
+// 使用前请修改下面的连接信息，确保 MySQL 服务器可访问
+//
+// 连接字符串格式: mysql://用户名:密码@主机:端口/数据库名
+// 示例:           mysql://root:123456@localhost:3306/testdb
+
+// ====== 请修改为你的连接信息 ======
+connStr := "mysql://<用户名>:<密码>@<主机>:<端口>/<数据库名>"
+// 例如:
+// connStr := "mysql://root:123456@localhost:3306/testdb"
+// =================================
+
+// 1. 连接数据库
+db := dbConnect("mysql", connStr)
+
+if isErr(db) {
+    pln("连接失败:", getErrStr(db))
+    pln("请检查连接信息: 主机、端口、用户名、密码、数据库名")
+    return
+}
+
+pln("MySQL 连接成功")
+
+// 2. 建表（先删除已存在的）
+dbExec(db, "DROP TABLE IF EXISTS sflang_demo")
+dbExec(db, `CREATE TABLE sflang_demo (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    age INT,
+    score FLOAT
+)`)
+pln("表 sflang_demo 已创建")
+
+// 3. 插入记录（参数绑定）
+dbExec(db, "INSERT INTO sflang_demo (name, age, score) VALUES (?, ?, ?)", "张三", 28, 92.5)
+dbExec(db, "INSERT INTO sflang_demo (name, age, score) VALUES (?, ?, ?)", "李四", 35, 88.0)
+dbExec(db, "INSERT INTO sflang_demo (name, age, score) VALUES (?, ?, ?)", "王五", 22, 95.5)
+pln("已插入 3 条记录")
+
+// 4. 查询全部
+pln("")
+pln("=== 全部记录 ===")
+rows := dbQuery(db, "SELECT * FROM sflang_demo ORDER BY score DESC")
+for row in rows {
+    pl("  id=%v | %s | %d岁 | %.1f分\n",
+       row["id"], row["name"], row["age"], row["score"])
+}
+
+// 5. 参数化查询
+pln("")
+pln("=== 年龄 > 25 ===")
+rows2 := dbQuery(db, "SELECT name, score FROM sflang_demo WHERE age > ?", 25)
+pln("符合条件的记录数:", len(rows2))
+for row in rows2 {
+    pl("  %s: %.1f分\n", row["name"], row["score"])
+}
+
+// 6. 更新
+pln("")
+pln("=== 更新李四的分数 ===")
+n := dbExec(db, "UPDATE sflang_demo SET score = ? WHERE name = ?", 90.0, "李四")
+pln("影响行数:", n)
+
+// 7. 删除
+pln("")
+pln("=== 删除王五 ===")
+n2 := dbExec(db, "DELETE FROM sflang_demo WHERE name = ?", "王五")
+pln("影响行数:", n2)
+
+// 8. 最终数据
+pln("")
+pln("=== 最终数据 (JSON) ===")
+final := dbQuery(db, "SELECT * FROM sflang_demo ORDER BY id")
+pln(jsonEncode(final))
+
+// 9. 清理表
+dbExec(db, "DROP TABLE IF EXISTS sflang_demo")
+dbClose(db)
+pln("")
+pln("完成，表已清理，连接已关闭")

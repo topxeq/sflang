@@ -1,0 +1,85 @@
+// SQLite 数据库完整示例
+// 在系统临时目录下创建数据库文件、建表、插入、查询、关闭、删除
+
+// 1. 构造数据库文件路径
+dbPath := joinPath(getTempDir(), "sflang_sqlite_demo.db")
+
+// 如果文件已存在则先删除（保证示例可重复运行）
+if fileExists(dbPath) {
+    deleteFile(dbPath)
+}
+
+// 2. 连接数据库（文件方式，自动创建）
+db := dbConnect("sqlite3", dbPath)
+
+// 检查连接是否成功
+if isErr(db) {
+    pln("连接失败:", getErrStr(db))
+    return
+}
+
+pln("数据库已创建:", dbPath)
+
+// 3. 建表
+dbExec(db, `CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    age INTEGER,
+    email TEXT,
+    score REAL
+)`)
+pln("表 users 已创建")
+
+// 4. 插入记录
+dbExec(db, "INSERT INTO users (name, age, email, score) VALUES (?, ?, ?, ?)",
+       "张三", 28, "zhangsan@example.com", 92.5)
+dbExec(db, "INSERT INTO users (name, age, email, score) VALUES (?, ?, ?, ?)",
+       "李四", 35, "lisi@example.com", 88.0)
+dbExec(db, "INSERT INTO users (name, age, email, score) VALUES (?, ?, ?, ?)",
+       "王五", 22, "wangwu@example.com", 95.5)
+
+pln("已插入 3 条记录")
+
+// 5. 查询全部
+pln("")
+pln("=== 全部记录 ===")
+rows := dbQuery(db, "SELECT * FROM users ORDER BY score DESC")
+for row in rows {
+    pl("  %s | %d岁 | %s | %.1f分\n",
+       row["name"], row["age"], row["email"], row["score"])
+}
+
+// 6. 参数化查询
+pln("")
+pln("=== 年龄 > 25 的记录 ===")
+rows2 := dbQuery(db, "SELECT name, score FROM users WHERE age > ?", 25)
+pln("符合条件的记录数:", len(rows2))
+for row in rows2 {
+    pl("  %s: %.1f分\n", row["name"], row["score"])
+}
+
+// 7. 更新
+pln("")
+pln("=== 更新李四的分数 ===")
+n := dbExec(db, "UPDATE users SET score = ? WHERE name = ?", 90.0, "李四")
+pln("影响行数:", n)
+
+// 8. 删除
+pln("")
+pln("=== 删除王五 ===")
+n2 := dbExec(db, "DELETE FROM users WHERE name = ?", "王五")
+pln("影响行数:", n2)
+
+// 9. 最终数据（JSON 格式输出）
+pln("")
+pln("=== 最终数据 ===")
+final := dbQuery(db, "SELECT * FROM users ORDER BY id")
+pln(jsonEncode(final))
+
+// 10. 关闭并删除数据库文件
+dbClose(db)
+// 手动释放 db 引用（让 Connection drop，释放文件锁）
+db = undefined
+deleteFile(dbPath)
+pln("")
+pln("数据库已关闭并删除")
