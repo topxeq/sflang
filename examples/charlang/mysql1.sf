@@ -1,14 +1,14 @@
 // MySQL 数据库示例
-// 使用前请修改下面的连接信息，确保 MySQL 服务器可访问
-//
-// 连接字符串格式: mysql://用户名:密码@主机:端口/数据库名
-// 示例:           mysql://root:123456@localhost:3306/testdb
+// 用法：sf mysql1.sf "mysql://用户名:密码@主机:端口/数据库名"
+// 示例：sf mysql1.sf "mysql://root:123456@localhost:3306/testdb"
 
-// ====== 请修改为你的连接信息 ======
-connStr := "mysql://<用户名>:<密码>@<主机>:<端口>/<数据库名>"
-// 例如:
-// connStr := "mysql://root:123456@localhost:3306/testdb"
-// =================================
+// 从命令行参数获取连接字符串
+connStr := getParam(argsG, 0, "")
+
+if connStr == "" {
+    pln("用法：sf mysql1.sf \"mysql://用户名:密码@主机:端口/数据库名\"")
+    pln("示例：sf mysql1.sf \"mysql://root:123456@localhost:3306/testdb\"")
+} else {
 
 // 1. 连接数据库
 db := dbConnect("mysql", connStr)
@@ -16,8 +16,7 @@ db := dbConnect("mysql", connStr)
 if isErr(db) {
     pln("连接失败:", getErrStr(db))
     pln("请检查连接信息: 主机、端口、用户名、密码、数据库名")
-    return
-}
+} else {
 
 pln("MySQL 连接成功")
 
@@ -78,3 +77,6 @@ dbExec(db, "DROP TABLE IF EXISTS sflang_demo")
 dbClose(db)
 pln("")
 pln("完成，表已清理，连接已关闭")
+
+} // end if !isErr(db)
+} // end if connStr != ""
