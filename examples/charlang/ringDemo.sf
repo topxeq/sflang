@@ -1,0 +1,100 @@
+// Ring 环形缓冲区实用场景示例
+// 演示三种实际用法：滑动窗口、日志缓冲、生产消费
+
+pln("=== Ring 实用场景 ===")
+pln("")
+
+// 场景 1：传感器数据 — 只保留最近 N 个读数
+pln("--- 1. 传感器数据（保留最近 5 个读数）---")
+sensor := newRing(5)
+for i := 0; i < 12; i++ {
+    ringPush(sensor, i * 10)
+}
+pln("12 个读数后，ring 中保留:", ringToList(sensor))
+pln("平均值:", func() {
+    list := ringToList(sensor)
+    sum := 0
+    for v in list { sum += v }
+    return sum / len(list)
+}())
+pln("")
+
+// 场景 2：日志缓冲 — 固定容量，自动淘汰旧日志
+pln("--- 2. 日志缓冲（容量 4）---")
+logBuf := newRing(4)
+
+func logMsg(msg) {
+    ringPush(logBuf, msg)
+}
+
+logMsg("[INFO] 系统启动")
+logMsg("[INFO] 加载配置完成")
+logMsg("[WARN] 磁盘空间不足 80%")
+logMsg("[ERROR] 数据库连接超时")
+logMsg("[INFO] 重连数据库成功")  // 这条会淘汰最旧的"系统启动"
+logMsg("[WARN] 内存使用偏高")
+
+pln("最近 4 条日志:")
+list := ringToList(logBuf)
+for i, msg in list {
+    pl("  [%d] %s\n", i, msg)
+}
+pln("")
+
+// 场景 3：任务队列 — 生产者/消费者
+pln("--- 3. 任务队列 ---")
+tasks := newRing(0)  // 无限容量
+
+// 生产任务
+for i := 0; i < 5; i++ {
+    ringPush(tasks, "task-" + toStr(i + 100))
+}
+pln("生产了 5 个任务，队列大小:", ringSize(tasks))
+
+// 消费任务（pick 从头部取出）
+pln("消费任务:")
+while ringSize(tasks) > 0 {
+    task := ringPick(tasks)
+    pl("  处理: %s (剩余 %d)\n", task, ringSize(tasks))
+}
+pln("")
+
+// 场景 4：批量插入与中间操作
+pln("--- 4. Insert / Set / Remove ---")
+buf := newRing(10)
+ringPush(buf, "A")
+ringPush(buf, "B")
+ringPush(buf, "D")
+pln("初始:", ringToList(buf))
+
+ringInsert(buf, 2, "C")    // 在 B 和 D 之间插入 C
+pln("insert(2, C):", ringToList(buf))
+
+ringSet(buf, 0, "X")        // 修改第一个
+pln("set(0, X):", ringToList(buf))
+
+ringRemove(buf, 1)          // 删除第二个
+pln("remove(1):", ringToList(buf))
+
+pln("get(-1) 最后一个:", ringGet(buf, -1))
+pln("get(0) 第一个:", ringGet(buf, 0))
+pln("")
+
+// 场景 5：无限容量 vs 固定容量
+pln("--- 5. 容量对比 ---")
+fixed := newRing(3)
+infinite := newRing(0)  // 0 = 无限
+
+for i := 0; i < 10; i++ {
+    ringPush(fixed, i)
+    ringPush(infinite, i)
+}
+pln("固定容量 3，push 10 个后:", ringToList(fixed))
+pln("无限容量，push 10 个后 size:", ringSize(infinite))
+pln("")
+
+// isType 判断
+pln("--- 类型判断 ---")
+pln("isType(sensor, \"ring\"):", isType(sensor, "ring"))
+pln("isTypeCode(sensor, 11):", isTypeCode(sensor, 11), "  // Native=11")
+pln("ringSize(sensor):", ringSize(sensor))

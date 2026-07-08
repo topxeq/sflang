@@ -1,0 +1,116 @@
+// Sflang 新功能综合演示
+// 汇总 isType / TXERROR / error / Ring / StringBuilder / CSV / DB 等新功能
+
+pln("========================================")
+pln("       Sflang 新功能综合演示")
+pln("========================================")
+pln("")
+
+// 1. 通用类型判断 isType
+pln("【1. isType 通用类型判断】")
+pln("  isType(42, \"int\"):", isType(42, "int"))
+pln("  isType(3.14, \"float\"):", isType(3.14, "float"))
+pln("  isType(\"hi\", \"string\"):", isType("hi", "string"))
+pln("  isType(true, \"bool\"):", isType(true, "bool"))
+pln("  isType([1,2], \"array\"):", isType([1,2], "array"))
+pln("  isType(map{}, \"map\"):", isType(map{}, "map"))
+pln("  isType(undefined, \"undefined\"):", isType(undefined, "undefined"))
+pln("  isType(newRing(3), \"ring\"):", isType(newRing(3), "ring"))
+pln("  isType(newStringBuilder(), \"stringBuilder\"):", isType(newStringBuilder(), "stringBuilder"))
+pln("  isType(println, \"builtin\"):", isType(println, "builtin"))
+pln("")
+
+// 2. TXERROR 错误处理
+pln("【2. TXERROR 错误处理】")
+e1 := error("文件不存在")
+e2 := errStrf("网络超时: %vs", 30)
+pln("  error(\"x\"):", e1)
+pln("  errStrf(\"网络超时: %v\", 30):", e2)
+pln("  isErr(e1):", isErr(e1), "  isError(e1):", isError(e1))
+pln("  isErr(e2):", isErr(e2), "  isError(e2):", isError(e2))
+pln("  isErrStr(e2):", isErrStr(e2))
+pln("  getErrStr(e1):", getErrStr(e1))
+pln("  getErrStr(e2):", getErrStr(e2))
+pln("  errToEmpty(e1):", "[" + errToEmpty(e1) + "]")
+pln("  errToEmpty(42):", errToEmpty(42))
+pln("")
+
+// 3. Ring 环形缓冲区
+pln("【3. Ring 环形缓冲区】")
+r := newRing(3)
+ringPush(r, "A")
+ringPush(r, "B")
+ringPush(r, "C")
+ringPush(r, "D")  // A 被淘汰
+pln("  容量3 push 4个:", ringToList(r))
+pln("  get(0):", ringGet(r, 0), "  get(-1):", ringGet(r, -1))
+pln("  pick():", ringPick(r), "  pop():", ringPop(r))
+pln("  取出后:", ringToList(r))
+pln("")
+
+// 4. StringBuilder
+pln("【4. StringBuilder】")
+sb := newStringBuilder()
+writeStr(sb, "高效")
+writeStr(sb, "拼接")
+writeStr(sb, 2026)
+pln("  内容:", toStr(sb))
+pln("  len:", len(sb))
+pln("  链式:", toStr(writeStr(writeStr(newStringBuilder(), "链"), "式")))
+pln("")
+
+// 5. CSV
+pln("【5. CSV】")
+csvData := "name,age\nAlice,30\nBob,25\n"
+rows := readCsvFromStr(csvData)
+pln("  解析:", rows)
+pln("  行数:", len(rows))
+pln("")
+
+// 6. 数据库 (SQLite 内存)
+pln("【6. SQLite 内存数据库】")
+db := dbConnect("sqlite3", ":memory:")
+dbExec(db, "CREATE TABLE demo (id INTEGER, name TEXT)")
+dbExec(db, "INSERT INTO demo VALUES (?, ?)", 1, "Alice")
+dbExec(db, "INSERT INTO demo VALUES (?, ?)", 2, "Bob")
+
+pln("  dbQuery:", dbQuery(db, "SELECT * FROM demo ORDER BY id"))
+pln("  dbQueryRecs:", dbQueryRecs(db, "SELECT * FROM demo ORDER BY id"))
+pln("  dbQueryCount:", dbQueryCount(db, "SELECT COUNT(*) FROM demo"))
+pln("  dbQueryString:", dbQueryString(db, "SELECT name FROM demo WHERE id = ?", 1))
+pln("  dbQueryMap:", dbQueryMap(db, "id", "SELECT id, name FROM demo"))
+dbClose(db)
+pln("")
+
+// 7. Go 风格 for 循环
+pln("【7. Go 风格 for 循环】")
+pln("  for i < 3:", end="")
+i := 0
+result := ""
+for i < 3 {
+    result += toStr(i)
+    i++
+}
+pln(" ", result)
+
+pln("  for {break}:", end="")
+j := 0
+result2 := ""
+for {
+    if j >= 3 { break }
+    result2 += toStr(j)
+    j++
+}
+pln(" ", result2)
+pln("")
+
+// 8. sleep / sleepMs
+pln("【8. sleep (秒) / sleepMs (毫秒)】")
+pln("  sleep(0.1) = 100ms")
+pln("  sleepMs(50) = 50ms")
+pln("  (跳过实际等待)")
+pln("")
+
+pln("========================================")
+pln("       所有功能正常运行 ✓")
+pln("========================================")

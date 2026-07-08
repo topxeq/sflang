@@ -1,0 +1,88 @@
+// Word (docx) 文档处理示例
+// 演示文本提取、占位符检测、模板替换
+
+// 因为需要真实 docx 文件（ZIP 包），这里用内置函数创建一个最小测试文件
+// 实际使用时替换为你的 docx 文件路径
+
+// 1. 用 zip 手动构造一个最小 docx 文件（测试用）
+func createTestDocx(path) {
+    docXml := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p><w:r><w:t>合同编号：{contract_no}</w:t></w:r></w:p>
+<w:p><w:r><w:t>甲方：{party_a}</w:t></w:r></w:p>
+<w:p><w:r><w:t>乙方：{party_b}</w:t></w:r></w:p>
+<w:p><w:r><w:t>金额：{amount} 元</w:t></w:r></w:p>
+<w:p><w:r><w:t>本合同自双方签字之日起生效。特此证明 &amp; 声明。</w:t></w:r></w:p>
+</w:body>
+</w:document>`
+
+    // 写入临时文件再处理
+    writeFile(path, docXml)
+    return docXml
+}
+
+// 2. 演示文本提取（用字符串模拟，实际用 docxToStrs(path)）
+pln("=== docx 文档处理演示 ===")
+pln("")
+
+// 创建测试用的 XML（模拟 docx 内部结构）
+testXml := createTestDocx(joinPath(getTempDir(), "sflang_docx_mock.xml"))
+
+pln("（实际使用时请传入 .docx 文件路径）")
+pln("")
+pln("--- docxToStrs(path) — 提取段落文本 ---")
+pln("paragraphs := docxToStrs(\"report.docx\")")
+pln("  → [\"段落1\", \"段落2\", ...]")
+pln("")
+
+pln("--- docxGetPlaceholders(bytes) — 提取占位符 ---")
+pln("template := readFileBytes(\"template.docx\")")
+pln("placeholders := docxGetPlaceholders(template)")
+pln("  → [\"{contract_no}\", \"{party_a}\", ...]")
+pln("")
+
+pln("--- docxReplace(bytes, pairs) — 模板替换 ---")
+pln("filled := docxReplace(template, [")
+pln("    \"{contract_no}\", \"HT-2026-001\",")
+pln("    \"{party_a}\", \"张三\",")
+pln("    \"{party_b}\", \"李四\",")
+pln("    \"{amount}\", \"9800\"")
+pln("])")
+pln("writeFileBytes(\"output.docx\", filled)")
+pln("")
+
+// 3. 实际操作：如果用户提供了 docx 路径则执行
+docxPath := getParam(argsG, 0, "")
+
+if docxPath != "" {
+    if !fileExists(docxPath) {
+        pln("文件不存在:", docxPath)
+    } else {
+        pln("=== 处理文件:", docxPath, "===")
+        pln("")
+
+        // 提取段落
+        paras := docxToStrs(docxPath)
+        pln("段落总数:", len(paras))
+        for i, p in paras {
+            if p != "" {
+                pl("[%d] %s\n", i, p)
+            }
+        }
+
+        // 提取占位符
+        bs := readFileBytes(docxPath)
+        phs := docxGetPlaceholders(bs)
+        if len(phs) > 0 {
+            pln("")
+            pln("发现占位符:", phs)
+        }
+
+        deleteFile(joinPath(getTempDir(), "sflang_docx_mock.xml"))
+    }
+} else {
+    pln("用法：sf docxDemo.sf [docx文件路径]")
+    pln("（不提供路径则只显示 API 说明）")
+    deleteFile(joinPath(getTempDir(), "sflang_docx_mock.xml"))
+}

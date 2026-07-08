@@ -1,0 +1,84 @@
+// StringBuilder 性能对比示例
+// 演示大量拼接时 StringBuilder vs 字符串 += 的差异
+
+pln("=== StringBuilder vs 字符串拼接对比 ===")
+pln("")
+
+// 1. 字符串拼接（每次创建新 String）
+pln("--- 字符串 += 拼接 5000 次 ---")
+s1 := ""
+for i := 0; i < 5000; i++ {
+    s1 += "行" + toStr(i) + "\n"
+}
+pln("结果长度:", len(s1), "字符")
+pln("")
+
+// 2. StringBuilder（高效追加）
+pln("--- StringBuilder 拼接 5000 次 ---")
+sb := newStringBuilder()
+for i := 0; i < 5000; i++ {
+    writeStr(sb, "行")
+    writeStr(sb, i)
+    writeStr(sb, "\n")
+}
+s2 := toStr(sb)
+pln("结果长度:", len(s2), "字符")
+pln("")
+
+// 3. 验证结果一致
+pln("--- 结果一致性检查 ---")
+pln("两种方式结果相同:", s1 == s2)
+pln("")
+
+// 4. StringBuilder 实用场景：构建 CSV
+pln("--- 用 StringBuilder 构建 CSV ---")
+sb2 := newStringBuilder()
+headers := ["姓名", "年龄", "城市"]
+data := [
+    ["张三", 30, "北京"],
+    ["李四", 25, "上海"],
+    ["王五", 35, "广州"]
+]
+
+// 写表头
+first := true
+for h in headers {
+    if !first { writeStr(sb2, ",") }
+    writeStr(sb2, h)
+    first = false
+}
+writeStr(sb2, "\n")
+
+// 写数据行
+for row in data {
+    first = true
+    for cell in row {
+        if !first { writeStr(sb2, ",") }
+        writeStr(sb2, cell)
+        first = false
+    }
+    writeStr(sb2, "\n")
+}
+
+pln("CSV 内容:")
+pr(toStr(sb2))
+
+// 5. 链式调用
+pln("--- 链式调用 ---")
+sb3 := newStringBuilder()
+writeStr(writeStr(writeStr(sb3, "Hello"), ", "), "World!")
+pln(toStr(sb3))
+
+// 6. clear 和 reset
+pln("")
+pln("--- clear vs reset ---")
+pln("clear 前 len:", len(sb2))
+clear(sb2)
+pln("clear 后 len:", len(sb2))
+
+// 7. len 和 isType
+pln("")
+pln("--- 类型判断 ---")
+pln("isType(sb, \"stringBuilder\"):", isType(sb, "stringBuilder"))
+pln("isTypeCode(sb, 19):", isTypeCode(sb, 19))
+pln("len(sb):", len(sb))
