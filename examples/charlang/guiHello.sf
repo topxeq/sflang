@@ -42,6 +42,7 @@ guiSetHandler(win, func(msg) {
     }
     if msg == "close" {
         pln("用户请求关闭窗口")
+        guiClose(win)
     }
 })
 

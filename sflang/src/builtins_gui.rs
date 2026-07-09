@@ -13,6 +13,7 @@
 //!   guiShow(win)               — 显示窗口，进入事件循环（阻塞）
 //!   guiEval(win, jsCode)       — 在 WebView 中排队执行 JS
 //!   guiSetTitle(win, title)    — 设置窗口标题
+//!   guiClose(win)              — 请求关闭窗口（在 handler 中调用）
 
 use std::sync::{Arc, Mutex};
 
@@ -57,6 +58,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("guiShow", bi_gui_show);
     vm.register_builtin("guiEval", bi_gui_eval);
     vm.register_builtin("guiSetTitle", bi_gui_set_title);
+    vm.register_builtin("guiClose", bi_gui_close);
 }
 
 /// 全局 VM 指针（用于 IPC handler 中 VM 重入）。
@@ -134,6 +136,17 @@ fn bi_gui_eval(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let win = gui_downcast(&args[0], "guiEval")?;
     let js = bh::as_str(args, 1, "guiEval")?;
     win.lock().unwrap().eval_queue.push(js.to_string());
+    Ok(Value::Undefined)
+}
+
+/// bi_gui_close 请求关闭窗口（在 IPC handler 中调用）。
+///
+/// 设置 close_requested 标志，事件循环检测到后退出。
+/// 用法：guiClose(win)
+fn bi_gui_close(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "guiClose")?;
+    let win = gui_downcast(&args[0], "guiClose")?;
+    win.lock().unwrap().close_requested = true;
     Ok(Value::Undefined)
 }
 
