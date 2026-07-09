@@ -47,6 +47,11 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("makeDir", bi_make_dir);
     vm.register_builtin("makeDirAll", bi_make_dir_all);
     vm.register_builtin("listDir", bi_list_dir);
+    vm.register_builtin("removeDir", bi_remove_dir);
+    vm.register_builtin("rename", bi_rename);
+    vm.register_builtin("systemCmd", bi_system_cmd);
+    vm.register_builtin("exit", bi_exit);
+    vm.register_builtin("getOsArgs", bi_get_os_args);
 }
 
 /// bi_get_env 读取环境变量，无则返回 undefined。
@@ -185,4 +190,82 @@ fn bi_list_dir(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         }
     }
     Ok(Value::Array(Arc::new(std::sync::Mutex::new(names))))
+}
+
+/// bi_remove_dir 删除目录（仅空目录）。
+fn bi_remove_dir(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let p = bh::as_str(args, 0, "removeDir")?;
+    std::fs::remove_dir(p).map_err(|e| crate::value::error_value(format!(
+        "removeDir() 失败: '{}' - {} (可能原因：目录非空或不存在)", p, e,
+    )))?;
+    Ok(Value::Undefined)
+}
+
+/// bi_rename 重命名/移动文件或目录。
+fn bi_rename(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let from = bh::as_str(args, 0, "rename")?;
+    let to = bh::as_str(args, 1, "rename")?;
+    std::fs::rename(from, to).map_err(|e| crate::value::error_value(format!(
+        "rename() 失败: '{}' → '{}' - {}", from, to, e,
+    )))?;
+    Ok(Value::Undefined)
+}
+
+/// bi_system_cmd 执行系统命令，返回 stdout 输出。
+///
+/// 用法：systemCmd("dir") 或 systemCmd("ls", "-la")
+/// 返回命令的 stdout 输出字符串。
+fn bi_system_cmd(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let cmd = bh::as_str(args, 0, "systemCmd")?;
+
+    // 构建命令
+    let mut command = if cfg!(windows) {
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/C");
+        c.arg(cmd);
+        c
+    } else {
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c");
+        c.arg(cmd);
+        c
+    };
+
+    // 追加额外参数（用于简单命令如 systemCmd("ping", "127.0.0.1")）
+    for i in 1..args.len() {
+        if let Value::Str(s) = &args[i] {
+            command.arg(s.as_ref());
+        }
+    }
+
+    let output = command.output().map_err(|e| crate::value::error_value(format!(
+        "systemCmd() 执行失败: {} (可能原因：命令不存在或权限不足)", e,
+    )))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() && !stderr.is_empty() {
+        // 命令失败但有 stderr 输出，拼到一起
+        let combined = format!("{}{}", stdout, stderr);
+        return Ok(crate::value::error_value(format!(
+            "systemCmd() 命令失败 (exit {}): {}", output.status.code().unwrap_or(-1), combined.trim(),
+        )));
+    }
+
+    Ok(Value::str_from(stdout.into_owned()))
+}
+
+/// bi_exit 退出程序。
+///
+/// 用法：exit() 或 exit(0) 或 exit(1)
+fn bi_exit(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let code = args.get(0).and_then(|v| v.to_int()).unwrap_or(0) as i32;
+    std::process::exit(code);
+}
+
+/// bi_get_os_args 返回完整的命令行参数（含程序名）。
+fn bi_get_os_args(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
+    let full_args: Vec<Value> = std::env::args().map(Value::str_from).collect();
+    Ok(Value::Array(Arc::new(std::sync::Mutex::new(full_args))))
 }

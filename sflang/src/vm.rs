@@ -158,6 +158,7 @@ impl VM {
         crate::builtins_gui::register(&mut vm);
         crate::builtins_ssh::register(&mut vm);
         crate::builtins_le::register(&mut vm);
+        crate::builtins_email::register(&mut vm);
         // 预定义数学常量全局变量
         vm.set_global("piG", Value::Float(std::f64::consts::PI));
         vm.set_global("eG", Value::Float(std::f64::consts::E));
