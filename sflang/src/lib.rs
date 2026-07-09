@@ -54,6 +54,7 @@ pub mod builtins_docx;
 pub mod builtins_db;
 pub mod aes;
 pub mod builtins_aes;
+pub mod txde;
 pub mod api;
 
 // 重导出常用类型
