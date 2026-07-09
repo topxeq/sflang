@@ -89,7 +89,7 @@ guiSetHandler(win, func(msg) {
             // 每 50 个点更新一次 π 值显示
             if total % 50 == 0 {
                 pi := 4.0 * inCircle / total
-                guiEval(win, "document.getElementById('result').innerHTML='Pi ≈ " + adjustFloat(pi, 6) + " (点数: " + total + ")';")
+                guiEval(win, "document.getElementById('result').innerHTML='Pi ≈ " + toStr(adjustFloat(pi, 6)) + " (点数: " + toStr(total) + ")';")
             }
 
             // 控制速度，每 5 个点暂停一下让 UI 刷新
