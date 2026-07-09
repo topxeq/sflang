@@ -26,6 +26,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("sshMkdir", bi_ssh_mkdir);
     vm.register_builtin("sshRemove", bi_ssh_remove);
     vm.register_builtin("sshMove", bi_ssh_move);
+    vm.register_builtin("sshSync", bi_ssh_sync);
 }
 
 fn get_switch(args: &[Value], key: &str, default: &str) -> String {
@@ -59,6 +60,8 @@ struct SshParams {
     password: String,
     key_path: String,
     key_passphrase: String,
+    /// 命令超时（秒），0 = 无超时。
+    cmd_timeout: u64,
 }
 
 fn parse_ssh_params(args: &[Value]) -> Result<SshParams, Value> {
@@ -69,6 +72,7 @@ fn parse_ssh_params(args: &[Value]) -> Result<SshParams, Value> {
         password: get_switch(args, "password", ""),
         key_path: get_switch(args, "key", ""),
         key_passphrase: get_switch(args, "keyPassphrase", ""),
+        cmd_timeout: get_switch(args, "cmdTimeout", "0").parse().unwrap_or(0),
     };
     if p.host.is_empty() || p.user.is_empty() {
         return Err(crate::value::error_value("SSH 需要 --host 和 --user 参数"));
@@ -125,17 +129,30 @@ where
     })
 }
 
-/// 在 channel 上执行远程命令，返回输出。
-async fn exec_cmd(handle: &russh::client::Handle<SshHandler>, command: &str) -> Result<String, String> {
+/// 在 channel 上执行远程命令，返回输出。支持超时。
+async fn exec_cmd(handle: &russh::client::Handle<SshHandler>, command: &str, timeout_secs: u64) -> Result<String, String> {
     let mut channel = handle.channel_open_session().await
         .map_err(|e| format!("SSH 打开通道失败: {}", e))?;
     channel.exec(true, command).await
         .map_err(|e| format!("SSH exec 失败: {}", e))?;
-    let mut output = Vec::new();
-    use tokio::io::AsyncReadExt;
-    let mut reader = channel.make_reader();
-    reader.read_to_end(&mut output).await
-        .map_err(|e| format!("SSH 读取输出失败: {}", e))?;
+
+    let read_fut = async {
+        let mut output = Vec::new();
+        use tokio::io::AsyncReadExt;
+        let mut reader = channel.make_reader();
+        reader.read_to_end(&mut output).await
+            .map_err(|e| format!("SSH 读取输出失败: {}", e))?;
+        Ok::<Vec<u8>, String>(output)
+    };
+
+    let output = if timeout_secs > 0 {
+        tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), read_fut)
+            .await
+            .map_err(|_| format!("SSH 命令超时 ({}秒)", timeout_secs))?
+    } else {
+        read_fut.await
+    }?;
+
     Ok(String::from_utf8_lossy(&output).into_owned())
 }
 
@@ -159,7 +176,7 @@ fn bi_ssh_run(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
 
     match do_ssh(&params, |handle| async move {
-        let result = exec_cmd(&handle, &command).await;
+        let result = exec_cmd(&handle, &command, params.cmd_timeout).await;
         let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
         result
     }) {
@@ -303,4 +320,154 @@ fn bi_ssh_move(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         Ok(()) => Ok(Value::Undefined),
         Err(e) => Ok(crate::value::error_value(e)),
     }
+}
+
+/// has_switch 检查布尔开关是否存在。
+fn has_switch(args: &[Value], key: &str) -> bool {
+    let full = format!("--{}", key);
+    let short = format!("-{}", key);
+    args.iter().any(|arg| {
+        if let Value::Str(s) = arg { &**s == full || &**s == short }
+        else { false }
+    })
+}
+
+/// bi_ssh_sync 目录同步。
+fn bi_ssh_sync(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ssh_params(args)?;
+    let local_path = get_switch(args, "localPath", "");
+    let remote_path = get_switch(args, "remotePath", "");
+    let direction = get_switch(args, "direction", "push");
+    let recursive = has_switch(args, "recursive");
+    let delete_extra = has_switch(args, "delete");
+    let dry_run = has_switch(args, "dryRun");
+
+    if local_path.is_empty() || remote_path.is_empty() {
+        return Ok(crate::value::error_value("sshSync() 需要 --localPath 和 --remotePath 参数"));
+    }
+
+    match do_ssh(&params, |handle| async move {
+        let sftp = sftp_open(&handle).await?;
+        let mut log = Vec::new();
+        match direction.as_str() {
+            "push" => sync_push(&sftp, &local_path, &remote_path, recursive, delete_extra, dry_run, &mut log).await?,
+            "pull" => sync_pull(&sftp, &local_path, &remote_path, recursive, delete_extra, dry_run, &mut log).await?,
+            _ => return Err("--direction 只支持 push 或 pull".to_string()),
+        }
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok::<Vec<String>, String>(log)
+    }) {
+        Ok(log) => {
+            let result: Vec<Value> = log.into_iter().map(Value::str_from).collect();
+            Ok(Value::Array(Arc::new(std::sync::Mutex::new(result))))
+        }
+        Err(e) => Ok(crate::value::error_value(e)),
+    }
+}
+
+fn list_local_dir(path: &str) -> Result<Vec<(String, bool)>, String> {
+    let entries = std::fs::read_dir(path).map_err(|e| format!("读取本地目录 '{}' 失败: {}", path, e))?;
+    let mut result = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("读取条目失败: {}", e))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        result.push((name, is_dir));
+    }
+    Ok(result)
+}
+
+async fn list_remote_dir(sftp: &russh_sftp::client::SftpSession, path: &str) -> Result<Vec<(String, bool)>, String> {
+    let dir = sftp.read_dir(path).await
+        .map_err(|e| format!("SFTP 读取目录 '{}' 失败: {}", path, e))?;
+    let mut result = Vec::new();
+    for entry in dir {
+        let name = entry.file_name();
+        let is_dir = entry.file_type().is_dir();
+        result.push((name, is_dir));
+    }
+    Ok(result)
+}
+
+/// to_native_path 转为本地路径格式（Windows 加反斜杠）。
+fn to_native_path(p: &str) -> String {
+    if cfg!(windows) { p.replace('/', "\\") } else { p.to_string() }
+}
+
+/// join_path_unix 用 / 拼接路径（远程路径用 Unix 格式）。
+fn join_unix(base: &str, name: &str) -> String {
+    format!("{}/{}", base.trim_end_matches('/'), name)
+}
+
+async fn sync_push(
+    sftp: &russh_sftp::client::SftpSession, local: &str, remote: &str,
+    recursive: bool, delete_extra: bool, dry_run: bool, log: &mut Vec<String>,
+) -> Result<(), String> {
+    if !dry_run { let _ = sftp.create_dir(remote).await; }
+    let local_files = list_local_dir(local)?;
+    let remote_files = list_remote_dir(sftp, remote).await.unwrap_or_default();
+    for (name, is_dir) in &local_files {
+        let lp = join_unix(local, name);
+        let rp = join_unix(remote, name);
+        if *is_dir && recursive {
+            log.push(format!("DIR  → {}", rp));
+            Box::pin(sync_push(sftp, &lp, &rp, recursive, delete_extra, dry_run, log)).await?;
+        } else if !*is_dir {
+            if dry_run { log.push(format!("PUT  {} → {}", lp, rp)); }
+            else {
+                let data = std::fs::read(to_native_path(&lp)).map_err(|e| format!("读取 '{}' 失败: {}", lp, e))?;
+                let mut f = sftp.create(&rp).await.map_err(|e| format!("SFTP 创建 '{}' 失败: {}", rp, e))?;
+                use tokio::io::AsyncWriteExt;
+                f.write_all(&data).await.map_err(|e| format!("写入 '{}' 失败: {}", rp, e))?;
+                f.flush().await.ok();
+                log.push(format!("PUT  {} → {} ({} bytes)", lp, rp, data.len()));
+            }
+        }
+    }
+    if delete_extra {
+        let local_names: std::collections::HashSet<&str> = local_files.iter().map(|(n,_)| n.as_str()).collect();
+        for (name,_) in &remote_files {
+            if !local_names.contains(name.as_str()) {
+                let rp = join_unix(remote, name);
+                if dry_run { log.push(format!("DEL  {}", rp)); }
+                else { let _ = sftp.remove_file(&rp).await; log.push(format!("DEL  {}", rp)); }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn sync_pull(
+    sftp: &russh_sftp::client::SftpSession, local: &str, remote: &str,
+    recursive: bool, delete_extra: bool, dry_run: bool, log: &mut Vec<String>,
+) -> Result<(), String> {
+    if !dry_run { std::fs::create_dir_all(to_native_path(local)).map_err(|e| format!("创建本地目录 '{}' 失败: {}", local, e))?; }
+    let remote_files = list_remote_dir(sftp, remote).await?;
+    let local_files = list_local_dir(&to_native_path(local)).unwrap_or_default();
+    for (name, is_dir) in &remote_files {
+        let rp = join_unix(remote, name);
+        let lp = join_unix(local, name);
+        if *is_dir && recursive {
+            log.push(format!("DIR  ← {}", rp));
+            Box::pin(sync_pull(sftp, &lp, &rp, recursive, delete_extra, dry_run, log)).await?;
+        } else if !*is_dir {
+            if dry_run { log.push(format!("GET  {} → {}", rp, lp)); }
+            else {
+                let data = sftp.read(&rp).await.map_err(|e| format!("SFTP 读取 '{}' 失败: {}", rp, e))?;
+                std::fs::write(to_native_path(&lp), &data).map_err(|e| format!("写入 '{}' 失败: {}", lp, e))?;
+                log.push(format!("GET  {} → {} ({} bytes)", rp, lp, data.len()));
+            }
+        }
+    }
+    if delete_extra {
+        let remote_names: std::collections::HashSet<&str> = remote_files.iter().map(|(n,_)| n.as_str()).collect();
+        for (name,_) in &local_files {
+            if !remote_names.contains(name.as_str()) {
+                let lp = join_unix(local, name);
+                if dry_run { log.push(format!("DEL  {}", lp)); }
+                else { let _ = std::fs::remove_file(to_native_path(&lp)); log.push(format!("DEL  {}", lp)); }
+            }
+        }
+    }
+    Ok(())
 }
