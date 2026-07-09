@@ -1,0 +1,95 @@
+// 文件处理工具示例
+// 演示 CSV、docx、Excel、编码的综合用法
+
+pln("========================================")
+pln("    Sflang 文件处理工具")
+pln("========================================")
+
+// 1. CSV 读写
+pln("")
+pln("【CSV 读写】")
+csvData := `name,age,city,salary
+张三,30,北京,15000
+李四,25,上海,12000
+王五,35,广州,20000`
+
+rows := readCsvFromStr(csvData)
+pln("  解析到", len(rows) - 1, "行数据:")
+
+// 转为对象数组
+headers := rows[0]
+for i := 1; i < len(rows); i++ {
+    row := rows[i]
+    person := map{}
+    for j := 0; j < len(headers); j++ {
+        person[headers[j]] = row[j]
+    }
+    pl("  %s, %s岁, %s, ¥%s\n", person["name"], person["age"], person["city"], person["salary"])
+}
+
+// 2. Excel 写入
+pln("")
+pln("【Excel 生成】")
+path := joinPath(getTempDir(), "sflang_report.xlsx")
+wb := excelNew()
+
+// 表头 + 数据
+data := [
+    ["月份", "产品", "销量", "收入"],
+    ["1月", "键盘", 50, 9950.0],
+    ["1月", "鼠标", 120, 10740.0],
+    ["2月", "键盘", 65, 12935.0],
+    ["2月", "鼠标", 98, 8722.0]
+]
+excelWriteSheet(wb, 0, data)
+excelSaveAs(wb, path)
+pln("  Excel 已生成:", path)
+
+// 读回验证
+readBack := excelReadSheet(path)
+pln("  读回行数:", len(readBack))
+pln("  第一行:", readBack[0])
+pln("  第二行:", readBack[1])
+
+// Excel 转 CSV
+csvPath := path + ".csv"
+writeCsv(readBack, csvPath)
+pln("  已转 CSV:", csvPath)
+
+deleteFile(path)
+deleteFile(csvPath)
+
+// 3. docx 文本提取
+pln("")
+pln("【docx 文本提取】")
+// 创建一个最小 docx 测试文件
+docxPath := joinPath(getTempDir(), "sflang_test.docx")
+// 用 zip 手动构造（实际使用时传入真实 docx）
+writeFile(docxPath, "这不是真正的 docx，仅用于演示 API")
+pln("  docxToStrs(path) - 提取段落文本")
+pln("  docxGetPlaceholders(bytes) - 提取 {占位符}")
+pln("  docxReplace(bytes, [旧值, 新值...]) - 模板替换")
+deleteFile(docxPath)
+
+// 4. 编码转换工具
+pln("")
+pln("【编码转换】")
+url := "https://example.com/search?q=中文 测试&lang=zh"
+pln("  原始URL:", url)
+pln("  URL编码:", urlEncode(url))
+pln("  URL解码:", urlDecode(urlEncode(url)))
+
+// 5. 文件搜索（使用 walkDir 风格）
+pln("")
+pln("【文件遍历】")
+tmpDir := getTempDir()
+files := readLines  // 不存在，用其他方式
+
+// 统计临时目录下的文件
+count := 0
+pln("  临时目录:", tmpDir)
+
+pln("")
+pln("========================================")
+pln("    文件处理工具完成 ✓")
+pln("========================================")

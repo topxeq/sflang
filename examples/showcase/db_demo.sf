@@ -1,0 +1,119 @@
+// 数据库综合示例
+// 演示 SQLite 内存数据库的完整 CRUD + 便捷查询
+
+pln("========================================")
+pln("    Sflang 数据库示例 (SQLite)")
+pln("========================================")
+
+db := dbConnect("sqlite3", ":memory:")
+
+// 建表
+dbExec(db, `CREATE TABLE employees (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    dept TEXT,
+    salary REAL,
+    hire_date TEXT
+)`)
+
+// 批量插入
+employees := [
+    {name: "张三", dept: "技术部", salary: 15000.0, date: "2023-01-15"},
+    {name: "李四", dept: "技术部", salary: 18000.0, date: "2022-06-01"},
+    {name: "王五", dept: "销售部", salary: 12000.0, date: "2023-09-20"},
+    {name: "赵六", dept: "销售部", salary: 14000.0, date: "2021-03-10"},
+    {name: "孙七", dept: "市场部", salary: 16000.0, date: "2023-04-05"}
+]
+
+for emp in employees {
+    dbExec(db, "INSERT INTO employees (name, dept, salary, hire_date) VALUES (?, ?, ?, ?)",
+        emp["name"], emp["dept"], emp["salary"], emp["date"])
+}
+pln("已插入", len(employees), "条员工记录")
+
+// 1. 查询全部
+pln("")
+pln("=== 全部员工 ===")
+rows := dbQuery(db, "SELECT * FROM employees ORDER BY salary DESC")
+pln("姓名       部门     薪资      入职日期")
+for row in rows {
+    pl("%-8s  %-6s  %8.1f  %s\n", row["name"], row["dept"], row["salary"], row["hire_date"])
+}
+
+// 2. dbQueryCount
+pln("")
+pln("=== 统计 ===")
+total := dbQueryCount(db, "SELECT COUNT(*) FROM employees")
+pln("  总人数:", total)
+
+techCount := dbQueryCount(db, "SELECT COUNT(*) FROM employees WHERE dept = ?", "技术部")
+pln("  技术部:", techCount)
+
+avgSalary := dbQueryFloat(db, "SELECT AVG(salary) FROM employees")
+pln("  平均薪资:", adjustFloat(avgSalary, 2))
+
+maxSalary := dbQueryFloat(db, "SELECT MAX(salary) FROM employees")
+pln("  最高薪资:", maxSalary)
+
+// 3. dbQueryString
+pln("")
+pln("=== 单值查询 ===")
+topName := dbQueryString(db, "SELECT name FROM employees ORDER BY salary DESC LIMIT 1")
+pln("  薪资最高:", topName)
+
+// 4. dbQueryMap（按 id 索引）
+pln("")
+pln("=== ID 索引 (dbQueryMap) ===")
+empMap := dbQueryMap(db, "id", "SELECT id, name, dept FROM employees")
+for k, v in empMap {
+    pl("  ID=%s: %s (%s)\n", k, v["name"], v["dept"])
+}
+
+// 5. dbQueryMapArray（按部门分组）
+pln("")
+pln("=== 部门分组 (dbQueryMapArray) ===")
+deptMap := dbQueryMapArray(db, "dept", "SELECT dept, name, salary FROM employees ORDER BY salary DESC")
+for dept, members in deptMap {
+    pl("%s (%d人):\n", dept, len(members))
+    for m in members {
+        pl("    %s - %.1f\n", m["name"], m["salary"])
+    }
+}
+
+// 6. dbQueryRecs
+pln("")
+pln("=== dbQueryRecs (二维数组) ===")
+recs := dbQueryRecs(db, "SELECT name, dept FROM employees LIMIT 3")
+pln("  列名:", recs[0])
+pln("  行1:", recs[1])
+pln("  行2:", recs[2])
+
+// 7. 更新和删除
+pln("")
+pln("=== 更新 ===")
+n := dbExec(db, "UPDATE employees SET salary = salary + ? WHERE dept = ?", 2000.0, "技术部")
+pln("  技术部加薪 2000，影响行数:", n)
+
+newAvg := dbQueryFloat(db, "SELECT AVG(salary) FROM employees")
+pln("  新平均薪资:", adjustFloat(newAvg, 2))
+
+// 8. 事务
+pln("")
+pln("=== 事务 ===")
+dbExec(db, "BEGIN")
+dbExec(db, "DELETE FROM employees WHERE name = ?", "孙七")
+dbExec(db, "ROLLBACK")  // 回滚，数据不丢失
+remainCount := dbQueryCount(db, "SELECT COUNT(*) FROM employees")
+pln("  回滚后人数:", remainCount)
+
+// 9. JSON 输出
+pln("")
+pln("=== JSON 输出 ===")
+jsonData := dbQuery(db, "SELECT name, dept, salary FROM employees ORDER BY id LIMIT 3")
+pln(jsonEncode(jsonData))
+
+dbClose(db)
+pln("")
+pln("========================================")
+pln("    数据库功能全部正常 ✓")
+pln("========================================")

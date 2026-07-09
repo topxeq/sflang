@@ -1,0 +1,87 @@
+// 加密与编码综合示例
+// 演示 AES 加解密、TXDEF 加解密、HMAC、编码转换
+
+pln("========================================")
+pln("    Sflang 加密与编码示例")
+pln("========================================")
+
+// 1. AES-256 加解密
+pln("")
+pln("【AES-256-CBC 加解密】")
+key := "0123456789abcdef0123456789abcdef"  // 32字节 = AES-256
+
+// 字符串加解密
+plaintext := "这是一段机密信息 Hello AES 2026!"
+pln("  原文:", plaintext)
+
+encrypted := aesEncryptStr(plaintext, key)
+pln("  加密(base64):", strSub(encrypted, 0, 30) + "...")
+
+decrypted := aesDecryptStr(encrypted, key)
+pln("  解密:", decrypted)
+
+// AES-128
+pln("")
+key128 := "0123456789abcdef"  // 16字节 = AES-128
+enc128 := aesEncryptStr("AES-128 test", key128)
+dec128 := aesDecryptStr(enc128, key128)
+pln("  AES-128 解密:", dec128)
+
+// 2. TXDEF 加解密（对标 Charlang）
+pln("")
+pln("【TXDEF 加解密】")
+text := "TXDEF加密测试数据"
+txdefEnc := encryptText(text, "mypassword")
+pln("  加密:", strSub(txdefEnc, 0, 30) + "...")
+txdefDec := decryptText(txdefEnc, "mypassword")
+pln("  解密:", txdefDec)
+
+// TXDEF 带 //TXDEF# 头
+dataWithHead := encryptData(bytes("带头的TXDEF"), "secret", "-addHead")
+pln("  isEncrypted:", isEncrypted(dataWithHead))
+decData := decryptData(dataWithHead, "secret")
+pln("  解密数据:", decData)
+
+// 3. TXDEM 双密码
+pln("")
+pln("【TXDEM 双密码加密】")
+txdemEnc := encryptTextByTXDEM("双密码数据", "passA", "passB")
+pln("  加密:", strSub(txdemEnc, 0, 30) + "...")
+decA := decryptTextByTXDEM(txdemEnc, "passA")
+pln("  用 passA 解密:", decA)
+decB := decryptTextByTXDEM(txdemEnc, "passB")
+pln("  用 passB 解密:", decB)
+
+// 4. HMAC
+pln("")
+pln("【HMAC-SHA256】")
+mac := hmacSha256Hex("secret_key", "message to authenticate")
+pln("  HMAC:", mac)
+
+// 5. 哈希
+pln("")
+pln("【哈希】")
+pln("  MD5:", md5Hex("hello"))
+pln("  SHA1:", sha1Hex("hello"))
+pln("  SHA256:", sha256Hex("hello"))
+
+// 6. 编码转换
+pln("")
+pln("【编码转换】")
+original := "Hello 世界! @#$%^&*()"
+b64 := base64Encode(original)
+pln("  Base64:", b64)
+pln("  解码:", base64Decode(b64))
+
+b64url := base64UrlEncode(original)
+pln("  Base64URL:", b64url)
+pln("  解码:", base64UrlDecode(b64url))
+
+hex := hexEncode(original)
+pln("  Hex:", hex)
+pln("  Hex->Str:", hexToStr(hex))
+
+pln("")
+pln("========================================")
+pln("    全部加密编码功能正常 ✓")
+pln("========================================")

@@ -1,0 +1,104 @@
+// SSH 远程操作示例
+// 用法：sf ssh_demo.sf "host" "user" "password"
+// 示例：sf ssh_demo.sf "192.168.1.1" "root" "mypassword"
+
+host := getParam(argsG, 0, "")
+if host == "" {
+    pln("用法：sf ssh_demo.sf \"host\" \"user\" \"password\"")
+    pln("示例：sf ssh_demo.sf \"192.168.1.1\" \"root\" \"mypass\"")
+    pln("")
+    pln("或使用密钥：sf ssh_demo.sf \"192.168.1.1\" \"deploy\" \"\" \"C:/path/to/key\"")
+} else {
+
+user := getParam(argsG, 1, "root")
+pass := getParam(argsG, 2, "")
+keyPath := getParam(argsG, 3, "")
+
+// 构建认证参数
+authParams := ["--host=" + host, "--user=" + user]
+if keyPath != "" {
+    push(authParams, "--key=" + keyPath)
+} else {
+    push(authParams, "--password=" + pass)
+}
+
+pln("========================================")
+pln("    Sflang SSH 操作示例")
+pln("========================================")
+
+// 1. 执行远程命令
+pln("")
+pln("【1. 系统信息】")
+sysinfo := sshRun(authParams[0], authParams[1], authParams[2], "uname -a && echo '---' && df -h / | tail -1")
+pln(sysinfo)
+
+// 2. 列目录
+pln("【2. /tmp 目录】")
+files := sshList(authParams[0], authParams[1], authParams[2], "--remotePath=/tmp")
+if isErr(files) {
+    pln("  失败:", getErrStr(files))
+} else {
+    pln("  文件数:", len(files))
+    for f in files {
+        if len(f) > 0 { pl("  %s\n", f) }
+    }
+}
+
+// 3. 上传文件
+pln("【3. 上传文件】")
+localFile := joinPath(getTempDir(), "sflang_ssh_demo.txt")
+writeFile(localFile, "Sflang SSH upload demo\n部署时间: " + toStr(nowDT()) + "\n")
+
+uploadArgs := deepClone(authParams)
+push(uploadArgs, "--localPath=" + localFile)
+push(uploadArgs, "--remotePath=/tmp/sflang_ssh_demo.txt")
+up := sshUpload(uploadArgs[0], uploadArgs[1], uploadArgs[2], uploadArgs[3], uploadArgs[4])
+if isErr(up) {
+    pln("  上传失败:", getErrStr(up))
+} else {
+    pln("  上传成功")
+}
+
+// 4. 验证远程文件
+pln("【4. 验证远程文件】")
+verifyCmd := "cat /tmp/sflang_ssh_demo.txt"
+runArgs := deepClone(authParams)
+push(runArgs, verifyCmd)
+pln("  ", sshRun(runArgs[0], runArgs[1], runArgs[2], runArgs[3]))
+
+// 5. 目录同步
+pln("【5. 目录同步 dryRun】")
+syncArgs := deepClone(authParams)
+push(syncArgs, "--localPath=" + getTempDir())
+push(syncArgs, "--remotePath=/tmp/sflang_sync_demo")
+push(syncArgs, "--direction=push")
+push(syncArgs, "--dryRun")
+log := sshSync(syncArgs[0], syncArgs[1], syncArgs[2], syncArgs[3], syncArgs[4], syncArgs[5], syncArgs[6])
+if isErr(log) {
+    pln("  失败:", getErrStr(log))
+} else {
+    pln("  计划操作:")
+    for l in log {
+        pl("    %s\n", l)
+    }
+}
+
+// 6. 命令超时
+pln("【6. 命令超时测试】")
+timeoutArgs := deepClone(authParams)
+push(timeoutArgs, "--cmdTimeout=3")
+push(timeoutArgs, "echo 'fast command'")
+pln("  3秒超时 echo:", sshRun(timeoutArgs[0], timeoutArgs[1], timeoutArgs[2], timeoutArgs[3], timeoutArgs[4]))
+
+// 清理
+cleanupArgs := deepClone(authParams)
+push(cleanupArgs, "rm -f /tmp/sflang_ssh_demo.txt")
+sshRun(cleanupArgs[0], cleanupArgs[1], cleanupArgs[2], cleanupArgs[3])
+deleteFile(localFile)
+
+pln("")
+pln("========================================")
+pln("    SSH 操作全部完成 ✓")
+pln("========================================")
+
+}

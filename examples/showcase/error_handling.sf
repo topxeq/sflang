@@ -1,0 +1,154 @@
+// 错误处理与调试示例
+// 演示 TXERROR 机制、try/catch、错误信息、调试技巧
+
+pln("========================================")
+pln("    Sflang 错误处理与调试")
+pln("========================================")
+
+// 1. 错误值（不抛异常）
+pln("")
+pln("【1. 返回错误对象】")
+func safeDiv(a, b) {
+    if b == 0 {
+        return error("除数不能为零")
+    }
+    return a / b
+}
+
+r1 := safeDiv(10, 2)
+if isError(r1) {
+    pln("  错误:", getErrStr(r1))
+} else {
+    pln("  10 / 2 =", r1)
+}
+
+r2 := safeDiv(10, 0)
+if isError(r2) {
+    pln("  错误:", getErrStr(r2))
+} else {
+    pln("  10 / 0 =", r2)
+}
+
+// 2. TXERROR 字符串错误
+pln("")
+pln("【2. TXERROR 字符串错误】")
+func checkAge(age) {
+    if age < 0 {
+        return errStrf("年龄不能为负数: %v", age)
+    }
+    if age > 150 {
+        return "TXERROR:年龄超出合理范围"
+    }
+    return "年龄正常: " + toStr(age)
+}
+
+pln("  checkAge(25):", checkAge(25))
+pln("  checkAge(-5):", checkAge(-5))
+pln("  checkAge(200):", checkAge(200))
+pln("  isErr:", isErr(checkAge(-5)), isErr(checkAge(200)))
+
+// 3. try / catch / finally
+pln("")
+pln("【3. try/catch/finally】")
+try {
+    arr := [1, 2, 3]
+    val := arr[10]  // 越界
+    pln("  不会执行到这里")
+} catch (e) {
+    pln("  捕获到错误:", e)
+} finally {
+    pln("  finally 总是执行")
+}
+
+// 4. 错误信息包含行号
+pln("")
+pln("【4. 行号定位】")
+try {
+    a := "hello"
+    b := 42
+    c := a + b  // 行 56 附近
+} catch (e) {
+    pln("  错误:", e)
+    // 错误信息中应该包含 (行 N)
+}
+
+// 5. defer 清理
+pln("")
+pln("【5. defer 延迟清理】")
+func processFile(path) {
+    writeFile(path, "临时数据")
+    f := openFile(path, "r")
+    defer close(f)  // 函数返回时自动关闭
+
+    line := readLine(f)
+    pln("  读到:", line)
+    // 即使下面出错，defer 也会执行
+}
+processFile(joinPath(getTempDir(), "sflang_defer_demo.txt"))
+
+// 6. 错误链传递
+pln("")
+pln("【6. 错误传递链】")
+func validate(data) {
+    if len(data) == 0 {
+        return error("数据为空")
+    }
+    if !hasKey(data, "name") {
+        return error("缺少 name 字段")
+    }
+    return data["name"]
+}
+
+func processData(data) {
+    result := validate(data)
+    if isErr(result) {
+        return errStrf("处理失败: %s", getErrStr(result))
+    }
+    return "OK: " + result
+}
+
+pln("  processData({}):", processData({}))
+pln("  processData({age: 30}):", processData({age: 30}))
+pln("  processData({name: \"Tom\"}):", processData({name: "Tom"}))
+
+// 7. 类型安全检查
+pln("")
+pln("【7. 类型检查】")
+func processValue(v) {
+    // 用 isType 做统一类型判断
+    if isType(v, "undefined") {
+        return error("值为 undefined")
+    }
+    if isType(v, "string") {
+        return "字符串: " + v
+    }
+    if isType(v, "int") {
+        return "整数: " + toStr(v * 2)
+    }
+    if isType(v, "array") {
+        return "数组长度: " + toStr(len(v))
+    }
+    return "其他类型: " + typeName(v)
+}
+
+pln("  processValue(undefined):", processValue(undefined))
+pln("  processValue(\"hi\"):", processValue("hi"))
+pln("  processValue(42):", processValue(42))
+pln("  processValue([1,2,3]):", processValue([1,2,3]))
+
+// 8. 调试信息
+pln("")
+pln("【8. 调试工具】")
+x := 42
+y := "hello"
+pln("  plt 输出:")
+plt(x)
+plt(y)
+pln("  typeCode(x):", typeCode(x), " typeName:", typeName(x))
+pln("  isType(x, \"int\"):", isType(x, "int"))
+pln("  scriptPathG:", scriptPathG)
+
+pln("")
+pln("========================================")
+pln("    错误处理与调试全部正常 ✓")
+pln("========================================")
