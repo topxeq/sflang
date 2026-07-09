@@ -54,6 +54,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("pass", bi_pass);
     vm.register_builtin("plt", bi_plt);
     vm.register_builtin("getParam", bi_get_param);
+    vm.register_builtin("getSwitch", bi_get_switch);
+    vm.register_builtin("ifSwitchExists", bi_if_switch_exists);
     vm.register_builtin("toStr", bi_string);
     vm.register_builtin("toInt", bi_int);
     vm.register_builtin("toFloat", bi_float);
@@ -1312,7 +1314,44 @@ fn bi_get_param(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }))
 }
 
-/// bi_compile 编译一段代码字符串，返回编译后的 Code 对象。
+/// bi_get_switch 从参数数组中按 --key=value 或 -key=value 格式提取开关值。
+///
+/// 用法：
+///   getSwitch(argsG, "--host=", "localhost")  → 匹配 --host=xxx 返回 xxx
+///   getSwitch(argsG, "-port=", "22")          → 匹配 -port=xxx 返回 xxx
+///
+/// key 参数应包含前缀（- 或 --）和等号（=）。
+/// 如果找不到匹配，返回 default。
+fn bi_get_switch(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let arr = match args.get(0) {
+        Some(Value::Array(a)) => a.lock().unwrap().clone(),
+        _ => return Ok(args.get(2).cloned().unwrap_or(Value::Undefined)),
+    };
+    let key = args.get(1).map(|v| v.to_str()).unwrap_or_default();
+    let default = args.get(2).cloned().unwrap_or(Value::Undefined);
+
+    for arg in &arr {
+        let s = arg.to_str();
+        if s.starts_with(&key) {
+            let val = &s[key.len()..];
+            return Ok(Value::str(val));
+        }
+    }
+    Ok(default)
+}
+
+/// bi_if_switch_exists 检查参数数组中是否存在某个开关（布尔型，无值）。
+///
+/// 用法：ifSwitchExists(argsG, "--verbose")  → true/false
+///       ifSwitchExists(argsG, "-v")         → true/false
+fn bi_if_switch_exists(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let arr = match args.get(0) {
+        Some(Value::Array(a)) => a.lock().unwrap().clone(),
+        _ => return Ok(Value::Bool(false)),
+    };
+    let key = args.get(1).map(|v| v.to_str()).unwrap_or_default();
+    Ok(Value::Bool(arr.iter().any(|arg| arg.to_str() == key)))
+}
 fn bi_compile(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
     let src = bh::as_str(args, 0, "compile")?;
