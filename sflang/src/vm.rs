@@ -358,10 +358,13 @@ impl VM {
                 | Opcode::BitAnd | Opcode::BitOr | Opcode::BitXor | Opcode::BitShl | Opcode::BitShr => {
                     let b = self.pop();
                     let a = self.pop();
-                    match arith_op(op, a, b) {
+                    match arith_op(op, a.clone(), b.clone()) {
                         Ok(r) => self.push(r),
                         Err(e) => {
-                            return self.handle_throw(frame, error_value(e));
+                            let line = frame.code.get_line(frame.ip);
+                            let detail = format!("{} (行 {}: {} {:?} {} [{}] 和 {} [{}])",
+                                e, line, "运算", op, a.type_name(), a.inspect(), b.type_name(), b.inspect());
+                            return self.handle_throw(frame, error_value(detail));
                         }
                     }
                     frame.ip += 1;

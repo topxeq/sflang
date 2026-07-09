@@ -921,6 +921,7 @@ impl Compiler {
                             BinaryOp::And | BinaryOp::Or | BinaryOp::NullCoal => unreachable!(),
                         };
                         self.code.emit(opcode);
+                        self.set_line(tok.line);
                     }
                 }
             }

@@ -380,6 +380,15 @@ impl Code {
         }
     }
 
+    /// get_line 获取指定指令位置的源码行号。
+    pub fn get_line(&self, ip: usize) -> u32 {
+        if ip < self.lines.len() {
+            self.lines[ip]
+        } else {
+            0
+        }
+    }
+
     /// add_const 添加常量（自动去重），返回索引。
     ///
     /// 去重用 PartialEq（严格类型+值匹配），不用 equals（跨数值类型判等）。
