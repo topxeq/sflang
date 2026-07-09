@@ -1,0 +1,140 @@
+// le 文本编辑器实用场景示例
+// 演示远程日志分析、代码批量修改、文本处理管道
+
+pln("========================================")
+pln("    Sflang le 文本编辑器实用场景")
+pln("========================================")
+
+// ---- 场景 1：日志分析 ----
+pln("")
+pln("【场景1: 日志分析】")
+logText := `[2024-01-15 10:32:01] INFO  Server started on port 8080
+[2024-01-15 10:32:05] WARN  Cache miss for key user:42
+[2024-01-15 10:33:12] ERROR Database connection timeout
+[2024-01-15 10:33:15] ERROR Retry connection (attempt 1)
+[2024-01-15 10:33:20] INFO  Database reconnected
+[2024-01-15 10:34:00] WARN  High memory usage: 85%
+[2024-01-15 10:35:30] ERROR Query failed: table not found
+[2024-01-15 10:36:00] INFO  Request processed in 120ms`
+
+leLoadFromStr(logText)
+
+// 统计
+pln("  总行数:", leInfo()["lineCount"])
+
+// 提取所有 ERROR 行
+pln("")
+pln("  ERROR 行:")
+errorLines := leFindLines("ERROR", "-print")
+
+// 提取所有 WARN 行
+pln("")
+pln("  WARN 行:")
+warnLines := leFindLines("WARN", "-print")
+
+// 提取时间戳
+pln("")
+pln("  所有时间戳:")
+timestamps := leFindAll(`\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]`, 1)
+for ts in timestamps {
+    pl("    %s (行 %v)\n", ts["text"], ts["line"])
+}
+
+// ---- 场景 2：代码批量修改 ----
+pln("")
+pln("【场景2: 代码批量修改】")
+codeText := `func processData(input) {
+    var result = input.toString()
+    var count = input.length
+    return result + count
+}
+
+func calculate(a, b) {
+    var sum = a + b
+    var diff = a - b
+    return sum * diff
+}`
+
+leLoadFromStr(codeText)
+
+// 将 var 替换为冒号声明风格
+leReplace(`\bvar\s+(\w+)\s*=`, "${1} :=")
+pln("  替换 var → :=")
+lePrint("-lineNumber")
+
+// 查找所有函数名
+pln("")
+pln("  函数名:")
+funcs := leFindAll(`func\s+(\w+)`, 1)
+for f in funcs {
+    pl("    %s (行 %v)\n", f["text"], f["line"])
+}
+
+// ---- 场景 3：CSV 处理 ----
+pln("")
+pln("【场景3: CSV 数据处理】")
+csvText := `name,department,salary
+Alice,Engineering,95000
+Bob,Sales,72000
+Charlie,Engineering,88000
+Diana,Marketing,68000
+Eve,Engineering,102000`
+
+leLoadFromStr(csvText)
+
+// 按行排序
+leSort()
+pln("  排序后:")
+lePrint("-lineNumber")
+
+// 只保留 Engineering 部门的行
+pln("")
+pln("  Engineering 部门:")
+engLines := leFindLines("Engineering")
+pln("  行号:", engLines)
+
+// ---- 场景 4：去重 ----
+pln("")
+pln("【场景4: 去重】")
+dupText := `apple
+banana
+apple
+cherry
+banana
+date
+apple`
+
+leLoadFromStr(dupText)
+
+// 排序后去重（简单方法）
+leSort()
+pln("  排序后:")
+lePrint("-lineNumber")
+
+// 手动去重
+lines := leGetList()
+unique := []
+seen := map{}
+for line in lines {
+    if !hasKey(seen, line) {
+        seen[line] = true
+        push(unique, line)
+    }
+}
+leSetLines(unique)
+pln("  去重后:")
+lePrint("-lineNumber")
+
+// ---- 场景 5：远程文件操作 ----
+pln("")
+pln("【场景5: 远程文件操作（SSH）】")
+pln("  leLoadFromSsh(\"--host=server\", \"--user=root\", \"--password=xxx\",")
+pln("                 \"--remotePath=/var/log/app.log\")")
+pln("  leReplace(\"DEBUG.*\", \"\")  // 清除 DEBUG 行")
+pln("  leSaveToSsh(\"--host=server\", \"--user=root\", \"--password=xxx\",")
+pln("              \"--remotePath=/tmp/app_clean.log\")")
+
+pln("")
+pln("========================================")
+pln("    le 文本编辑器全部场景完成 ✓")
+pln("========================================")

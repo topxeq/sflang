@@ -58,10 +58,11 @@ pub fn register(vm: &mut VM) {
 // ---- 辅助 ----
 
 fn get_switch(args: &[Value], key: &str, default: &str) -> String {
-    let prefix = format!("-{}=", key);
+    let prefix1 = format!("--{}=", key);
+    let prefix2 = format!("-{}=", key);
     for arg in args {
         if let Value::Str(s) = arg {
-            if let Some(rest) = s.strip_prefix(&prefix) {
+            if let Some(rest) = s.strip_prefix(&prefix1).or_else(|| s.strip_prefix(&prefix2)) {
                 return rest.to_string();
             }
         }
