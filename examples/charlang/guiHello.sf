@@ -37,7 +37,8 @@ guiSetHandler(win, func(msg) {
         guiEval(win, `document.getElementById('output').innerHTML = '<b>Hello from Sflang!</b>'`)
     }
     if msg == "time" {
-        guiEval(win, `document.getElementById('output').innerHTML = 'Sflang time: ` + now() + `'`)
+        t := toStr(nowDT())
+        guiEval(win, `document.getElementById('output').innerHTML = 'Sflang time: ` + t + `'`)
     }
     if msg == "close" {
         pln("用户请求关闭窗口")
