@@ -21,8 +21,8 @@ use crate::vm::VM;
 pub fn register(vm: &mut VM) {
     vm.register_builtin("sshRun", bi_ssh_run);
     vm.register_builtin("sshList", bi_ssh_list);
-    vm.register_builtin("sshUpload", bi_ssh_upload);
-    vm.register_builtin("sshDownload", bi_ssh_download);
+    vm.register_builtin("sshUpload", ssh_upload_impl);
+    vm.register_builtin("sshDownload", ssh_download_impl);
     vm.register_builtin("sshMkdir", bi_ssh_mkdir);
     vm.register_builtin("sshRemove", bi_ssh_remove);
     vm.register_builtin("sshMove", bi_ssh_move);
@@ -208,7 +208,7 @@ fn bi_ssh_list(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
 }
 
-fn bi_ssh_upload(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+pub fn ssh_upload_impl(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let params = parse_ssh_params(args)?;
     let local_path = get_switch(args, "localPath", "");
     let remote_path = get_switch(args, "remotePath", "");
@@ -236,7 +236,7 @@ fn bi_ssh_upload(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
 }
 
-fn bi_ssh_download(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+pub fn ssh_download_impl(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let params = parse_ssh_params(args)?;
     let remote_path = get_switch(args, "remotePath", "");
     let local_path = get_switch(args, "localPath", "");

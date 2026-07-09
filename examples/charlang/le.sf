@@ -1,27 +1,57 @@
-// port of le.char — 文本统计（行数/词数/字符数）
-// 用法：sf le.sf 文件名
+// le 文本编辑器示例（对标 Charlang le.char）
+// 演示行加载、排序、插入、删除、查找、替换等全部操作
 
-pathA := getParam(argsG, 0, "")
-if pathA == "" {
-    pln("用法：sf le.sf <文件名>")
-} else {
-content := readFile(pathA)
+// 加载文本
+leLoadFromStr(`Three bulls fed in a field together in the greatest peace and amity.
+A lion had long watched them in the hope of making a prize of them.
+No sooner did the lion see that they avoided one another.
+The quarrels of friends are the opportunities of foes.`)
 
-lines := strSplitLines(content)
-lineCount := len(lines)
+pln("=== 加载并打印 ===")
+pln("行数:", leInfo()["lineCount"])
+lePrint("-lineNumber")
 
-// 词数（按空格分割）
-wordCount := 0
-for line in lines {
-    words := strSplit(strTrim(line), " ")
-    wordCount += len(words)
-}
+// 排序
+pln("")
+pln("=== 排序（升序）===")
+leSort()
+lePrint("-lineNumber")
 
-charCount := len(content)
-byteCount := lenBytes(content)
+// 插入和追加
+pln("")
+pln("=== 插入/追加 ===")
+leInsertLine(0, "[INSERTED AT TOP]")
+leAppendLine("[APPENDED AT END]")
+lePrint("-lineNumber")
 
-pl("行数: %d\n", lineCount)
-pl("词数: %d\n", wordCount)
-pl("字符数: %d\n", charCount)
-pl("字节数: %d\n", byteCount)
-}
+// 查找
+pln("")
+pln("=== 查找含 'lion' 的行 ===")
+leFindLines("lion", "-print")
+
+// 替换
+pln("")
+pln("=== 替换 'lion' → 'tiger' ===")
+leReplace("lion", "tiger")
+lePrint("-lineNumber")
+
+// 范围获取
+pln("")
+pln("=== leGetList(1, 3) ===")
+pln(leGetList(1, 3))
+
+// 保存
+pln("")
+pln("=== leSaveToStr ===")
+pln(leSaveToStr())
+
+// 清空
+pln("")
+pln("=== 清空 ===")
+leClear()
+pln("行数:", leInfo()["lineCount"])
+
+pln("")
+pln("=== SSH 操作 ===")
+pln("leLoadFromSsh(\"--host=...\", \"--remotePath=/etc/hosts\")")
+pln("leSaveToSsh(\"--host=...\", \"--remotePath=/tmp/edited.txt\")")
