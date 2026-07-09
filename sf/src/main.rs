@@ -57,16 +57,15 @@ fn main() -> ExitCode {
             run_string(code, "<-e>", script_args)
         }
         "--build" | "-b" => {
+            // sf --build <script.sf> [--output path]
             if args.len() < 3 {
                 eprintln!("错误：--build 需要一个脚本文件参数");
-                eprintln!("用法：sf --build <script.sf> [output.exe]");
+                eprintln!("用法：sf --build <script.sf> [--output <输出路径>]");
                 return ExitCode::from(1);
             }
             let script_path = &args[2];
-            let output_path = if args.len() > 3 {
-                args[3].clone()
-            } else {
-                // 默认输出名：去掉 .sf 加 .exe（Windows）或无扩展名（Linux）
+            // 解析 --output 参数
+            let mut output_path = {
                 let base = script_path.trim_end_matches(".sf");
                 if cfg!(windows) {
                     format!("{}.exe", base)
@@ -74,6 +73,15 @@ fn main() -> ExitCode {
                     base.to_string()
                 }
             };
+            let mut i = 3;
+            while i < args.len() {
+                if (args[i] == "--output" || args[i] == "-o") && i + 1 < args.len() {
+                    output_path = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
             build_executable(script_path, &output_path)
         }
         "-v" | "--version" => {
@@ -378,6 +386,7 @@ fn print_help() {
     println!("  sf <script.sf> [args...] 执行脚本文件，参数存入 argsG");
     println!("  sf -e \"<code>\"           执行代码字符串");
     println!("  sf --build <script.sf>   编译脚本为独立可执行文件");
+    println!("      [--output <路径>]    指定输出路径");
     println!("  sf -h | --help | help    显示此帮助");
     println!("  sf -v | --version        显示版本");
     println!();
