@@ -1,0 +1,106 @@
+// 系统操作示例
+// 演示 systemCmd、环境变量、文件系统操作、命令行参数解析
+
+pln("========================================")
+pln("    Sflang 系统操作示例")
+pln("========================================")
+
+// 1. 系统信息
+pln("")
+pln("【1. 系统信息】")
+pln("  操作系统:", osName())
+pln("  CPU架构:", osArch())
+pln("  当前目录:", getCurDir())
+pln("  主目录:", getHomeDir())
+pln("  临时目录:", getTempDir())
+
+// 2. 环境变量
+pln("")
+pln("【2. 环境变量】")
+if osName() == "windows" {
+    pln("  USERNAME:", getEnv("USERNAME"))
+    pln("  COMPUTERNAME:", getEnv("COMPUTERNAME"))
+} else {
+    pln("  USER:", getEnv("USER"))
+    pln("  HOME:", getEnv("HOME"))
+}
+pln("  PATH 长度:", len(getEnv("PATH")))
+
+// 设置环境变量
+setEnv("SFLANG_TEST", "hello from sflang")
+pln("  自定义变量:", getEnv("SFLANG_TEST"))
+
+// 3. 执行系统命令
+pln("")
+pln("【3. 系统命令】")
+if osName() == "windows" {
+    pln("  whoami:", trim(systemCmd("whoami")))
+    pln("  date:", trim(systemCmd("echo %date%")))
+    pln("  ipconfig (前3行):")
+    lines := strSplitLines(systemCmd("ipconfig"))
+    for i := 0; i < 3 && i < len(lines); i++ {
+        pl("    %s\n", lines[i])
+    }
+} else {
+    pln("  whoami:", trim(systemCmd("whoami")))
+    pln("  date:", trim(systemCmd("date")))
+    pln("  disk usage:")
+    pln("  ", trim(systemCmd("df -h / | tail -1")))
+}
+
+// 4. 命令行参数解析
+pln("")
+pln("【4. 命令行参数】")
+pln("  完整参数:", getOsArgs())
+pln("  argsG:", argsG)
+pln("  scriptPathG:", scriptPathG)
+
+// 演示 getSwitch
+// sf system_demo.sf --name=Tom --age=25 --verbose
+name := getSwitch(argsG, "--name=", "未指定")
+age := getSwitch(argsG, "--age=", "0")
+verbose := ifSwitchExists(argsG, "--verbose")
+pln("  --name:", name)
+pln("  --age:", age)
+pln("  --verbose:", verbose)
+
+// 5. 文件系统操作
+pln("")
+pln("【5. 文件系统】")
+testDir := joinPath(getTempDir(), "sflang_sys_demo")
+makeDirAll(testDir)
+
+// 创建文件
+writeFile(joinPath(testDir, "a.txt"), "文件A内容")
+writeFile(joinPath(testDir, "b.txt"), "文件B内容")
+makeDir(joinPath(testDir, "subdir"))
+
+// 列目录
+pln("  创建目录:", testDir)
+pln("  内容:", listDir(testDir))
+
+// 重命名
+rename(joinPath(testDir, "a.txt"), joinPath(testDir, "a_renamed.txt"))
+pln("  重命名后:", listDir(testDir))
+
+// 路径操作
+pln("")
+pln("【6. 路径操作】")
+p := joinPath(testDir, "subdir", "file.txt")
+pln("  joinPath:", p)
+pln("  dirName:", dirName(p))
+pln("  baseName:", baseName(p))
+pln("  fileExt:", fileExt(p))
+pln("  absPath:", absPath("./test"))
+
+// 清理
+deleteFile(joinPath(testDir, "a_renamed.txt"))
+deleteFile(joinPath(testDir, "b.txt"))
+removeDir(joinPath(testDir, "subdir"))
+removeDir(testDir)
+pln("  清理完成")
+
+pln("")
+pln("========================================")
+pln("    系统操作全部正常 ✓")
+pln("========================================")

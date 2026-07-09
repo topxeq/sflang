@@ -1,0 +1,67 @@
+// 编译为可执行文件示例
+// 演示 sf --build 功能和打包后的使用
+
+pln("========================================")
+pln("    Sflang 编译可执行文件示例")
+pln("========================================")
+
+pln("")
+pln("用法：")
+pln("  sf --build script.sf                    # 生成 script.exe")
+pln("  sf --build script.sf --output app.exe   # 指定输出名")
+
+pln("")
+pln("原理：")
+pln("  1. 复制 sf.exe 全部内容")
+pln("  2. 在末尾追加 [脚本UTF-8][长度u64][SFLANG_PACK]")
+pln("  3. 生成的 exe 运行时检测嵌入脚本并执行")
+
+pln("")
+pln("特性：")
+pln("  - 无需 Rust 工具链")
+pln("  - 无需 sf.exe 或 .sf 文件")
+pln("  - 命令行参数传入 argsG")
+pln("  - scriptPathG = '<embedded>'")
+pln("  - Windows 自动 .exe 后缀，Linux 自动 755 权限")
+
+pln("")
+pln("示例 — 打包一个 Hello World：")
+
+// 生成测试脚本
+helloScript := `// 打包后的独立程序
+pln("Hello from standalone Sflang!")
+pln("我是独立可执行文件，不需要 sf.exe")
+pln("参数:", argsG)
+pln("时间:", toStr(nowDT()))
+`
+
+testScript := joinPath(getTempDir(), "hello_standalone.sf")
+writeFile(testScript, helloScript)
+outputExe := joinPath(getTempDir(), "hello_standalone.exe")
+
+// 用 systemCmd 调用 sf --build
+sfExe := getOsArgs()[0]
+pln("正在编译...")
+buildCmd := sfExe + " --build " + testScript + " --output " + outputExe
+result := systemCmd(buildCmd)
+if isErr(result) {
+    pln("编译输出:", result)
+} else {
+    pln(trim(result))
+}
+
+// 运行编译后的程序
+pln("")
+pln("运行编译后的程序:")
+runResult := systemCmd(outputExe + " arg1 arg2")
+pln(runResult)
+
+// 清理
+deleteFile(testScript)
+deleteFile(outputExe)
+pln("清理完成")
+
+pln("")
+pln("========================================")
+pln("    编译功能演示完成 ✓")
+pln("========================================")

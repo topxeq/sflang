@@ -1,0 +1,75 @@
+// 命令行参数解析综合示例
+// 用法：sf getSwitch_demo.sf arg1 arg2 --name=Alice --age=30 --verbose --tags=a --tags=b
+
+pln("========================================")
+pln("    命令行参数解析")
+pln("========================================")
+
+pln("")
+pln("完整参数:")
+allArgs := getOsArgs()
+for i, a in allArgs {
+    pl("  [%d] %s\n", i, a)
+}
+
+pln("")
+pln("argsG (脚本参数):")
+for i, a in argsG {
+    pl("  [%d] %s\n", i, a)
+}
+
+pln("")
+pln("【位置参数】")
+pln("  getParam(0):", getParam(argsG, 0, "(无)"))
+pln("  getParam(1):", getParam(argsG, 1, "(无)"))
+pln("  getParam(2):", getParam(argsG, 2, "(无)"))
+
+pln("")
+pln("【开关参数】")
+pln("  --name:", getSwitch(argsG, "--name=", "未指定"))
+pln("  --age:", getSwitch(argsG, "--age=", "0"))
+pln("  --port:", getSwitch(argsG, "--port=", "8080"))
+pln("  -debug:", getSwitch(argsG, "-debug=", "false"))
+
+pln("")
+pln("【布尔开关】")
+pln("  --verbose:", ifSwitchExists(argsG, "--verbose"))
+pln("  -v:", ifSwitchExists(argsG, "-v"))
+pln("  --help:", ifSwitchExists(argsG, "--help"))
+
+pln("")
+pln("【多值开关】")
+tags := getAllSwitches(argsG, "--tags=")
+pln("  --tags:", tags)
+pln("  数量:", len(tags))
+
+files := getAllSwitches(argsG, "--file=")
+pln("  --file:", files)
+
+pln("")
+pln("【实际应用场景】")
+pln("")
+pln("场景1: 数据库连接")
+pln("  db := dbConnect(getSwitch(argsG, \"--driver=\", \"sqlite3\"),")
+pln("       getSwitch(argsG, \"--connStr=\", \":memory:\"))")
+pln("")
+pln("场景2: SSH 操作")
+pln("  sshRun(\"--host=\" + getSwitch(argsG, \"--host=\", \"localhost\"),")
+pln("         \"--user=\" + getSwitch(argsG, \"--user=\", \"root\"),")
+pln("         \"--password=\" + getSwitch(argsG, \"--password=\", \"\"),")
+pln("         getParam(argsG, 0, \"uname -a\"))")
+pln("")
+pln("场景3: 邮件发送")
+pln("  sendMail(\"--host=\" + getSwitch(argsG, \"--smtp=\", \"\"),")
+pln("           \"--to=\" + getSwitch(argsG, \"--to=\", \"\"),")
+pln("           \"--subject=\" + getSwitch(argsG, \"--subject=\", \"(无标题)\"),")
+pln("           \"--body=\" + getSwitch(argsG, \"--body=\", \"\"))")
+pln("")
+pln("场景4: 批量附件")
+pln("  files := getAllSwitches(argsG, \"--attach=\")")
+pln("  // sendMail 会自动处理多个 --attach")
+
+pln("")
+pln("========================================")
+pln("    参数解析演示完成 ✓")
+pln("========================================")

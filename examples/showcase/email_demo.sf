@@ -1,0 +1,79 @@
+// 邮件发送示例
+// 用法：sf email_demo.sf "--host=smtp.xxx.com" "--port=465" "--user=xxx" "--password=xxx" "--from=xxx" "--to=xxx"
+
+host := getSwitch(argsG, "--host=", "")
+if host == "" {
+    pln("用法：sf email_demo.sf \"--host=smtp.xxx.com\" \"--port=465\"")
+    pln("           \"--user=xxx\" \"--password=xxx\"")
+    pln("           \"--from=xxx@xxx.com\" \"--to=xxx@xxx.com\"")
+    pln("")
+    pln("可选参数：--html, --ssl, --starttls, --attach=path")
+} else {
+
+port := getSwitch(argsG, "--port=", "465")
+user := getSwitch(argsG, "--user=", "")
+pass := getSwitch(argsG, "--password=", "")
+from := getSwitch(argsG, "--from=", "")
+to := getSwitch(argsG, "--to=", "")
+useSSL := ifSwitchExists(argsG, "--ssl")
+useHTML := ifSwitchExists(argsG, "--html")
+attachments := getAllSwitches(argsG, "--attach=")
+
+// 构建参数
+mailArgs := ["--host=" + host, "--port=" + port, "--user=" + user, "--password=" + pass,
+             "--from=" + from, "--to=" + to,
+             "--subject=Sflang 邮件测试 " + toStr(nowDT())]
+if useSSL { push(mailArgs, "--ssl") }
+if useHTML { push(mailArgs, "--html") }
+
+// 正文
+if useHTML {
+    push(mailArgs, "--body=<h1>来自 Sflang</h1><p>这是一封 <b>HTML</b> 邮件。</p><p>发送时间: " + toStr(nowDT()) + "</p>")
+} else {
+    push(mailArgs, "--body=来自 Sflang 的测试邮件\n\n发送时间: " + toStr(nowDT()))
+}
+
+// 附件
+for f in attachments {
+    push(mailArgs, "--attach=" + f)
+}
+
+pln("正在发送邮件...")
+pln("  收件人:", to)
+pln("  附件数:", len(attachments))
+if useHTML { pln("  格式: HTML") } else { pln("  格式: 纯文本") }
+
+// 调用 sendMail
+result := sendMail(mailArgs[0], mailArgs[1], mailArgs[2], mailArgs[3], mailArgs[4], mailArgs[5], mailArgs[6], mailArgs[7])
+i := 8
+while i < len(mailArgs) {
+    result = "skip"
+    i++
+}
+
+// 简化：直接用多个参数
+if len(mailArgs) >= 8 {
+    extra := []
+    for j := 8; j < len(mailArgs); j++ {
+        push(extra, mailArgs[j])
+    }
+    // sendMail 用可变参数
+    if len(extra) == 0 {
+        result := sendMail(mailArgs[0], mailArgs[1], mailArgs[2], mailArgs[3],
+                           mailArgs[4], mailArgs[5], mailArgs[6], mailArgs[7])
+    } elif len(extra) == 1 {
+        result := sendMail(mailArgs[0], mailArgs[1], mailArgs[2], mailArgs[3],
+                           mailArgs[4], mailArgs[5], mailArgs[6], mailArgs[7], extra[0])
+    } elif len(extra) == 2 {
+        result := sendMail(mailArgs[0], mailArgs[1], mailArgs[2], mailArgs[3],
+                           mailArgs[4], mailArgs[5], mailArgs[6], mailArgs[7], extra[0], extra[1])
+    }
+}
+
+if isErr(result) {
+    pln("发送失败:", getErrStr(result))
+} else {
+    pln("发送成功!")
+}
+
+}

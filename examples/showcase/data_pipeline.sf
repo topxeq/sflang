@@ -1,0 +1,136 @@
+// 数据处理管道示例
+// CSV → 数据库 → Excel → JSON 完整流程
+// 演示 Sflang 在数据处理场景的综合能力
+
+pln("========================================")
+pln("    Sflang 数据处理管道")
+pln("========================================")
+
+// 1. 准备 CSV 数据
+pln("")
+pln("【1. 从 CSV 加载数据】")
+csvData := `date,product,quantity,price
+2024-01-01,键盘,50,199
+2024-01-01,鼠标,120,89
+2024-01-02,键盘,65,199
+2024-01-02,鼠标,98,89
+2024-01-03,显示器,15,1299
+2024-01-03,鼠标,45,89`
+
+rows := readCsvFromStr(csvData)
+headers := rows[0]
+pln("  表头:", headers)
+pln("  数据行:", len(rows) - 1)
+
+// 2. 存入 SQLite
+pln("")
+pln("【2. 存入数据库】")
+db := dbConnect("sqlite3", ":memory:")
+dbExec(db, "CREATE TABLE sales (date TEXT, product TEXT, quantity INTEGER, price REAL)")
+
+for i := 1; i < len(rows); i++ {
+    row := rows[i]
+    dbExec(db, "INSERT INTO sales VALUES (?, ?, ?, ?)", row[0], row[1], row[2], row[3])
+}
+pln("  已插入", dbQueryCount(db, "SELECT COUNT(*) FROM sales"), "条记录")
+
+// 3. 数据库分析
+pln("")
+pln("【3. 数据分析】")
+
+// 按产品统计
+pln("  按产品汇总:")
+summary := dbQuery(db, `SELECT product,
+    SUM(quantity) as total_qty,
+    SUM(quantity * price) as total_revenue,
+    AVG(price) as avg_price
+    FROM sales GROUP BY product ORDER BY total_revenue DESC`)
+for s in summary {
+    pl("    %-8s  数量:%4v  收入:¥%9.1f  均价:¥%6.1f\n",
+       s["product"], s["total_qty"], s["total_revenue"], s["avg_price"])
+}
+
+// 总计
+totalRev := dbQueryFloat(db, "SELECT SUM(quantity * price) FROM sales")
+totalQty := dbQueryCount(db, "SELECT SUM(quantity) FROM sales")
+pln("")
+pln("  总数量:", totalQty)
+pln("  总收入:", adjustFloat(totalRev, 2))
+
+// 4. 导出 Excel
+pln("")
+pln("【4. 导出 Excel】")
+wb := excelNew()
+
+// 表头 + 汇总数据
+excelData := [["产品", "总数量", "总收入", "平均单价"]]
+for s in summary {
+    push(excelData, [s["product"], s["total_qty"], adjustFloat(s["total_revenue"], 2), adjustFloat(s["avg_price"], 2)])
+}
+push(excelData, ["合计", totalQty, adjustFloat(totalRev, 2), ""])
+
+excelWriteSheet(wb, 0, excelData)
+
+// 明细 sheet
+excelNewSheet(wb, "明细")
+detailData := [["日期", "产品", "数量", "价格", "小计"]]
+detailRows := dbQuery(db, "SELECT * FROM sales ORDER BY date, product")
+for d in detailRows {
+    subtotal := d["quantity"] * d["price"]
+    push(detailData, [d["date"], d["product"], d["quantity"], d["price"], adjustFloat(subtotal, 2)])
+}
+excelWriteSheet(wb, "明细", detailData)
+
+excelPath := joinPath(getTempDir(), "sflang_sales_report.xlsx")
+excelSaveAs(wb, excelPath)
+pln("  Excel 报表已生成:", excelPath)
+
+// 5. 导出 JSON
+pln("")
+pln("【5. 导出 JSON】")
+jsonData := dbQuery(db, "SELECT * FROM sales ORDER BY date")
+jsonStr := jsonEncode(jsonData)
+pln("  JSON 长度:", len(jsonStr), "字符")
+pln("  JSON 预览:", strSub(jsonStr, 0, 80) + "...")
+
+// 6. 用 le 编辑器处理文本
+pln("")
+pln("【6. le 编辑器生成文本报表】")
+leClear()
+leAppendLine("              销售报表")
+leAppendLine("================================")
+leAppendLine("")
+leAppendLine("产品         数量      收入")
+leAppendLine("----------   ----   ---------")
+
+for s in summary {
+    line := s["product"]
+    while len(line) < 12 { line += " " }
+    line += toStr(s["total_qty"])
+    while len(line) < 18 { line += " " }
+    line += "¥" + toStr(adjustFloat(s["total_revenue"], 2))
+    leAppendLine(line)
+}
+
+leAppendLine("----------   ----   ---------")
+leAppendLine("合计         " + toStr(totalQty) + "   ¥" + toStr(adjustFloat(totalRev, 2)))
+
+reportText := leToStr()
+pln(reportText)
+
+// 保存报表
+reportPath := joinPath(getTempDir(), "sales_report.txt")
+leSaveToFile(reportPath)
+pln("  文本报表已保存:", reportPath)
+
+// 清理
+dbClose(db)
+deleteFile(excelPath)
+deleteFile(reportPath)
+
+pln("")
+pln("========================================")
+pln("    数据处理管道完成 ✓")
+pln("========================================")
+pln("    CSV → SQLite → 分析 → Excel → JSON → 文本报表")
+pln("========================================")

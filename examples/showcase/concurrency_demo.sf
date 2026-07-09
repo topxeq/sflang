@@ -1,0 +1,120 @@
+// 综合实战：远程服务器巡检工具
+// 通过 SSH 检查多台服务器的状态
+// 用法：sf server_check.sf "--host=host1" "--host=host2" "--user=root" "--password=xxx"
+
+hosts := getAllSwitches(argsG, "--host=")
+user := getSwitch(argsG, "--user=", "root")
+pass := getSwitch(argsG, "--password=", "")
+
+if len(hosts) == 0 {
+    pln("用法：sf server_check.sf \"--host=192.168.1.1\" \"--host=192.168.1.2\"")
+    pln("           \"--user=root\" \"--password=xxx\"")
+    pln("可选: --cmdTimeout=10")
+} else {
+
+cmdTimeout := getSwitch(argsG, "--cmdTimeout=", "10")
+
+pln("========================================")
+pln("    服务器巡检工具")
+pln("========================================")
+pln("服务器数量:", len(hosts))
+pln("")
+
+// 巡检结果存入数据库
+db := dbConnect("sqlite3", ":memory:")
+dbExec(db, `CREATE TABLE check_results (
+    host TEXT,
+    hostname TEXT,
+    uptime TEXT,
+    disk_usage TEXT,
+    mem_usage TEXT,
+    cpu_load TEXT,
+    status TEXT
+)`)
+
+for host in hosts {
+    pln("检查:", host)
+    authArgs := ["--host=" + host, "--user=" + user, "--password=" + pass, "--cmdTimeout=" + cmdTimeout]
+
+    // 1. 主机名
+    hostname := "未知"
+    r := sshRun(authArgs[0], authArgs[1], authArgs[2], authArgs[3], "hostname")
+    if isErr(r) {
+        pln("  ❌ 连接失败:", getErrStr(r))
+        dbExec(db, "INSERT INTO check_results VALUES (?, ?, ?, ?, ?, ?, ?)",
+            host, "N/A", "N/A", "N/A", "N/A", "N/A", "FAIL")
+        pln("")
+        continue
+    }
+    hostname := trim(r)
+    pln("  主机名:", hostname)
+
+    // 2. 系统运行时间
+    uptime := sshRun(authArgs[0], authArgs[1], authArgs[2], authArgs[3], "uptime -p 2>/dev/null || uptime")
+    pln("  运行时间:", trim(uptime))
+
+    // 3. 磁盘使用率
+    disk := sshRun(authArgs[0], authArgs[1], authArgs[2], authArgs[3], "df -h / | tail -1 | awk '{print $5}'")
+    pln("  磁盘 /:", trim(disk))
+
+    // 4. 内存使用率
+    mem := sshRun(authArgs[0], authArgs[1], authArgs[2], authArgs[3], "free | grep Mem | awk '{printf \"%.0f%%\", $3/$2*100}'")
+    pln("  内存:", trim(mem))
+
+    // 5. CPU 负载
+    cpu := sshRun(authArgs[0], authArgs[1], authArgs[2], authArgs[3], "cat /proc/loadavg | awk '{print $1}'")
+    pln("  CPU负载:", trim(cpu))
+
+    // 存入数据库
+    dbExec(db, "INSERT INTO check_results VALUES (?, ?, ?, ?, ?, ?, ?)",
+        host, hostname, trim(uptime), trim(disk), trim(mem), trim(cpu), "OK")
+
+    pln("  ✓ 检查完成")
+    pln("")
+}
+
+// 汇总报告
+pln("========================================")
+pln("    巡检汇总")
+pln("========================================")
+pln("")
+
+// 用 le 生成文本报表
+leClear()
+leAppendLine("主机              主机名              磁盘    内存    CPU负载  状态")
+leAppendLine("----------------  ------------------  ------  ------  -------  ----")
+
+results := dbQuery(db, "SELECT * FROM check_results ORDER BY host")
+for r in results {
+    line := r["host"]
+    while len(line) < 18 { line += " " }
+    line += r["hostname"]
+    while len(line) < 38 { line += " " }
+    line += r["disk_usage"]
+    while len(line) < 46 { line += " " }
+    line += r["mem_usage"]
+    while len(line) < 54 { line += " " }
+    line += r["cpu_load"]
+    while len(line) < 63 { line += " " }
+    line += r["status"]
+    leAppendLine(line)
+}
+
+pln(leToStr())
+
+// 导出 Excel
+wb := excelNew()
+excelData := [["主机", "主机名", "磁盘", "内存", "CPU负载", "状态"]]
+for r in results {
+    push(excelData, [r["host"], r["hostname"], r["disk_usage"], r["mem_usage"], r["cpu_load"], r["status"]])
+}
+excelWriteSheet(wb, 0, excelData)
+excelPath := joinPath(getTempDir(), "server_check_report.xlsx")
+excelSaveAs(wb, excelPath)
+pln("Excel 报表:", excelPath)
+
+dbClose(db)
+pln("")
+pln("巡检完成，共检查", len(results), "台服务器")
+
+}
