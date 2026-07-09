@@ -14,7 +14,7 @@ use crate::function::{Builtin, Function};
 use crate::lexer::tokenize;
 use crate::opcode::{Code, Opcode};
 use crate::parser::parse_program;
-use crate::value::{error_value, Value};
+use crate::value::{error_value, Value, SfError};
 
 /// flow_kind 控制流类型。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -946,25 +946,57 @@ impl VM {
 
     /// handle_throw 处理 throw：查找 try 栈，决定跳 catch/finally 或穿透。
     fn handle_throw(&mut self, mut frame: Frame, val: Value) -> FlowResult {
+        // 先增强错误信息（追加行号）
+        let val = self.enhance_error_with_line(&frame, val);
+
         // 查找最近的有 catch 或 finally 的 try
         while let Some(te) = frame.try_stack.pop() {
-            // catch_ip < finally_ip 表示有真正的 catch 块
-            // catch_ip >= finally_ip 表示无 catch（编译器用 end 标记）
             if te.catch_ip >= 0 && te.catch_ip < te.finally_ip {
-                // 有 catch：跳到 catch_ip，异常值压栈
                 frame.ip = te.catch_ip as usize;
                 self.push(val);
                 return self.run_frame(frame);
             } else if te.finally_ip >= 0 {
-                // 无 catch 但有 finally：挂起 throw，跳到 finally
                 frame.pendings.push(PendingEntry { is_throw: true, value: val });
                 frame.ip = te.finally_ip as usize;
                 return self.run_frame(frame);
             }
-            // 既无 catch 也无 finally：继续向外层 try 查找
         }
         // 无 try 处理：穿透返回
         FlowResult { value: val, kind: FlowKind::Throw }
+    }
+
+    /// enhance_error_with_line 为未捕获的错误值追加行号信息。
+    ///
+    /// 只处理 Error 类型，跳过用户主动 throw 的非 Error 值。
+    /// 如果错误消息已包含 "行 "（行号标记），不重复追加。
+    fn enhance_error_with_line(&self, frame: &Frame, val: Value) -> Value {
+        match &val {
+            Value::Error(e) => {
+                if e.message.contains(" (行 ") {
+                    return val;
+                }
+                // 当前 ip 的行号可能是 0（未设置 set_line），往前找最近的非零行号
+                let mut line = 0u32;
+                let ip = frame.ip;
+                if ip > 0 && ip <= frame.code.lines.len() {
+                    // 向前搜索最近的有行号的指令
+                    for i in (0..ip.min(frame.code.lines.len())).rev() {
+                        if frame.code.lines[i] > 0 {
+                            line = frame.code.lines[i];
+                            break;
+                        }
+                    }
+                }
+                if line > 0 {
+                    Value::Error(Arc::new(SfError::new(format!(
+                        "{} (行 {})", e.message, line
+                    ))))
+                } else {
+                    val
+                }
+            }
+            _ => val,
+        }
     }
 
     /// finish_return 处理 return（含 defer/finally）。
