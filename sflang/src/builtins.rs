@@ -55,6 +55,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("plt", bi_plt);
     vm.register_builtin("getParam", bi_get_param);
     vm.register_builtin("getSwitch", bi_get_switch);
+    vm.register_builtin("getAllSwitches", bi_get_all_switches);
     vm.register_builtin("ifSwitchExists", bi_if_switch_exists);
     vm.register_builtin("toStr", bi_string);
     vm.register_builtin("toInt", bi_int);
@@ -1338,6 +1339,28 @@ fn bi_get_switch(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         }
     }
     Ok(default)
+}
+
+/// bi_get_all_switches 从参数数组中提取所有匹配 --key=value 的值（可多个同名）。
+///
+/// 用法：getAllSwitches(argsG, "--attach=") → ["file1.pdf", "file2.xlsx"]
+/// 返回所有匹配值的数组。无匹配时返回空数组。
+fn bi_get_all_switches(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use std::sync::{Arc, Mutex};
+    let arr = match args.get(0) {
+        Some(Value::Array(a)) => a.lock().unwrap().clone(),
+        _ => return Ok(Value::Array(Arc::new(Mutex::new(Vec::new())))),
+    };
+    let key = args.get(1).map(|v| v.to_str()).unwrap_or_default();
+
+    let mut results: Vec<Value> = Vec::new();
+    for arg in &arr {
+        let s = arg.to_str();
+        if s.starts_with(&key) {
+            results.push(Value::str_from(s[key.len()..].to_string()));
+        }
+    }
+    Ok(Value::Array(Arc::new(Mutex::new(results))))
 }
 
 /// bi_if_switch_exists 检查参数数组中是否存在某个开关（布尔型，无值）。
