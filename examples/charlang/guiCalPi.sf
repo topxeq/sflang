@@ -1,6 +1,6 @@
 // 蒙特卡洛法估算 π 值 — GUI 版
 // 后台 Sflang 负责运算和绘制，前端只负责显示
-// 通过 guiEval 把 Canvas 绘制指令推到前端执行
+// 使用 "tick" 模式：每批画 N 个点后返回，通过 JS setTimeout 触发下一批
 
 win := guiNewWindow("--title=Monte Carlo Pi", "--width=500", "--height=480")
 
@@ -20,10 +20,10 @@ button { padding: 8px 24px; font-size: 15px; margin: 5px; cursor: pointer; }
 <div id="result">Pi ≈ 0.000000 (点数: 0)</div>
 <canvas id="cv" width="360" height="360"></canvas>
 <div>
-  <button onclick="start()">开始</button>
-  <button onclick="stop()">停止</button>
-  <button onclick="cls()">清空</button>
-  <button onclick="closeWin()">关闭</button>
+  <button id="btnStart" onclick="doStart()">开始</button>
+  <button id="btnStop" onclick="doStop()">停止</button>
+  <button onclick="doClear()">清空</button>
+  <button onclick="doClose()">关闭</button>
 </div>
 <script>
 var cv = document.getElementById('cv');
@@ -32,7 +32,6 @@ var cx = cv.width / 2;
 var cy = cv.height / 2;
 var R = 160;
 
-// 初始绘制圆和方框
 function drawFrame() {
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.strokeStyle = 'blue';
@@ -47,62 +46,96 @@ function drawFrame() {
 }
 drawFrame();
 
-function start() { window.ipc.postMessage('start'); }
-function stop()  { window.ipc.postMessage('stop'); }
-function cls()   { window.ipc.postMessage('clear'); drawFrame(); }
-function closeWin() { window.ipc.postMessage('close'); }
+var running = false;
+
+function doStart() {
+    running = true;
+    window.ipc.postMessage('start');
+}
+function doStop() {
+    running = false;
+    window.ipc.postMessage('stop');
+}
+function doClear() {
+    window.ipc.postMessage('clear');
+    drawFrame();
+}
+function doClose() {
+    window.ipc.postMessage('close');
+}
+
+// 接收后端的绘制指令
+function drawPoints(data) {
+    // data 是 "x,y,color;x,y,color;..." 格式
+    var pts = data.split(';');
+    for (var i = 0; i < pts.length; i++) {
+        var p = pts[i].split(',');
+        if (p.length >= 3) {
+            ctx.fillStyle = p[2];
+            ctx.fillRect(parseFloat(p[0]), parseFloat(p[1]), 2, 2);
+        }
+    }
+}
+function updateResult(text) {
+    document.getElementById('result').innerHTML = text;
+}
 </script>
 </body>
 </html>`)
 
 // 计算状态
-running := newRef(false)
-// Canvas 参数（与 JS 中一致）
 R := 160
 halfCanvas := 180
+inCircle := 0
+total := 0
+running := newRef(false)
+batchSize := 80  // 每批画 80 个点
 
 guiSetHandler(win, func(msg) {
     if msg == "start" {
         setValueByRef(running, true)
-        inCircle := 0
-        total := 0
 
-        while getValueByRef(running) {
-            // 随机落点：x, y ∈ [-1, 1]
-            x := (random() * 2 - 1)
-            y := (random() * 2 - 1)
+        // 画一批点
+        batch := ""
+        i := 0
+        while i < batchSize && getValueByRef(running) {
+            x := random() * 2 - 1
+            y := random() * 2 - 1
             total++
 
-            // 判断是否在圆内
-            inCircleNow := (x * x + y * y <= 1.0)
+            inCircleNow := x * x + y * y <= 1.0
             if inCircleNow { inCircle++ }
 
-            // 画点（坐标缩放到 Canvas）
-            px := x * R
-            py := y * R
-            if inCircleNow {
-                guiEval(win, "ctx.fillStyle='red';ctx.fillRect(" + toStr(halfCanvas + px) + "," + toStr(halfCanvas + py) + ",2,2);")
-            } else {
-                guiEval(win, "ctx.fillStyle='gray';ctx.fillRect(" + toStr(halfCanvas + px) + "," + toStr(halfCanvas + py) + ",2,2);")
-            }
+            px := halfCanvas + x * R
+            py := halfCanvas + y * R
+            color := inCircleNow ? "red" : "gray"
 
-            // 每 50 个点更新一次 π 值显示
-            if total % 50 == 0 {
-                pi := 4.0 * inCircle / total
-                guiEval(win, "document.getElementById('result').innerHTML='Pi ≈ " + toStr(adjustFloat(pi, 6)) + " (点数: " + toStr(total) + ")';")
-            }
+            if i > 0 { batch += ";" }
+            batch += toStr(px) + "," + toStr(py) + "," + color
+            i++
+        }
 
-            // 控制速度，每 5 个点暂停一下让 UI 刷新
-            if total % 5 == 0 {
-                sleepMs(10)
-            }
+        // 一次性发送这批绘制指令
+        guiEval(win, "drawPoints('" + batch + "')")
+
+        // 更新 Pi 显示
+        if total > 0 {
+            pi := 4.0 * inCircle / total
+            guiEval(win, "updateResult('Pi ≈ " + toStr(adjustFloat(pi, 6)) + " (点数: " + total + ")')")
+        }
+
+        // 如果还在运行，通过 JS 触发下一批
+        if getValueByRef(running) {
+            guiEval(win, "if(running) setTimeout(function(){window.ipc.postMessage('start')}, 1)")
         }
     }
     if msg == "stop" {
         setValueByRef(running, false)
     }
     if msg == "clear" {
-        guiEval(win, "drawFrame();")
+        inCircle = 0
+        total = 0
+        guiEval(win, "drawFrame()")
     }
     if msg == "close" {
         setValueByRef(running, false)
@@ -111,5 +144,6 @@ guiSetHandler(win, func(msg) {
 })
 
 pln("启动蒙特卡洛 Pi 估算...")
+pln("点击'开始'按钮开始计算")
 guiShow(win)
 pln("窗口已关闭")
