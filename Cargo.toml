@@ -52,6 +52,12 @@ oracle-rs = "0.1"
 wry = "0.46"
 # tao：跨平台窗口管理（MIT/Apache-2.0），wry 的窗口层。
 tao = "0.32"
+# russh：纯 Rust SSH 客户端/服务端库（Apache-2.0），用于 ssh* 内置函数。
+russh = "0.46"
+# russh-keys：SSH 密钥处理（Apache-2.0/MIT），russh 的子 crate。
+russh-keys = "0.46"
+# async-trait：异步 trait 宏（MIT/Apache-2.0），russh Handler 需要。
+async-trait = "0.1"
 
 # 编译优化配置：release 模式启用 LTO 与单代码生成单元，最大化优化
 [profile.release]

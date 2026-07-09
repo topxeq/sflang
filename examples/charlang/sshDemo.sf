@@ -1,0 +1,65 @@
+// SSH 客户端示例
+// 用法：sf sshDemo.sf "--host=主机" "--user=用户名" "--password=密码" "命令"
+// 示例：sf sshDemo.sf "--host=192.168.1.1" "--user=root" "--password=xxx" "ls -la /tmp"
+
+host := getParam(argsG, 0, "")
+if host == "" {
+    pln("用法：sf sshDemo.sf \"--host=主机\" \"--user=用户名\" \"--password=密码\"")
+    pln("示例：sf sshDemo.sf \"--host=192.168.1.1\" \"--user=root\" \"--password=xxx\"")
+} else {
+
+user := getParam(argsG, 1, "root")
+pass := getParam(argsG, 2, "")
+
+// 1. 执行远程命令
+pln("=== sshRun ===")
+output := sshRun("--host=" + host, "--user=" + user, "--password=" + pass, "uname -a")
+if isErr(output) {
+    pln("失败:", getErrStr(output))
+} else {
+    pln("系统信息:", output)
+}
+
+// 2. 列目录
+pln("")
+pln("=== sshList /tmp ===")
+files := sshList("--host=" + host, "--user=" + user, "--password=" + pass, "--remotePath=/tmp")
+if isErr(files) {
+    pln("失败:", getErrStr(files))
+} else {
+    for f in files {
+        pln("  ", f)
+    }
+}
+
+// 3. 上传文件
+pln("")
+pln("=== sshUpload ===")
+localFile := joinPath(getTempDir(), "sflang_ssh_demo.txt")
+writeFile(localFile, "Sflang SSH upload test\n中文内容测试\n")
+
+up := sshUpload("--host=" + host, "--user=" + user, "--password=" + pass,
+    "--localPath=" + localFile, "--remotePath=/tmp/sflang_ssh_demo.txt")
+if isErr(up) {
+    pln("上传失败:", getErrStr(up))
+} else {
+    pln("上传成功")
+}
+
+// 4. 下载验证
+pln("")
+pln("=== sshDownload ===")
+dlFile := joinPath(getTempDir(), "sflang_ssh_dl.txt")
+dl := sshDownload("--host=" + host, "--user=" + user, "--password=" + pass,
+    "--remotePath=/tmp/sflang_ssh_demo.txt", "--localPath=" + dlFile)
+if isErr(dl) {
+    pln("下载失败:", getErrStr(dl))
+} else {
+    pln("下载成功，内容:", readFile(dlFile))
+}
+
+deleteFile(localFile)
+deleteFile(dlFile)
+pln("")
+pln("完成")
+}

@@ -39,6 +39,10 @@ oracle-rs = { workspace = true }
 # GUI WebView 支持
 wry = { workspace = true }
 tao = { workspace = true }
+# SSH 客户端
+russh = { workspace = true }
+russh-keys = { workspace = true }
+async-trait = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
