@@ -47,6 +47,11 @@ tokio-util = { version = "0.7", features = ["compat"] }
 futures-util = "0.3"
 # oracle-rs：纯 Rust Oracle TNS 驱动（MIT OR Apache-2.0），无 OCI 依赖。
 oracle-rs = "0.1"
+# wry：跨平台 WebView 封装（MIT/Apache-2.0），用于 GUI 编程。
+# Windows 用 WebView2，macOS 用 WKWebView，Linux 用 WebKitGTK。
+wry = "0.46"
+# tao：跨平台窗口管理（MIT/Apache-2.0），wry 的窗口层。
+tao = "0.32"
 
 # 编译优化配置：release 模式启用 LTO 与单代码生成单元，最大化优化
 [profile.release]

@@ -1,0 +1,56 @@
+// Sflang GUI 示例 — WebView2 窗口
+// 前端 HTML + Sflang 后端交互
+// JS 通过 window.ipc.postMessage(msg) 发消息给 Sflang
+
+// 创建窗口
+win := guiNewWindow("--title=Sflang GUI Demo", "--width=600", "--height=400")
+
+// 设置 HTML 界面
+guiSetHtml(win, "
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body { font-family: sans-serif; padding: 20px; }
+button { padding: 10px 20px; font-size: 16px; margin: 5px; cursor: pointer; }
+#output { margin-top: 20px; padding: 10px; background: #f0f0f0; min-height: 100px; }
+</style>
+</head>
+<body>
+<h1>Hello from Sflang GUI!</h1>
+<p>点击按钮，消息会发送到 Sflang 后端处理。</p>
+<button onclick=\"send('hello')\">Say Hello</button>
+<button onclick=\"send('time')\">Get Time</button>
+<button onclick=\"send('close')\">Close Window</button>
+<div id=\"output\">等待操作...</div>
+<script>
+function send(msg) {
+    window.ipc.postMessage(msg);
+}
+</script>
+</body>
+</html>
+")
+
+// 设置 IPC handler
+guiSetHandler(win, func(msg) {
+    pln("收到前端消息:", msg)
+
+    if msg == "hello" {
+        guiEval(win, "document.getElementById('output').innerHTML = '<b>Hello from Sflang!</b>'")
+    }
+    if msg == "time" {
+        guiEval(win, "document.getElementById('output').innerHTML = 'Sflang time: " + now() + "'")
+    }
+    if msg == "close" {
+        pln("用户请求关闭窗口")
+    }
+})
+
+pln("启动 GUI 窗口...")
+pln("(关闭窗口后脚本继续)")
+
+// 显示窗口（阻塞）
+guiShow(win)
+
+pln("窗口已关闭，脚本结束")
