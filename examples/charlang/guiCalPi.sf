@@ -121,7 +121,7 @@ guiSetHandler(win, func(msg) {
         // 更新 Pi 显示
         if total > 0 {
             pi := 4.0 * inCircle / total
-            guiEval(win, "updateResult('Pi ≈ " + toStr(adjustFloat(pi, 6)) + " (点数: " + total + ")')")
+            guiEval(win, "updateResult('Pi ≈ " + toStr(adjustFloat(pi, 6)) + " (点数: " + toStr(total) + ")')")
         }
 
         // 如果还在运行，通过 JS 触发下一批
