@@ -230,8 +230,10 @@ fn bi_gui_show(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         .map_err(|e| crate::value::error_value(format!("guiShow() 创建 WebView 失败: {}", e)))?;
 
     // 进入事件循环（阻塞）
+    // 用短间隔 WaitUntil 确保及时检查 close_requested 和 eval_queue
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
+        use std::time::{Duration, Instant};
+        *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(20));
 
         // 检查是否有排队的 eval 命令
         {
