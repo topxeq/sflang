@@ -37,6 +37,10 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("copy", bi_copy);
     vm.register_builtin("bytesHex", bi_bytes_hex);
     vm.register_builtin("bytesFromHex", bi_bytes_from_hex);
+    // hex 别名（对标 Charlang，接受 string/bytes/byteArray）
+    vm.register_builtin("hexEncode", bi_hex_encode);
+    vm.register_builtin("hexDecode", bi_bytes_from_hex);
+    vm.register_builtin("hexToStr", bi_hex_to_str);
 }
 
 /// byte_val 将 Int 值转为 u8，越界或非整数返回错误。
@@ -296,4 +300,43 @@ fn bi_bytes_from_hex(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         i += 2;
     }
     Ok(Value::Bytes(Arc::new(buf)))
+}
+
+/// bi_hex_encode 将 string/bytes/byteArray 编码为 hex 字符串。
+fn bi_hex_encode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "hexEncode")?;
+    let data: Vec<u8> = match &args[0] {
+        Value::Str(s) => s.as_bytes().to_vec(),
+        Value::Bytes(b) => b.as_ref().to_vec(),
+        Value::ByteArray(b) => b.lock().unwrap().clone(),
+        other => return Err(crate::value::error_value(format!(
+            "hexEncode() 不支持类型 {} (需要 string/bytes/byteArray)", other.type_name(),
+        ))),
+    };
+    let hex: String = data.iter().map(|b| format!("{:02x}", b)).collect();
+    Ok(Value::str_from(hex))
+}
+
+/// bi_hex_to_str 将 hex 字符串解码为原始字符串。
+fn bi_hex_to_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    // 复用 bytesFromHex 逻辑，再转字符串
+    let hex = bh::as_str(args, 0, "hexToStr")?;
+    let cleaned: String = hex.chars().filter(|c| !c.is_whitespace()).collect();
+    if cleaned.len() % 2 != 0 {
+        return Err(crate::value::error_value("hexToStr() hex 字符串长度必须为偶数"));
+    }
+    let bytes = cleaned.as_bytes();
+    let mut buf = Vec::with_capacity(bytes.len() / 2);
+    let mut i = 0;
+    while i < bytes.len() {
+        let hi = (bytes[i] as char).to_digit(16).ok_or_else(|| crate::value::error_value(
+            format!("hexToStr() 非法 hex 字符 '{}'", bytes[i] as char),
+        ))? as u8;
+        let lo = (bytes[i + 1] as char).to_digit(16).ok_or_else(|| crate::value::error_value(
+            format!("hexToStr() 非法 hex 字符 '{}'", bytes[i + 1] as char),
+        ))? as u8;
+        buf.push((hi << 4) | lo);
+        i += 2;
+    }
+    Ok(Value::str_from(String::from_utf8_lossy(&buf).into_owned()))
 }

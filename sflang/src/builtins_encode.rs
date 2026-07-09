@@ -21,6 +21,8 @@ use crate::vm::VM;
 pub fn register(vm: &mut VM) {
     vm.register_builtin("base64Encode", bi_base64_encode);
     vm.register_builtin("base64Decode", bi_base64_decode);
+    vm.register_builtin("base64UrlEncode", bi_base64url_encode);
+    vm.register_builtin("base64UrlDecode", bi_base64url_decode);
     vm.register_builtin("urlEncode", bi_url_encode);
     vm.register_builtin("urlDecode", bi_url_decode);
     vm.register_builtin("urlFormEncode", bi_url_form_encode);
@@ -225,4 +227,90 @@ fn bi_url_form_decode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         }
     }
     Ok(Value::str_from(String::from_utf8_lossy(&out).into_owned()))
+}
+
+// ---- base64 URL-safe 变体 ----
+
+const B64URL_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/// bi_base64url_encode 编码为 URL-safe base64（使用 - 和 _，无 = 填充）。
+fn bi_base64url_encode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "base64UrlEncode")?;
+    let data = to_bytes(&args[0])?;
+    let mut out = Vec::with_capacity((data.len() + 2) / 3 * 4);
+    let mut i = 0;
+    while i + 3 <= data.len() {
+        let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8) | (data[i + 2] as u32);
+        out.push(B64URL_TABLE[((n >> 18) & 0x3F) as usize]);
+        out.push(B64URL_TABLE[((n >> 12) & 0x3F) as usize]);
+        out.push(B64URL_TABLE[((n >> 6) & 0x3F) as usize]);
+        out.push(B64URL_TABLE[(n & 0x3F) as usize]);
+        i += 3;
+    }
+    let rem = data.len() - i;
+    if rem == 1 {
+        let n = (data[i] as u32) << 16;
+        out.push(B64URL_TABLE[((n >> 18) & 0x3F) as usize]);
+        out.push(B64URL_TABLE[((n >> 12) & 0x3F) as usize]);
+    } else if rem == 2 {
+        let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8);
+        out.push(B64URL_TABLE[((n >> 18) & 0x3F) as usize]);
+        out.push(B64URL_TABLE[((n >> 12) & 0x3F) as usize]);
+        out.push(B64URL_TABLE[((n >> 6) & 0x3F) as usize]);
+    }
+    Ok(Value::str_from(String::from_utf8_lossy(&out).into_owned()))
+}
+
+/// b64url_val 将 URL-safe base64 字符解码为 6 位值。
+fn b64url_val(c: u8) -> Option<u32> {
+    match c {
+        b'A'..=b'Z' => Some((c - b'A') as u32),
+        b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+        b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+        b'-' => Some(62),
+        b'_' => Some(63),
+        _ => None,
+    }
+}
+
+/// bi_base64url_decode 解码 URL-safe base64（支持有/无填充）。
+fn bi_base64url_decode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "base64UrlDecode")?;
+    let clean: Vec<u8> = s.bytes().filter(|&b| b != b'=' && b != b'\n' && b != b'\r' && b != b' ').collect();
+    if clean.is_empty() {
+        return Ok(Value::Bytes(Arc::new(Vec::new())));
+    }
+    let mut out = Vec::with_capacity(clean.len() * 3 / 4);
+    let mut i = 0;
+    while i + 4 <= clean.len() {
+        let v0 = b64url_val(clean[i]).ok_or_else(|| crate::value::error_value(format!(
+            "base64UrlDecode() 非法字符 '{}'", clean[i] as char,
+        )))?;
+        let v1 = b64url_val(clean[i + 1]).ok_or_else(|| crate::value::error_value(format!(
+            "base64UrlDecode() 非法字符 '{}'", clean[i + 1] as char,
+        )))?;
+        let v2 = b64url_val(clean[i + 2]);
+        let v3 = b64url_val(clean[i + 3]);
+        let n = (v0 << 18) | (v1 << 12) | (v2.unwrap_or(0) << 6) | v3.unwrap_or(0);
+        out.push((n >> 16) as u8);
+        if v2.is_some() { out.push((n >> 8) as u8); }
+        if v3.is_some() { out.push(n as u8); }
+        i += 4;
+    }
+    // 处理剩余 2-3 字符
+    let rem = clean.len() - i;
+    if rem == 2 {
+        let v0 = b64url_val(clean[i]).unwrap_or(0);
+        let v1 = b64url_val(clean[i + 1]).unwrap_or(0);
+        let n = (v0 << 18) | (v1 << 12);
+        out.push((n >> 16) as u8);
+    } else if rem == 3 {
+        let v0 = b64url_val(clean[i]).unwrap_or(0);
+        let v1 = b64url_val(clean[i + 1]).unwrap_or(0);
+        let v2 = b64url_val(clean[i + 2]).unwrap_or(0);
+        let n = (v0 << 18) | (v1 << 12) | (v2 << 6);
+        out.push((n >> 16) as u8);
+        out.push((n >> 8) as u8);
+    }
+    Ok(Value::Bytes(Arc::new(out)))
 }

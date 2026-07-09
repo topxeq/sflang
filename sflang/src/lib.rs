@@ -52,6 +52,8 @@ pub mod builtins_csv;
 pub mod builtins_xlsx;
 pub mod builtins_docx;
 pub mod builtins_db;
+pub mod aes;
+pub mod builtins_aes;
 pub mod api;
 
 // 重导出常用类型
