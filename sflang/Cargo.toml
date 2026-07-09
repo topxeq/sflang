@@ -43,6 +43,7 @@ tao = { workspace = true }
 russh = { workspace = true }
 russh-keys = { workspace = true }
 async-trait = { workspace = true }
+russh-sftp = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }

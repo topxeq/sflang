@@ -4056,6 +4056,7 @@ dependencies = [
  "rusqlite",
  "russh",
  "russh-keys",
+ "russh-sftp",
  "rust_xlsxwriter",
  "tao",
  "tiberius",

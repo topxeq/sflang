@@ -1,33 +1,33 @@
-//! builtins_ssh.rs — SSH 客户端内置函数（基于 russh）
+//! builtins_ssh.rs — SSH 客户端内置函数（基于 russh + russh-sftp）
 //!
 //! 纯 Rust SSH 客户端，对标 Charlang 的 ssh* 函数。
-//! 用 tokio block_on 桥接异步 russh 为同步 API。
+//! 文件传输用 SFTP 子系统（原生协议，高效可靠）。
+//! 支持密码认证和私钥认证。
 //!
 //! 函数：
-//!   sshRun("--host=...", "--port=22", "--user=...", "--password=...", "command")
-//!       — 执行远程命令，返回输出字符串
-//!   sshList("--host=...", "--user=...", "--password=...", "--remotePath=...")
-//!       — 列出远程目录内容（每行一个文件）
-//!   sshUpload("--host=...", "--user=...", "--password=...", "--localPath=...", "--remotePath=...")
-//!       — 上传本地文件到远程
-//!   sshDownload("--host=...", "--user=...", "--password=...", "--remotePath=...", "--localPath=...")
-//!       — 下载远程文件到本地
+//!   sshRun      — 执行远程命令
+//!   sshList     — 列出远程目录内容
+//!   sshUpload   — SFTP 上传文件
+//!   sshDownload — SFTP 下载文件
+//!   sshMkdir    — 创建远程目录
+//!   sshRemove   — 删除远程文件或目录
+//!   sshMove     — 移动/重命名远程文件
 
 use std::sync::Arc;
 
-use crate::builtins_helpers as bh;
 use crate::value::Value;
 use crate::vm::VM;
 
-/// register 注册 SSH 内置函数。
 pub fn register(vm: &mut VM) {
     vm.register_builtin("sshRun", bi_ssh_run);
     vm.register_builtin("sshList", bi_ssh_list);
     vm.register_builtin("sshUpload", bi_ssh_upload);
     vm.register_builtin("sshDownload", bi_ssh_download);
+    vm.register_builtin("sshMkdir", bi_ssh_mkdir);
+    vm.register_builtin("sshRemove", bi_ssh_remove);
+    vm.register_builtin("sshMove", bi_ssh_move);
 }
 
-/// get_switch 从参数列表中解析 --key=value 格式的开关。
 fn get_switch(args: &[Value], key: &str, default: &str) -> String {
     let prefix = format!("--{}=", key);
     let prefix_short = format!("-{}=", key);
@@ -41,278 +41,266 @@ fn get_switch(args: &[Value], key: &str, default: &str) -> String {
     default.to_string()
 }
 
-/// SshHandler russh 的空 Handler 实现。
+fn get_command(args: &[Value]) -> String {
+    for arg in args {
+        if let Value::Str(s) = arg {
+            if !s.starts_with("--") && !s.starts_with("-h=") && !s.starts_with("-p=") && !s.starts_with("-u=") && !s.starts_with("-pass=") {
+                return s.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+struct SshParams {
+    host: String,
+    port: u16,
+    user: String,
+    password: String,
+    key_path: String,
+    key_passphrase: String,
+}
+
+fn parse_ssh_params(args: &[Value]) -> Result<SshParams, Value> {
+    let p = SshParams {
+        host: get_switch(args, "host", ""),
+        port: get_switch(args, "port", "22").parse().unwrap_or(22),
+        user: get_switch(args, "user", ""),
+        password: get_switch(args, "password", ""),
+        key_path: get_switch(args, "key", ""),
+        key_passphrase: get_switch(args, "keyPassphrase", ""),
+    };
+    if p.host.is_empty() || p.user.is_empty() {
+        return Err(crate::value::error_value("SSH 需要 --host 和 --user 参数"));
+    }
+    if p.password.is_empty() && p.key_path.is_empty() {
+        return Err(crate::value::error_value("SSH 需要 --password 或 --key 认证参数"));
+    }
+    Ok(p)
+}
+
 struct SshHandler;
 
 #[async_trait::async_trait]
 impl russh::client::Handler for SshHandler {
     type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _server_public_key: &russh::keys::key::PublicKey,
-    ) -> Result<bool, Self::Error> {
-        // 接受所有服务器密钥（简化，不验证指纹）
+    async fn check_server_key(&mut self, _: &russh::keys::key::PublicKey) -> Result<bool, Self::Error> {
         Ok(true)
     }
 }
 
-/// ssh_connect 建立 SSH 连接并返回 Handle。
-///
-/// 内部用 tokio runtime 桥接。
-fn ssh_connect(
-    runtime: &tokio::runtime::Runtime,
-    host: &str,
-    port: u16,
-    user: &str,
-    password: &str,
-) -> Result<russh::client::Handle<SshHandler>, String> {
+/// do_ssh 建立 SSH 连接 + 认证，在 tokio runtime 中运行异步操作。
+fn do_ssh<F, Fut, R>(params: &SshParams, op: F) -> Result<R, String>
+where
+    F: FnOnce(russh::client::Handle<SshHandler>) -> Fut + Send,
+    Fut: std::future::Future<Output = Result<R, String>> + Send,
+    R: Send,
+{
+    let runtime = tokio::runtime::Runtime::new().map_err(|e| format!("创建 tokio runtime 失败: {}", e))?;
     let config = Arc::new(russh::client::Config::default());
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{}:{}", params.host, params.port);
 
     runtime.block_on(async {
         let mut handle = russh::client::connect(config, addr, SshHandler)
             .await
-            .map_err(|e| format!("SSH 连接失败: {} (可能原因：网络不通、端口错误)", e))?;
+            .map_err(|e| format!("SSH 连接失败: {} (可能原因：网络不通)", e))?;
 
-        let auth_ok = handle
-            .authenticate_password(user, password)
-            .await
-            .map_err(|e| format!("SSH 认证失败: {} (可能原因：用户名或密码错误)", e))?;
+        let auth_ok = if !params.key_path.is_empty() {
+            let key_pair = russh::keys::load_secret_key(
+                &params.key_path,
+                if params.key_passphrase.is_empty() { None } else { Some(&params.key_passphrase) },
+            ).map_err(|e| format!("SSH 加载私钥失败: {}", e))?;
+            handle.authenticate_publickey(&params.user, Arc::new(key_pair))
+                .await.map_err(|e| format!("SSH 密钥认证失败: {}", e))?
+        } else {
+            handle.authenticate_password(&params.user, &params.password)
+                .await.map_err(|e| format!("SSH 认证失败: {}", e))?
+        };
 
         if !auth_ok {
-            return Err("SSH 认证失败: 密码被拒绝".to_string());
+            return Err("SSH 认证失败: 凭据被拒绝".to_string());
         }
 
-        Ok(handle)
+        op(handle).await
     })
 }
 
-/// ssh_exec 在已连接的 SSH session 上执行命令，返回输出。
-fn ssh_exec(
-    runtime: &tokio::runtime::Runtime,
-    handle: &mut russh::client::Handle<SshHandler>,
-    command: &str,
-) -> Result<String, String> {
-    runtime.block_on(async {
-        let mut channel = handle
-            .channel_open_session()
-            .await
-            .map_err(|e| format!("SSH 打开通道失败: {}", e))?;
+/// 在 channel 上执行远程命令，返回输出。
+async fn exec_cmd(handle: &russh::client::Handle<SshHandler>, command: &str) -> Result<String, String> {
+    let mut channel = handle.channel_open_session().await
+        .map_err(|e| format!("SSH 打开通道失败: {}", e))?;
+    channel.exec(true, command).await
+        .map_err(|e| format!("SSH exec 失败: {}", e))?;
+    let mut output = Vec::new();
+    use tokio::io::AsyncReadExt;
+    let mut reader = channel.make_reader();
+    reader.read_to_end(&mut output).await
+        .map_err(|e| format!("SSH 读取输出失败: {}", e))?;
+    Ok(String::from_utf8_lossy(&output).into_owned())
+}
 
-        channel.exec(true, command).await.map_err(|e| format!("SSH exec 失败: {}", e))?;
-
-        // 读取输出
-        let mut output = Vec::new();
-        use tokio::io::AsyncReadExt;
-        let mut reader = channel.make_reader();
-        reader.read_to_end(&mut output).await.map_err(|e| format!("SSH 读取输出失败: {}", e))?;
-
-        Ok(String::from_utf8_lossy(&output).into_owned())
-    })
+/// 建立 SFTP 会话。
+async fn sftp_open(handle: &russh::client::Handle<SshHandler>) -> Result<russh_sftp::client::SftpSession, String> {
+    let channel = handle.channel_open_session().await
+        .map_err(|e| format!("SFTP 打开通道失败: {}", e))?;
+    channel.request_subsystem(true, "sftp").await
+        .map_err(|e| format!("SFTP 子系统失败: {}", e))?;
+    russh_sftp::client::SftpSession::new(channel.into_stream())
+        .await.map_err(|e| format!("SFTP 会话失败: {}", e))
 }
 
 // ---- 内置函数 ----
 
-/// bi_ssh_run 执行远程命令。
-///
-/// 用法：sshRun("--host=...", "--port=22", "--user=...", "--password=...", "ls -la")
-/// 或：  sshRun("--host=...", "--user=...", "--password=...", "ls -la")（端口默认 22）
-///
-/// 最后一个非 -- 开头的参数是命令。
 fn bi_ssh_run(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let host = get_switch(args, "host", "");
-    let port: u16 = get_switch(args, "port", "22").parse().unwrap_or(22);
-    let user = get_switch(args, "user", "");
-    let password = get_switch(args, "password", "");
-
-    // 找命令：最后一个非 -- 开头的参数
-    let mut command = String::new();
-    for arg in args {
-        if let Value::Str(s) = arg {
-            if !s.starts_with("--") && !s.starts_with("-host") && !s.starts_with("-port") && !s.starts_with("-user") && !s.starts_with("-password") {
-                command = s.to_string();
-            }
-        }
+    let params = parse_ssh_params(args)?;
+    let command = get_command(args);
+    if command.is_empty() {
+        return Ok(crate::value::error_value("sshRun() 需要命令参数"));
     }
 
-    if host.is_empty() || user.is_empty() {
-        return Ok(crate::value::error_value(
-            "sshRun() 需要 --host 和 --user 参数 (格式: sshRun(\"--host=x\", \"--user=y\", \"--password=z\", \"command\"))",
-        ));
-    }
-
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => return Ok(crate::value::error_value(format!("创建 tokio runtime 失败: {}", e))),
-    };
-
-    let mut handle = match ssh_connect(&runtime, &host, port, &user, &password) {
-        Ok(h) => h,
-        Err(e) => return Ok(crate::value::error_value(e)),
-    };
-
-    match ssh_exec(&runtime, &mut handle, &command) {
-        Ok(output) => {
-            let _ = runtime.block_on(handle.disconnect(russh::Disconnect::ByApplication, "", "en"));
-            Ok(Value::str_from(output))
-        }
+    match do_ssh(&params, |handle| async move {
+        let result = exec_cmd(&handle, &command).await;
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        result
+    }) {
+        Ok(output) => Ok(Value::str_from(output)),
         Err(e) => Ok(crate::value::error_value(e)),
     }
 }
 
-/// bi_ssh_list 列出远程目录内容。
-///
-/// 用法：sshList("--host=...", "--user=...", "--password=...", "--remotePath=/tmp")
 fn bi_ssh_list(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let host = get_switch(args, "host", "");
-    let port: u16 = get_switch(args, "port", "22").parse().unwrap_or(22);
-    let user = get_switch(args, "user", "");
-    let password = get_switch(args, "password", "");
+    let params = parse_ssh_params(args)?;
     let remote_path = get_switch(args, "remotePath", "/");
 
-    if host.is_empty() || user.is_empty() {
-        return Ok(crate::value::error_value(
-            "sshList() 需要 --host 和 --user 参数",
-        ));
-    }
-
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => return Ok(crate::value::error_value(format!("创建 tokio runtime 失败: {}", e))),
-    };
-
-    let mut handle = match ssh_connect(&runtime, &host, port, &user, &password) {
-        Ok(h) => h,
-        Err(e) => return Ok(crate::value::error_value(e)),
-    };
-
-    let command = format!("ls -1 {}", remote_path);
-    match ssh_exec(&runtime, &mut handle, &command) {
-        Ok(output) => {
-            let _ = runtime.block_on(handle.disconnect(russh::Disconnect::ByApplication, "", "en"));
-            // 按行分割返回数组
-            let files: Vec<Value> = output.lines().map(|l| Value::str(l.trim())).collect();
-            Ok(Value::Array(Arc::new(std::sync::Mutex::new(files))))
+    match do_ssh(&params, |handle| async move {
+        let sftp = sftp_open(&handle).await?;
+        let mut entries = Vec::new();
+        let dir = sftp.read_dir(&remote_path).await
+            .map_err(|e| format!("SFTP 读取目录失败: {}", e))?;
+        for entry in dir {
+            entries.push(entry.file_name());
+        }
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok::<Vec<String>, String>(entries)
+    }) {
+        Ok(files) => {
+            let result: Vec<Value> = files.into_iter().map(Value::str_from).collect();
+            Ok(Value::Array(Arc::new(std::sync::Mutex::new(result))))
         }
         Err(e) => Ok(crate::value::error_value(e)),
     }
 }
 
-/// bi_ssh_upload 上传文件。
-///
-/// 用法：sshUpload("--host=...", "--user=...", "--password=...", "--localPath=...", "--remotePath=...")
-/// 通过 SFTP 或 scp 命令实现。这里用 cat > remotePath 方式（简单可靠）。
 fn bi_ssh_upload(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let host = get_switch(args, "host", "");
-    let port: u16 = get_switch(args, "port", "22").parse().unwrap_or(22);
-    let user = get_switch(args, "user", "");
-    let password = get_switch(args, "password", "");
+    let params = parse_ssh_params(args)?;
     let local_path = get_switch(args, "localPath", "");
     let remote_path = get_switch(args, "remotePath", "");
-
-    if host.is_empty() || user.is_empty() || local_path.is_empty() || remote_path.is_empty() {
-        return Ok(crate::value::error_value(
-            "sshUpload() 需要 --host, --user, --password, --localPath, --remotePath 参数",
-        ));
+    if local_path.is_empty() || remote_path.is_empty() {
+        return Ok(crate::value::error_value("sshUpload() 需要 --localPath 和 --remotePath 参数"));
     }
 
-    // 读取本地文件
-    let file_data = match std::fs::read(&local_path) {
-        Ok(d) => d,
-        Err(e) => return Ok(crate::value::error_value(format!(
-            "sshUpload() 读取本地文件 '{}' 失败: {}", local_path, e,
-        ))),
-    };
+    let file_data = std::fs::read(&local_path).map_err(|e| {
+        crate::value::error_value(format!("sshUpload() 读取本地文件 '{}' 失败: {}", local_path, e))
+    })?;
 
-    // base64 编码文件内容，用 echo | base64 -d 方式上传
-    let b64: String = {
-        let mut out = Vec::with_capacity((file_data.len() + 2) / 3 * 4);
-        let table = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut i = 0;
-        while i + 3 <= file_data.len() {
-            let n = ((file_data[i] as u32) << 16) | ((file_data[i+1] as u32) << 8) | (file_data[i+2] as u32);
-            out.push(table[((n >> 18) & 0x3F) as usize]);
-            out.push(table[((n >> 12) & 0x3F) as usize]);
-            out.push(table[((n >> 6) & 0x3F) as usize]);
-            out.push(table[(n & 0x3F) as usize]);
-            i += 3;
-        }
-        let rem = file_data.len() - i;
-        if rem == 1 {
-            let n = (file_data[i] as u32) << 16;
-            out.push(table[((n >> 18) & 0x3F) as usize]);
-            out.push(table[((n >> 12) & 0x3F) as usize]);
-            out.push(b'='); out.push(b'=');
-        } else if rem == 2 {
-            let n = ((file_data[i] as u32) << 16) | ((file_data[i+1] as u32) << 8);
-            out.push(table[((n >> 18) & 0x3F) as usize]);
-            out.push(table[((n >> 12) & 0x3F) as usize]);
-            out.push(table[((n >> 6) & 0x3F) as usize]);
-            out.push(b'=');
-        }
-        String::from_utf8_lossy(&out).into_owned()
-    };
+    match do_ssh(&params, |handle| async move {
+        let sftp = sftp_open(&handle).await?;
+        let mut file = sftp.create(&remote_path).await
+            .map_err(|e| format!("SFTP 创建文件失败: {}", e))?;
+        use tokio::io::AsyncWriteExt;
+        file.write_all(&file_data).await
+            .map_err(|e| format!("SFTP 写入失败: {}", e))?;
+        file.flush().await.ok();
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok::<(), String>(())
+    }) {
+        Ok(()) => Ok(Value::Undefined),
+        Err(e) => Ok(crate::value::error_value(e)),
+    }
+}
 
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => return Ok(crate::value::error_value(format!("创建 tokio runtime 失败: {}", e))),
-    };
+fn bi_ssh_download(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ssh_params(args)?;
+    let remote_path = get_switch(args, "remotePath", "");
+    let local_path = get_switch(args, "localPath", "");
+    if remote_path.is_empty() || local_path.is_empty() {
+        return Ok(crate::value::error_value("sshDownload() 需要 --remotePath 和 --localPath 参数"));
+    }
 
-    let mut handle = match ssh_connect(&runtime, &host, port, &user, &password) {
-        Ok(h) => h,
-        Err(e) => return Ok(crate::value::error_value(e)),
-    };
-
-    let command = format!("echo {} | base64 -d > {}", b64, remote_path);
-    match ssh_exec(&runtime, &mut handle, &command) {
-        Ok(_) => {
-            let _ = runtime.block_on(handle.disconnect(russh::Disconnect::ByApplication, "", "en"));
+    match do_ssh(&params, |handle| async move {
+        let sftp = sftp_open(&handle).await?;
+        let data = sftp.read(&remote_path).await
+            .map_err(|e| format!("SFTP 读取失败: {}", e))?;
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok::<Vec<u8>, String>(data)
+    }) {
+        Ok(data) => {
+            std::fs::write(&local_path, &data).map_err(|e| {
+                crate::value::error_value(format!("sshDownload() 写入本地 '{}' 失败: {}", local_path, e))
+            })?;
             Ok(Value::Undefined)
         }
         Err(e) => Ok(crate::value::error_value(e)),
     }
 }
 
-/// bi_ssh_download 下载文件。
-///
-/// 用法：sshDownload("--host=...", "--user=...", "--password=...", "--remotePath=...", "--localPath=...")
-fn bi_ssh_download(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let host = get_switch(args, "host", "");
-    let port: u16 = get_switch(args, "port", "22").parse().unwrap_or(22);
-    let user = get_switch(args, "user", "");
-    let password = get_switch(args, "password", "");
+fn bi_ssh_mkdir(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ssh_params(args)?;
     let remote_path = get_switch(args, "remotePath", "");
-    let local_path = get_switch(args, "localPath", "");
-
-    if host.is_empty() || user.is_empty() || remote_path.is_empty() || local_path.is_empty() {
-        return Ok(crate::value::error_value(
-            "sshDownload() 需要 --host, --user, --password, --remotePath, --localPath 参数",
-        ));
+    if remote_path.is_empty() {
+        return Ok(crate::value::error_value("sshMkdir() 需要 --remotePath 参数"));
     }
 
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => return Ok(crate::value::error_value(format!("创建 tokio runtime 失败: {}", e))),
-    };
+    match do_ssh(&params, |handle| async move {
+        let sftp = sftp_open(&handle).await?;
+        sftp.create_dir(&remote_path).await
+            .map_err(|e| format!("SFTP 创建目录失败: {}", e))?;
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok::<(), String>(())
+    }) {
+        Ok(()) => Ok(Value::Undefined),
+        Err(e) => Ok(crate::value::error_value(e)),
+    }
+}
 
-    let mut handle = match ssh_connect(&runtime, &host, port, &user, &password) {
-        Ok(h) => h,
-        Err(e) => return Ok(crate::value::error_value(e)),
-    };
+fn bi_ssh_remove(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ssh_params(args)?;
+    let remote_path = get_switch(args, "remotePath", "");
+    if remote_path.is_empty() {
+        return Ok(crate::value::error_value("sshRemove() 需要 --remotePath 参数"));
+    }
 
-    // 用 cat remotepath 下载
-    let command = format!("cat {}", remote_path);
-    match ssh_exec(&runtime, &mut handle, &command) {
-        Ok(output) => {
-            let _ = runtime.block_on(handle.disconnect(russh::Disconnect::ByApplication, "", "en"));
-            match std::fs::write(&local_path, output.as_bytes()) {
-                Ok(()) => Ok(Value::Undefined),
-                Err(e) => Ok(crate::value::error_value(format!(
-                    "sshDownload() 写入本地文件 '{}' 失败: {}", local_path, e,
-                ))),
-            }
+    match do_ssh(&params, |handle| async move {
+        let sftp = sftp_open(&handle).await?;
+        // 先试删文件，失败再删目录
+        if sftp.remove_file(&remote_path).await.is_err() {
+            sftp.remove_dir(&remote_path).await
+                .map_err(|e| format!("SFTP 删除失败: {}", e))?;
         }
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok::<(), String>(())
+    }) {
+        Ok(()) => Ok(Value::Undefined),
+        Err(e) => Ok(crate::value::error_value(e)),
+    }
+}
+
+fn bi_ssh_move(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ssh_params(args)?;
+    let remote_path = get_switch(args, "remotePath", "");
+    let target_path = get_switch(args, "targetPath", "");
+    if remote_path.is_empty() || target_path.is_empty() {
+        return Ok(crate::value::error_value("sshMove() 需要 --remotePath 和 --targetPath 参数"));
+    }
+
+    match do_ssh(&params, |handle| async move {
+        let sftp = sftp_open(&handle).await?;
+        sftp.rename(&remote_path, &target_path).await
+            .map_err(|e| format!("SFTP 移动失败: {}", e))?;
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok::<(), String>(())
+    }) {
+        Ok(()) => Ok(Value::Undefined),
         Err(e) => Ok(crate::value::error_value(e)),
     }
 }
