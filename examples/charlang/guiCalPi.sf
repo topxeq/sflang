@@ -2,7 +2,7 @@
 // 后台 Sflang 负责运算和绘制，前端只负责显示
 // 使用 "tick" 模式：每批画 N 个点后返回，通过 JS setTimeout 触发下一批
 
-win := guiNewWindow("--title=Monte Carlo Pi", "--width=500", "--height=480")
+win := guiNewWindow("--title=Monte Carlo Pi", "--width=500", "--height=560")
 
 guiSetHtml(win, `<html>
 <head>
