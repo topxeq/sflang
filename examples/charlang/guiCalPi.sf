@@ -1,0 +1,112 @@
+// 蒙特卡洛法估算 π 值 — GUI 版
+// 后台 Sflang 负责运算和绘制，前端只负责显示
+// 通过 guiEval 把 Canvas 绘制指令推到前端执行
+
+win := guiNewWindow("--title=Monte Carlo Pi", "--width=500", "--height=480")
+
+guiSetHtml(win, `<html>
+<head>
+<meta charset="utf-8">
+<style>
+body { font-family: sans-serif; text-align: center; margin: 0; padding: 10px; }
+h3 { color: #5D71D0; }
+canvas { border: 1px solid #ccc; }
+#result { font-size: 1.4em; font-weight: bold; color: #333; margin: 5px; }
+button { padding: 8px 24px; font-size: 15px; margin: 5px; cursor: pointer; }
+</style>
+</head>
+<body>
+<h3>蒙特卡洛法估算 Pi</h3>
+<div id="result">Pi ≈ 0.000000 (点数: 0)</div>
+<canvas id="cv" width="360" height="360"></canvas>
+<div>
+  <button onclick="start()">开始</button>
+  <button onclick="stop()">停止</button>
+  <button onclick="cls()">清空</button>
+  <button onclick="closeWin()">关闭</button>
+</div>
+<script>
+var cv = document.getElementById('cv');
+var ctx = cv.getContext('2d');
+var cx = cv.width / 2;
+var cy = cv.height / 2;
+var R = 160;
+
+// 初始绘制圆和方框
+function drawFrame() {
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.strokeStyle = 'blue';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = 'black';
+    ctx.beginPath();
+    ctx.rect(cx - R, cy - R, R * 2, R * 2);
+    ctx.stroke();
+}
+drawFrame();
+
+function start() { window.ipc.postMessage('start'); }
+function stop()  { window.ipc.postMessage('stop'); }
+function cls()   { window.ipc.postMessage('clear'); drawFrame(); }
+function closeWin() { window.ipc.postMessage('close'); }
+</script>
+</body>
+</html>`)
+
+// 计算状态
+running := newRef(false)
+
+guiSetHandler(win, func(msg) {
+    if msg == "start" {
+        setValueByRef(running, true)
+        inCircle := 0
+        total := 0
+
+        while getValueByRef(running) {
+            // 随机落点：x, y ∈ [-1, 1]
+            x := (random() * 2 - 1)
+            y := (random() * 2 - 1)
+            total++
+
+            // 判断是否在圆内
+            inCircleNow := (x * x + y * y <= 1.0)
+            if inCircleNow { inCircle++ }
+
+            // 画点（坐标缩放到 Canvas）
+            px := x * R
+            py := y * R
+            if inCircleNow {
+                guiEval(win, "ctx.fillStyle='red';ctx.fillRect(" + toStr(180 + px) + "," + toStr(180 + py) + ",2,2);")
+            } else {
+                guiEval(win, "ctx.fillStyle='gray';ctx.fillRect(" + toStr(180 + px) + "," + toStr(180 + py) + ",2,2);")
+            }
+
+            // 每 50 个点更新一次 π 值显示
+            if total % 50 == 0 {
+                pi := 4.0 * inCircle / total
+                guiEval(win, "document.getElementById('result').innerHTML='Pi ≈ " + adjustFloat(pi, 6) + " (点数: " + total + ")';")
+            }
+
+            // 控制速度，每 5 个点暂停一下让 UI 刷新
+            if total % 5 == 0 {
+                sleepMs(10)
+            }
+        }
+    }
+    if msg == "stop" {
+        setValueByRef(running, false)
+    }
+    if msg == "clear" {
+        guiEval(win, "drawFrame();")
+    }
+    if msg == "close" {
+        setValueByRef(running, false)
+        guiClose(win)
+    }
+})
+
+pln("启动蒙特卡洛 Pi 估算...")
+guiShow(win)
+pln("窗口已关闭")
