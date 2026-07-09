@@ -5,10 +5,8 @@
 // 创建窗口
 win := guiNewWindow("--title=Sflang GUI Demo", "--width=600", "--height=400")
 
-// 设置 HTML 界面
-guiSetHtml(win, "
-<!DOCTYPE html>
-<html>
+// 设置 HTML 界面（多行用反引号）
+guiSetHtml(win, `<html>
 <head>
 <style>
 body { font-family: sans-serif; padding: 20px; }
@@ -19,28 +17,27 @@ button { padding: 10px 20px; font-size: 16px; margin: 5px; cursor: pointer; }
 <body>
 <h1>Hello from Sflang GUI!</h1>
 <p>点击按钮，消息会发送到 Sflang 后端处理。</p>
-<button onclick=\"send('hello')\">Say Hello</button>
-<button onclick=\"send('time')\">Get Time</button>
-<button onclick=\"send('close')\">Close Window</button>
-<div id=\"output\">等待操作...</div>
+<button onclick="send('hello')">Say Hello</button>
+<button onclick="send('time')">Get Time</button>
+<button onclick="send('close')">Close Window</button>
+<div id="output">等待操作...</div>
 <script>
 function send(msg) {
     window.ipc.postMessage(msg);
 }
 </script>
 </body>
-</html>
-")
+</html>`)
 
 // 设置 IPC handler
 guiSetHandler(win, func(msg) {
     pln("收到前端消息:", msg)
 
     if msg == "hello" {
-        guiEval(win, "document.getElementById('output').innerHTML = '<b>Hello from Sflang!</b>'")
+        guiEval(win, `document.getElementById('output').innerHTML = '<b>Hello from Sflang!</b>'`)
     }
     if msg == "time" {
-        guiEval(win, "document.getElementById('output').innerHTML = 'Sflang time: " + now() + "'")
+        guiEval(win, `document.getElementById('output').innerHTML = 'Sflang time: ` + now() + `'`)
     }
     if msg == "close" {
         pln("用户请求关闭窗口")
