@@ -57,6 +57,9 @@ function closeWin() { window.ipc.postMessage('close'); }
 
 // 计算状态
 running := newRef(false)
+// Canvas 参数（与 JS 中一致）
+R := 160
+halfCanvas := 180
 
 guiSetHandler(win, func(msg) {
     if msg == "start" {
@@ -78,9 +81,9 @@ guiSetHandler(win, func(msg) {
             px := x * R
             py := y * R
             if inCircleNow {
-                guiEval(win, "ctx.fillStyle='red';ctx.fillRect(" + toStr(180 + px) + "," + toStr(180 + py) + ",2,2);")
+                guiEval(win, "ctx.fillStyle='red';ctx.fillRect(" + toStr(halfCanvas + px) + "," + toStr(halfCanvas + py) + ",2,2);")
             } else {
-                guiEval(win, "ctx.fillStyle='gray';ctx.fillRect(" + toStr(180 + px) + "," + toStr(180 + py) + ",2,2);")
+                guiEval(win, "ctx.fillStyle='gray';ctx.fillRect(" + toStr(halfCanvas + px) + "," + toStr(halfCanvas + py) + ",2,2);")
             }
 
             // 每 50 个点更新一次 π 值显示
