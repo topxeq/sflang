@@ -27,6 +27,9 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("sshRemove", bi_ssh_remove);
     vm.register_builtin("sshMove", bi_ssh_move);
     vm.register_builtin("sshSync", bi_ssh_sync);
+    vm.register_builtin("sshCreateFile", bi_ssh_create_file);
+    vm.register_builtin("sshUploadBytes", bi_ssh_upload_bytes);
+    vm.register_builtin("sshDownloadBytes", bi_ssh_download_bytes);
 }
 
 fn get_switch(args: &[Value], key: &str, default: &str) -> String {
@@ -470,4 +473,96 @@ async fn sync_pull(
         }
     }
     Ok(())
+}
+
+/// bi_ssh_create_file 在远程创建文件（带内容）。
+///
+/// 用法：sshCreateFile("--host=...", "--user=...", "--password=...",
+///                    "--remotePath=/tmp/config.txt", "--content=文件内容")
+fn bi_ssh_create_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ssh_params(args)?;
+    let remote_path = get_switch(args, "remotePath", "");
+    let content = get_switch(args, "content", "");
+
+    if remote_path.is_empty() {
+        return Ok(crate::value::error_value("sshCreateFile() 需要 --remotePath 参数"));
+    }
+
+    let content_bytes = content.into_bytes();
+
+    match do_ssh(&params, |handle| async move {
+        let sftp = sftp_open(&handle).await?;
+        let mut file = sftp.create(&remote_path).await
+            .map_err(|e| format!("SFTP 创建文件失败: {}", e))?;
+        use tokio::io::AsyncWriteExt;
+        file.write_all(&content_bytes).await
+            .map_err(|e| format!("SFTP 写入失败: {}", e))?;
+        file.flush().await.ok();
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok::<(), String>(())
+    }) {
+        Ok(()) => Ok(Value::Undefined),
+        Err(e) => Ok(crate::value::error_value(e)),
+    }
+}
+
+/// bi_ssh_upload_bytes 用 SFTP 上传 bytes/byteArray 到远程。
+///
+/// 用法：sshUploadBytes("--host=...", "--user=...", "--password=...",
+///                    "--remotePath=/tmp/data.bin", dataBytes)
+/// 最后一个参数是要上传的 bytes/byteArray。
+fn bi_ssh_upload_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ssh_params(args)?;
+    let remote_path = get_switch(args, "remotePath", "");
+
+    if remote_path.is_empty() {
+        return Ok(crate::value::error_value("sshUploadBytes() 需要 --remotePath 参数"));
+    }
+
+    // 找 bytes 参数（最后一个非 -- 开头的参数）
+    let data = match args.iter().rev().find(|arg| matches!(arg, Value::Bytes(_) | Value::ByteArray(_))) {
+        Some(Value::Bytes(b)) => b.as_ref().to_vec(),
+        Some(Value::ByteArray(b)) => b.lock().unwrap().clone(),
+        _ => return Ok(crate::value::error_value("sshUploadBytes() 需要 bytes/byteArray 参数")),
+    };
+
+    match do_ssh(&params, |handle| async move {
+        let sftp = sftp_open(&handle).await?;
+        let mut file = sftp.create(&remote_path).await
+            .map_err(|e| format!("SFTP 创建文件失败: {}", e))?;
+        use tokio::io::AsyncWriteExt;
+        file.write_all(&data).await
+            .map_err(|e| format!("SFTP 写入失败: {}", e))?;
+        file.flush().await.ok();
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok::<(), String>(())
+    }) {
+        Ok(()) => Ok(Value::Undefined),
+        Err(e) => Ok(crate::value::error_value(e)),
+    }
+}
+
+/// bi_ssh_download_bytes 用 SFTP 下载远程文件到 bytes。
+///
+/// 用法：sshDownloadBytes("--host=...", "--user=...", "--password=...",
+///                      "--remotePath=/tmp/data.bin")
+/// 返回 bytes。
+fn bi_ssh_download_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ssh_params(args)?;
+    let remote_path = get_switch(args, "remotePath", "");
+
+    if remote_path.is_empty() {
+        return Ok(crate::value::error_value("sshDownloadBytes() 需要 --remotePath 参数"));
+    }
+
+    match do_ssh(&params, |handle| async move {
+        let sftp = sftp_open(&handle).await?;
+        let data = sftp.read(&remote_path).await
+            .map_err(|e| format!("SFTP 读取失败: {}", e))?;
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok::<Vec<u8>, String>(data)
+    }) {
+        Ok(data) => Ok(Value::Bytes(Arc::new(data))),
+        Err(e) => Ok(crate::value::error_value(e)),
+    }
 }

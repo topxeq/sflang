@@ -24,6 +24,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("ftpCreateDir", bi_ftp_create_dir);
     vm.register_builtin("ftpRemoveFile", bi_ftp_remove_file);
     vm.register_builtin("ftpSize", bi_ftp_size);
+    vm.register_builtin("ftpCreateFile", bi_ftp_create_file);
+    vm.register_builtin("ftpUploadBytes", bi_ftp_upload_bytes);
 }
 
 fn get_switch(args: &[Value], key: &str, default: &str) -> String {
@@ -233,4 +235,58 @@ fn bi_ftp_size(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
     ftp.quit().ok();
     Ok(Value::Int(size as i64))
+}
+/// bi_ftp_create_file 在远程创建文件（带内容）。
+///
+/// 用法：ftpCreateFile("--host=...", "--user=...", "--password=...",
+///                    "--remotePath=/pub/readme.txt", "--content=文件内容")
+fn bi_ftp_create_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ftp_params(args)?;
+    let remote_path = get_switch(args, "remotePath", "");
+    let content = get_switch(args, "content", "");
+
+    if remote_path.is_empty() {
+        return Err(crate::value::error_value("ftpCreateFile() 需要 --remotePath 参数"));
+    }
+
+    let mut ftp = ftp_connect(&params)?;
+
+    ftp.put_file(&remote_path, &mut std::io::Cursor::new(content.into_bytes()))
+        .map_err(|e| crate::value::error_value(format!(
+            "FTP 创建文件失败: {} (路径: {})", e, remote_path,
+        )))?;
+
+    ftp.quit().ok();
+    Ok(Value::Undefined)
+}
+
+/// bi_ftp_upload_bytes 上传 bytes/byteArray 到远程。
+///
+/// 用法：ftpUploadBytes("--host=...", "--user=...", "--password=...",
+///                    "--remotePath=/pub/data.bin", dataBytes)
+/// 最后一个参数是要上传的 bytes/byteArray。
+fn bi_ftp_upload_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ftp_params(args)?;
+    let remote_path = get_switch(args, "remotePath", "");
+
+    if remote_path.is_empty() {
+        return Err(crate::value::error_value("ftpUploadBytes() 需要 --remotePath 参数"));
+    }
+
+    // 找 bytes 参数
+    let data = match args.iter().rev().find(|arg| matches!(arg, Value::Bytes(_) | Value::ByteArray(_))) {
+        Some(Value::Bytes(b)) => b.as_ref().to_vec(),
+        Some(Value::ByteArray(b)) => b.lock().unwrap().clone(),
+        _ => return Err(crate::value::error_value("ftpUploadBytes() 需要 bytes/byteArray 参数")),
+    };
+
+    let mut ftp = ftp_connect(&params)?;
+
+    ftp.put_file(&remote_path, &mut std::io::Cursor::new(data))
+        .map_err(|e| crate::value::error_value(format!(
+            "FTP 上传失败: {} (路径: {})", e, remote_path,
+        )))?;
+
+    ftp.quit().ok();
+    Ok(Value::Undefined)
 }
