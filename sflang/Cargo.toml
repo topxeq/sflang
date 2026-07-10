@@ -36,6 +36,8 @@ tokio-util = { workspace = true }
 futures-util = { workspace = true }
 # Oracle 数据库（纯 Rust TNS 驱动，无 OCI 依赖）
 oracle-rs = { workspace = true }
+# FTP 客户端（纯 Rust FTP/FTPS）
+suppaftp = { workspace = true }
 # GUI WebView 支持
 wry = { workspace = true }
 tao = { workspace = true }

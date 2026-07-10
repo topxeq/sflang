@@ -59,6 +59,7 @@ pub mod builtins_gui;
 pub mod builtins_ssh;
 pub mod builtins_le;
 pub mod builtins_email;
+pub mod builtins_ftp;
 pub mod api;
 
 // 重导出常用类型
