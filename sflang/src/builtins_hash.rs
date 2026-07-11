@@ -83,38 +83,7 @@ fn bi_sha256_hex(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// HMAC(K, m) = H((K' ⊕ opad) ‖ H((K' ⊕ ipad) ‖ m))
 /// K' = K 补零到 block_size（64字节），超过则 H(K)
 fn hmac_sha256(key: &[u8], message: &[u8]) -> Vec<u8> {
-    const BLOCK_SIZE: usize = 64; // SHA-256 block size
-
-    // 步骤 1: 如果 key 超过 block size，先哈希
-    let key_processed: Vec<u8> = if key.len() > BLOCK_SIZE {
-        crate::hash::sha256(key).to_vec()
-    } else {
-        key.to_vec()
-    };
-
-    // 步骤 2: 补零到 block_size
-    let mut k_padded = [0u8; BLOCK_SIZE];
-    k_padded[..key_processed.len()].copy_from_slice(&key_processed);
-
-    // 步骤 3: 构建 ipad 和 opad
-    let mut ipad = [0u8; BLOCK_SIZE];
-    let mut opad = [0u8; BLOCK_SIZE];
-    for i in 0..BLOCK_SIZE {
-        ipad[i] = k_padded[i] ^ 0x36;
-        opad[i] = k_padded[i] ^ 0x5c;
-    }
-
-    // 步骤 4: inner = H(ipad ‖ message)
-    let mut inner_input = Vec::with_capacity(BLOCK_SIZE + message.len());
-    inner_input.extend_from_slice(&ipad);
-    inner_input.extend_from_slice(message);
-    let inner_hash = crate::hash::sha256(&inner_input);
-
-    // 步骤 5: outer = H(opad ‖ inner_hash)
-    let mut outer_input = Vec::with_capacity(BLOCK_SIZE + inner_hash.len());
-    outer_input.extend_from_slice(&opad);
-    outer_input.extend_from_slice(&inner_hash);
-    crate::hash::sha256(&outer_input).to_vec()
+    crate::hash::hmac_sha256(key, message)
 }
 
 fn bi_hmac_sha256(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {

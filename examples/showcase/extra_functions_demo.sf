@@ -1,0 +1,220 @@
+// 新增内置函数综合示例
+// 演示字符串转换、字符包含、正则匹配、当前时间、JSON 路径查询、
+// 数组查找、JWT 令牌、持久化配置、表格输出
+//
+// 用法：sf examples/showcase/extra_functions_demo.sf
+
+pln("========================================")
+pln("    Sflang 新增内置函数示例")
+pln("========================================")
+
+// ============================================================
+// 1. 字符串转数字 (strToInt / strToFloat)
+// ============================================================
+pln("")
+pln("【1. 字符串转数字】")
+
+// strToInt 解析失败返回默认值（第二参数，默认 0）
+pln("  strToInt(\"42\"):", strToInt("42"))                // 42
+pln("  strToInt(\"  -7  \"):", strToInt("  -7  "))        // -7（自动去空白）
+pln("  strToInt(\"abc\", 99):", strToInt("abc", 99))      // 99（解析失败用默认值）
+
+// strToFloat 同理
+pln("  strToFloat(\"3.14\"):", strToFloat("3.14"))        // 3.14
+pln("  strToFloat(\"nan\", 0.0):", strToFloat("nan", 0.0)) // 0.0
+
+// ============================================================
+// 2. 字符串包含判断 (strContainsAny / strContainsIn)
+// ============================================================
+pln("")
+pln("【2. 字符串包含判断】")
+
+text := "Hello 世界 2026"
+
+// strContainsAny 判断字符串中是否包含参数中任意一个字符
+pln("  strContainsAny(text, \"0123456789\"):", strContainsAny(text, "0123456789"))  // true（含数字）
+pln("  strContainsAny(text, \"@#$\"):", strContainsAny(text, "@#$"))               // false
+
+// strContainsIn 判断字符串中是否包含参数数组中任意一个子串
+pln("  strContainsIn(text, [\"Python\", \"世界\"]):", strContainsIn(text, ["Python", "世界"]))  // true
+pln("  strContainsIn(text, [\"Rust\", \"Go\"]):", strContainsIn(text, ["Rust", "Go"]))        // false
+
+// ============================================================
+// 3. 正则包含判断 (regContains)
+// ============================================================
+pln("")
+pln("【3. 正则包含判断】")
+
+// regContains 是 regMatch 的语义化别名
+// 参数顺序与 Sflang 其他正则函数一致：regContains(pattern, text)
+pln("  regContains(`\\d+`, \"abc123\"):", regContains(`\d+`, "abc123"))   // true
+pln("  regContains(`\\d+`, \"abcdef\"):", regContains(`\d+`, "abcdef"))  // false
+pln("  regContains(`^\\w+@\\w+\\.\\w+$`, \"a@b.com\"):", regContains(`^\w+@\w+\.\w+$`, "a@b.com"))  // true
+
+// ============================================================
+// 4. 当前时间字符串 (getNowStr)
+// ============================================================
+pln("")
+pln("【4. 当前时间字符串】")
+
+// getNowStr 默认 "2006-01-02 15:04:05" 格式
+nowStr := getNowStr()
+pln("  默认格式:", nowStr)
+
+// 自定义格式（Go 风格占位符）
+dateStr := getNowStr("2006-01-02")
+pln("  仅日期:", dateStr)
+
+timeStr := getNowStr("15:04:05")
+pln("  仅时间:", timeStr)
+
+// ============================================================
+// 5. JSON 路径查询 (getJsonNodeStr)
+// ============================================================
+pln("")
+pln("【5. JSON 路径查询】")
+
+jsonStr := `{
+    "name": "Sflang",
+    "version": 1,
+    "author": {
+        "name": "张三",
+        "email": "zhang@example.com"
+    },
+    "tags": ["lang", "rust", "fast"]
+}`
+
+// getJsonNodeStr 直接查询 JSON 字符串
+pln("  getJsonNodeStr(json, \"name\"):", getJsonNodeStr(jsonStr, "name"))
+pln("  getJsonNodeStr(json, \"author.name\"):", getJsonNodeStr(jsonStr, "author.name"))
+pln("  getJsonNodeStr(json, \"tags.0\"):", getJsonNodeStr(jsonStr, "tags.0"))
+pln("  getJsonNodeStr(json, \"tags.#\"):", getJsonNodeStr(jsonStr, "tags.#"))  // 数组长度
+
+// 也可先解析再用 getJsonNode 查询
+data := jsonDecode(jsonStr)
+pln("  getJsonNode(data, \"version\"):", getJsonNode(data, "version"))
+pln("  getJsonNode(data, \"author.email\"):", getJsonNode(data, "author.email"))
+
+// ============================================================
+// 6. 数组查找 (find)
+// ============================================================
+pln("")
+pln("【6. 数组查找】")
+
+users := [
+    {name: "张三", age: 28},
+    {name: "李四", age: 35},
+    {name: "王五", age: 22},
+]
+
+// find 返回第一个满足条件的元素
+found := find(users, func(u) {
+    return u["age"] >= 30
+})
+pln("  find age >= 30:", found["name"])  // 李四
+
+// 找不到返回 undefined
+notFound := find(users, func(u) {
+    return u["age"] > 100
+})
+pln("  find age > 100:", isUndefined(notFound))  // true
+
+// ============================================================
+// 7. JWT 令牌 (genJwtToken / parseJwtToken)
+// ============================================================
+pln("")
+pln("【7. JWT 令牌】")
+
+// genJwtToken 生成 HS256 签名的 JWT
+payload := {
+    "sub": "user123",
+    "name": "张三",
+    "exp": 1893456000,
+}
+secret := "mySecretKey"
+token := genJwtToken(payload, secret)
+pln("  生成的 token:", token)
+
+// parseJwtToken 验证并解析
+parsed := parseJwtToken(token, secret)
+pln("  解析的 sub:", getJsonNodeStr(parsed, "sub"))
+pln("  解析的 name:", getJsonNodeStr(parsed, "name"))
+
+// ============================================================
+// 8. 持久化配置 (getCfgStr / setCfgStr)
+// ============================================================
+pln("")
+pln("【8. 持久化配置】")
+
+// setCfgStr 写入配置（持久化到 ~/.sflang/config.json）
+setCfgStr("lastUser", "张三")
+setCfgStr("theme", "dark")
+setCfgStr("fontSize", "14")
+
+// getCfgStr 读取配置
+pln("  lastUser:", getCfgStr("lastUser"))
+pln("  theme:", getCfgStr("theme"))
+
+// 不存在的 key 返回默认值
+pln("  language (默认):", getCfgStr("language", "zh-CN"))
+
+// removeCfgStr 删除配置项
+removed := removeCfgStr("fontSize")
+pln("  removeCfgStr fontSize:", removed)  // true
+
+// getCfgStrAll 返回所有配置
+allCfg := getCfgStrAll()
+pln("  所有配置的 theme:", allCfg["theme"])
+
+// ============================================================
+// 9. 表格输出 (showTable)
+// ============================================================
+pln("")
+pln("【9. 表格输出】")
+
+// showTable 把二维数组渲染为对齐的 ASCII 表格（返回字符串）
+tableData := [
+    ["姓名", "年龄", "城市"],
+    ["张三", 28, "北京"],
+    ["李四", 35, "上海"],
+    ["王五", 22, "广州"],
+]
+
+tableStr := showTable(tableData)
+pln(tableStr)
+
+// 无表头模式（第一行也是数据）
+pln("  无表头模式:")
+noHeaderData := [
+    ["张三", 28, "北京"],
+    ["李四", 35, "上海"],
+]
+pln(showTable(noHeaderData, {header: false}))
+
+// ============================================================
+// 10. 控制台输入 (getInput)
+// ============================================================
+pln("")
+pln("【10. 控制台输入】")
+pln("  getInput(prompt) 从标准输入读取一行")
+pln("  getChar() 读取单个字符")
+pln("  (示例不自动调用，REPL 中可直接使用)")
+
+// 实际用法（取消注释后在交互式终端运行）：
+// name := getInput("请输入你的名字: ")
+// pln("你好,", name)
+
+pln("")
+pln("========================================")
+pln("    所有新增内置函数演示完毕")
+pln("========================================")
+pln("")
+pln("  字符串:  strToInt / strToFloat / strContainsAny / strContainsIn")
+pln("  正则:    regContains")
+pln("  时间:    getNowStr")
+pln("  JSON:    getJsonNodeStr / getJsonNode")
+pln("  数组:    find")
+pln("  JWT:     genJwtToken / parseJwtToken")
+pln("  配置:    getCfgStr / setCfgStr / removeCfgStr / getCfgStrAll")
+pln("  表格:    showTable")
+pln("  输入:    getInput / getChar")

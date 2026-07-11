@@ -22,6 +22,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("jsonDecode", bi_json_decode);
     vm.register_builtin("toJson", bi_json_encode);
     vm.register_builtin("fromJson", bi_json_decode);
+    vm.register_builtin("getJsonNodeStr", bi_get_json_node_str);
+    vm.register_builtin("getJsonNode", bi_get_json_node);
 }
 
 // ---- 编码（Value → JSON 字符串）----
@@ -158,7 +160,7 @@ fn bi_json_encode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 const MAX_DEPTH: usize = 200;
 
 /// Decoder 递归下降 JSON 解析器，跟踪字节偏移用于错误定位。
-struct Decoder<'a> {
+pub struct Decoder<'a> {
     bytes: &'a [u8],
     pos: usize,
     /// depth 当前嵌套深度（对象/数组每层 +1）。
@@ -166,7 +168,7 @@ struct Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
-    fn new(s: &'a str) -> Self {
+    pub fn new(s: &'a str) -> Self {
         Decoder { bytes: s.as_bytes(), pos: 0, depth: 0 }
     }
 
@@ -195,7 +197,7 @@ impl<'a> Decoder<'a> {
     }
 
     /// parse_value 解析一个 JSON 值。
-    fn parse_value(&mut self) -> Result<Value, Value> {
+    pub fn parse_value(&mut self) -> Result<Value, Value> {
         self.skip_ws();
         match self.peek() {
             Some(b'{') => self.parse_object(),
@@ -414,4 +416,99 @@ fn bi_json_decode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         return Err(dec.err("JSON 末尾存在多余字符"));
     }
     Ok(v)
+}
+
+// ---- JSON 路径查询（gjson 风格）----
+
+/// query_json_node 按点分路径查询 JSON 节点，返回拥有的 Value。
+///
+/// 路径语法：
+///   "name"           → 顶层字段
+///   "user.name"      → 嵌套字段
+///   "users.0.name"   → 数组索引 + 嵌套
+///   "items.#"        → 数组长度
+///
+/// 不存在返回 undefined。
+fn query_json_node(root: &Value, path: &str) -> Value {
+    if path.is_empty() {
+        return root.clone();
+    }
+    let mut current = root.clone();
+    for part in path.split('.') {
+        if part.is_empty() {
+            continue;
+        }
+        if part == "#" {
+            if let Value::Array(arr) = &current {
+                let len = arr.lock().unwrap().len();
+                return Value::Int(len as i64);
+            }
+            return Value::Undefined;
+        }
+        // 计算下一节点，独立作用域避免借用冲突
+        let next: Option<Value> = if let Ok(idx) = part.parse::<i64>() {
+            match &current {
+                Value::Array(arr) => {
+                    let guard = arr.lock().unwrap();
+                    let len = guard.len() as i64;
+                    let actual = if idx < 0 { idx + len } else { idx };
+                    if actual < 0 || actual >= len { None }
+                    else { Some(guard[actual as usize].clone()) }
+                }
+                _ => None,
+            }
+        } else if let Value::Object(o) = &current {
+            let guard = o.lock().unwrap();
+            guard.get(part)
+        } else if let Value::Map(m) = &current {
+            let guard = m.lock().unwrap();
+            guard.get(part)
+        } else {
+            None
+        };
+        match next {
+            Some(v) => current = v,
+            None => return Value::Undefined,
+        }
+    }
+    current
+}
+
+/// bi_get_json_node 按 JSON 路径查询，返回原始 Value。
+///
+/// 用法：getJsonNode(data, "user.name") → "张三"
+///       getJsonNode(data, "users.0") → {id: 1, ...}
+///       getJsonNode(data, "users.#") → 3（数组长度）
+fn bi_get_json_node(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 1, "getJsonNode")?;
+    let path = bh::as_str(args, 1, "getJsonNode")?;
+    Ok(query_json_node(&args[0], path))
+}
+
+/// bi_get_json_node_str 按 JSON 路径查询，返回字符串表示。
+///
+/// 用法：getJsonNodeStr(jsonStr, "user.name") → "张三"
+///       getJsonNodeStr(jsonStr, "users.#") → "3"
+///
+/// 第一个参数可以是 JSON 字符串或已解析的 Value。
+fn bi_get_json_node_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 1, "getJsonNodeStr")?;
+    let path = bh::as_str(args, 1, "getJsonNodeStr")?;
+    // 第一个参数可以是 JSON 字符串或已解析的 Value
+    let parsed;
+    let root = match &args[0] {
+        Value::Str(s) => {
+            let mut dec = Decoder::new(s);
+            let v = dec.parse_value().map_err(|e| {
+                crate::value::error_value(format!(
+                    "getJsonNodeStr() JSON 解析失败: {} (可能原因：JSON 格式错误)", e.to_str(),
+                ))
+            })?;
+            parsed = v;
+            &parsed
+        }
+        other => other,
+    };
+    let result = query_json_node(root, path);
+    Ok(Value::str_from(result.to_str()))
 }

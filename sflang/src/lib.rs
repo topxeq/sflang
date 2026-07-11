@@ -68,6 +68,8 @@ pub mod builtins_xml;
 pub mod builtins_clipboard;
 pub mod builtins_test;
 pub mod builtins_pinyin;
+pub mod builtins_jwt;
+pub mod builtins_cfg;
 pub mod pinyin_data;
 pub mod api;
 

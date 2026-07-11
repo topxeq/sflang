@@ -3432,3 +3432,148 @@ fn test_zip_add_dir() {
     let _ = std::fs::remove_file(&zip_path);
     let _ = std::fs::remove_dir_all(&extract_dir);
 }
+
+// ---- 新增内置函数（Charlang 对标）----
+
+#[test]
+fn test_str_to_int_float() {
+    assert_eq!(eval("return strToInt(\"42\")"), Value::Int(42));
+    assert_eq!(eval("return strToInt(\"  -7  \")"), Value::Int(-7));
+    assert_eq!(eval("return strToInt(\"abc\", 99)"), Value::Int(99));
+    assert_eq!(eval("return strToInt(\"abc\")"), Value::Int(0));
+    match eval("return strToFloat(\"3.14\")") {
+        Value::Float(f) => assert!((f - 3.14).abs() < 1e-9),
+        other => panic!("期望 float，得到 {:?}", other),
+    }
+    match eval("return strToFloat(\"nan\", 0.0)") {
+        Value::Float(f) => assert!((f - 0.0).abs() < 1e-9),
+        other => panic!("期望 float，得到 {:?}", other),
+    }
+}
+
+#[test]
+fn test_str_contains_any_in() {
+    assert_eq!(eval("return strContainsAny(\"abc123\", \"0123456789\")"), Value::Bool(true));
+    assert_eq!(eval("return strContainsAny(\"abcdef\", \"0123456789\")"), Value::Bool(false));
+    assert_eq!(eval("return strContainsIn(\"Hello 世界\", [\"Python\", \"世界\"])"), Value::Bool(true));
+    assert_eq!(eval("return strContainsIn(\"Hello\", [\"Rust\", \"Go\"])"), Value::Bool(false));
+}
+
+#[test]
+fn test_reg_contains() {
+    // Sflang 正则参数顺序：regContains(pattern, text)
+    assert_eq!(eval(r#"return regContains(`\d+`, "abc123")"#), Value::Bool(true));
+    assert_eq!(eval(r#"return regContains(`\d+`, "abcdef")"#), Value::Bool(false));
+    assert_eq!(eval(r#"return regContains(`^\w+@\w+\.\w+$`, "a@b.com")"#), Value::Bool(true));
+}
+
+#[test]
+fn test_find_array() {
+    let r = eval(r#"
+        var users = [{name: "张三", age: 28}, {name: "李四", age: 35}, {name: "王五", age: 22}]
+        var found = find(users, func(u) { return u["age"] >= 30 })
+        return found["name"]
+    "#);
+    assert_eq!(r, Value::str("李四"));
+
+    let r2 = eval(r#"
+        var arr = [1, 2, 3]
+        var nf = find(arr, func(x) { return x > 100 })
+        return isUndefined(nf)
+    "#);
+    assert_eq!(r2, Value::Bool(true));
+}
+
+#[test]
+fn test_get_json_node_str() {
+    let r = eval(r#"
+        var j = `{"name":"Sflang","author":{"name":"张三"},"tags":["lang","rust"]}`
+        return getJsonNodeStr(j, "author.name")
+    "#);
+    assert_eq!(r, Value::str("张三"));
+
+    let r2 = eval(r#"
+        var j = `{"tags":["lang","rust","fast"]}`
+        return getJsonNodeStr(j, "tags.#")
+    "#);
+    assert_eq!(r2, Value::str("3"));
+
+    let r3 = eval(r#"
+        var j = `{"tags":["lang","rust","fast"]}`
+        return getJsonNodeStr(j, "tags.0")
+    "#);
+    assert_eq!(r3, Value::str("lang"));
+}
+
+#[test]
+fn test_jwt_round_trip() {
+    let r = eval(r#"
+        var payload = {"sub": "user123", "name": "张三"}
+        var token = genJwtToken(payload, "mySecret")
+        var parsed = parseJwtToken(token, "mySecret")
+        return getJsonNodeStr(parsed, "sub")
+    "#);
+    assert_eq!(r, Value::str("user123"));
+
+    let r2 = eval(r#"
+        var payload = {"sub": "user123", "name": "张三"}
+        var token = genJwtToken(payload, "mySecret")
+        var parsed = parseJwtToken(token, "mySecret")
+        return getJsonNodeStr(parsed, "name")
+    "#);
+    assert_eq!(r2, Value::str("张三"));
+}
+
+#[test]
+fn test_jwt_wrong_secret_fails() {
+    let r = run(r#"
+        var payload = {"sub": "user123"}
+        var token = genJwtToken(payload, "correctSecret")
+        var parsed = parseJwtToken(token, "wrongSecret")
+    "#);
+    assert!(r.is_err(), "错误密钥应返回错误");
+}
+
+#[test]
+fn test_show_table() {
+    let r = eval(r#"
+        var data = [["姓名","年龄"],["张三",28],["李四",35]]
+        return showTable(data)
+    "#);
+    match r {
+        Value::Str(s) => {
+            let s = s.as_ref();
+            assert!(s.contains("姓名"), "表格应含表头");
+            assert!(s.contains("张三"), "表格应含数据");
+            assert!(s.contains("李四"), "表格应含数据");
+            assert!(s.contains('+'), "表格应有边框");
+            assert!(s.contains('|'), "表格应有列分隔");
+        }
+        other => panic!("期望 string，得到 {:?}", other),
+    }
+}
+
+#[test]
+fn test_show_table_empty() {
+    let r = eval("return showTable([])");
+    match r {
+        Value::Str(s) => assert!(s.contains("empty"), "空表格应有提示"),
+        other => panic!("期望 string，得到 {:?}", other),
+    }
+}
+
+#[test]
+fn test_show_table_no_header() {
+    let r = eval(r#"
+        var data = [["张三",28],["李四",35]]
+        return showTable(data, {header: false})
+    "#);
+    match r {
+        Value::Str(s) => {
+            let lines: Vec<&str> = s.lines().collect();
+            // 无表头时只有上边框 + 2 行数据 + 下边框 = 4 行
+            assert_eq!(lines.len(), 4, "无表头应有 4 行");
+        }
+        other => panic!("期望 string，得到 {:?}", other),
+    }
+}

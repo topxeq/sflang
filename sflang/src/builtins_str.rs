@@ -57,6 +57,11 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("charFromCode", bi_char_from_code);
     vm.register_builtin("codeOf", bi_code_of);
     // contains / reverse 由 builtins_arr 多态实现（同时支持 string 与 array）
+    // 对标 Charlang 补充
+    vm.register_builtin("strToInt", bi_str_to_int);
+    vm.register_builtin("strToFloat", bi_str_to_float);
+    vm.register_builtin("strContainsAny", bi_str_contains_any);
+    vm.register_builtin("strContainsIn", bi_str_contains_in);
 }
 
 fn s_owned(t: String) -> Value {
@@ -518,4 +523,69 @@ fn bi_str_sub_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
     let slice = &bytes[start as usize..end as usize];
     Ok(s_owned(String::from_utf8_lossy(slice).into_owned()))
+}
+
+// ---- 对标 Charlang 补充 ----
+
+/// bi_str_to_int 字符串转整数，失败返回默认值（不报错）。
+///
+/// 用法：strToInt("42", 0) → 42
+///       strToInt("abc", -1) → -1
+fn bi_str_to_int(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "strToInt")?;
+    let default = if args.len() > 1 {
+        bh::as_int(args, 1, "strToInt")?
+    } else {
+        0
+    };
+    match s.trim().parse::<i64>() {
+        Ok(n) => Ok(Value::Int(n)),
+        Err(_) => Ok(Value::Int(default)),
+    }
+}
+
+/// bi_str_to_float 字符串转浮点，失败返回默认值（不报错）。
+///
+/// 用法：strToFloat("3.14", 0.0) → 3.14
+///       strToFloat("abc", 0.0) → 0.0
+fn bi_str_to_float(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "strToFloat")?;
+    let default = if args.len() > 1 {
+        bh::as_float(args, 1, "strToFloat")?
+    } else {
+        0.0
+    };
+    match s.trim().parse::<f64>() {
+        // 过滤 NaN/Infinity（通常不是期望的有限数字）
+        Ok(n) if n.is_finite() => Ok(Value::Float(n)),
+        _ => Ok(Value::Float(default)),
+    }
+}
+
+/// bi_str_contains_any 检查字符串是否包含字符集中的任意字符。
+///
+/// 用法：strContainsAny("hello", "aeiou") → true（包含 e/o）
+///       strContainsAny("xyz", "aeiou") → false
+fn bi_str_contains_any(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "strContainsAny")?;
+    let chars = bh::as_str(args, 1, "strContainsAny")?;
+    let char_set: std::collections::HashSet<char> = chars.chars().collect();
+    Ok(Value::Bool(s.chars().any(|c| char_set.contains(&c))))
+}
+
+/// bi_str_contains_in 检查字符串是否包含多个子串中的任意一个。
+///
+/// 用法：strContainsIn("hello world", ["world", "python"]) → true
+///       strContainsIn("hello", ["foo", "bar"]) → false
+fn bi_str_contains_in(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "strContainsIn")?;
+    let subs = bh::as_array(args, 1, "strContainsIn")?;
+    let guard = subs.lock().unwrap();
+    for sub in guard.iter() {
+        let sub_str = sub.to_str();
+        if s.contains(&sub_str) {
+            return Ok(Value::Bool(true));
+        }
+    }
+    Ok(Value::Bool(false))
 }

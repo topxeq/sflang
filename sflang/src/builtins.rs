@@ -47,6 +47,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("newObject", bi_new_object);
     vm.register_builtin("filter", bi_filter);
     vm.register_builtin("map", bi_map);
+    vm.register_builtin("find", bi_find);
     vm.register_builtin("sprintf", bi_sprintf);
     vm.register_builtin("spr", bi_sprintf);
     vm.register_builtin("fpr", bi_printf);
@@ -103,6 +104,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("globals", bi_globals);
     // ---- 格式化辅助 ----
     vm.register_builtin("toKMG", bi_to_kmg);
+    vm.register_builtin("showTable", bi_show_table);
 }
 
 /// bi_println 打印并换行。
@@ -1264,6 +1266,24 @@ fn bi_map(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Array(std::sync::Arc::new(std::sync::Mutex::new(result))))
 }
 
+/// bi_find 查找数组中第一个满足条件的元素，返回该元素或 undefined。
+///
+/// find(arr, fn) → 第一个 fn(x) 为真的元素，无则 undefined
+fn bi_find(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    let arr = bh::as_array(args, 0, "find")?;
+    bh::require_arg(args, 1, "find")?;
+    let pred = args[1].clone();
+    let snap = arr.lock().unwrap().clone();
+    for item in snap {
+        let matched = vm.call_function_value(pred.clone(), vec![item.clone()])?;
+        if matched.is_truthy() {
+            return Ok(item);
+        }
+    }
+    Ok(Value::Undefined)
+}
+
 /// bi_sprintf 格式化字符串（同 printf 的格式，但返回字符串而非打印）。
 fn bi_sprintf(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let s = sprintf(args)?;
@@ -1509,4 +1529,144 @@ fn bi_globals(vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
     let guard = g.lock().unwrap();
     let names: Vec<Value> = guard.keys().map(|k| Value::str_from(k.clone())).collect();
     Ok(Value::Array(std::sync::Arc::new(std::sync::Mutex::new(names))))
+}
+
+/// bi_show_table 将二维数组渲染为对齐的 ASCII 表格字符串。
+///
+/// 用法：
+///   showTable(data)            — data 第一行作为表头
+///   showTable(data, opts)      — opts 为 map，支持 header(默认true)、sep(默认"|")
+///
+/// data: Array of Array，每行元素会转为字符串显示
+/// 返回：表格字符串（不直接打印，调用方可用 println 输出）
+///
+/// 例：
+///   showTable([["姓名","年龄"],["张三",20],["李四",25]])
+///   →
+///   +------+----+
+///   | 姓名 | 年龄 |
+///   +------+----+
+///   | 张三 | 20  |
+///   | 李四 | 25  |
+///   +------+----+
+fn bi_show_table(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    let arr = bh::as_array(args, 0, "showTable")?;
+    let snapshot = arr.lock().unwrap().clone();
+
+    if snapshot.is_empty() {
+        return Ok(Value::str_from("(empty table)".to_string()));
+    }
+
+    // 解析可选第二参数 opts（map/object），支持 header 和 sep
+    let mut header = true;
+    let mut sep = "|".to_string();
+    if args.len() > 1 {
+        match &args[1] {
+            Value::Map(m) => {
+                let g = m.lock().unwrap();
+                if let Some(Value::Bool(b)) = g.get("header") {
+                    header = b;
+                }
+                if let Some(Value::Str(s)) = g.get("sep") {
+                    sep = s.to_string();
+                }
+            }
+            Value::Object(o) => {
+                let g = o.lock().unwrap();
+                if let Some(Value::Bool(b)) = g.data.get("header") {
+                    header = *b;
+                }
+                if let Some(Value::Str(s)) = g.data.get("sep") {
+                    sep = s.to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // 把每行转为 Vec<String>，校验每行是数组
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(snapshot.len());
+    for (i, row) in snapshot.iter().enumerate() {
+        match row {
+            Value::Array(r) => {
+                let cells: Vec<String> = r.lock().unwrap().iter().map(|v| v.to_str()).collect();
+                rows.push(cells);
+            }
+            v => {
+                return Err(crate::value::error_value(format!(
+                    "showTable() 第 {} 行不是数组 (得到 {})，可能原因：每行必须是一维数组",
+                    i, v.type_name(),
+                )));
+            }
+        }
+    }
+
+    // 计算每列最大宽度
+    let n_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    if n_cols == 0 {
+        return Ok(Value::str_from("(empty table)".to_string()));
+    }
+    let mut widths = vec![0usize; n_cols];
+    for r in &rows {
+        for (i, c) in r.iter().enumerate() {
+            let w = c.chars().count();
+            if w > widths[i] {
+                widths[i] = w;
+            }
+        }
+    }
+
+    // 渲染：边框 + 数据行
+    let pad = |s: &str, w: usize| -> String {
+        let len = s.chars().count();
+        if len >= w {
+            s.to_string()
+        } else {
+            format!("{}{}", s, " ".repeat(w - len))
+        }
+    };
+
+    let border = {
+        let mut b = String::from("+");
+        for &w in &widths {
+            b.push_str(&"-".repeat(w + 2));
+            b.push('+');
+        }
+        b
+    };
+
+    let mut out = String::new();
+    out.push_str(&border);
+    out.push('\n');
+
+    for (idx, r) in rows.iter().enumerate() {
+        if header && idx == 0 {
+            // 表头行
+            out.push_str(&sep);
+            for (i, &w) in widths.iter().enumerate() {
+                let cell = r.get(i).map(|s| s.as_str()).unwrap_or("");
+                out.push(' ');
+                out.push_str(&pad(cell, w));
+                out.push(' ');
+                out.push_str(&sep);
+            }
+            out.push('\n');
+            out.push_str(&border);
+            out.push('\n');
+        } else {
+            out.push_str(&sep);
+            for (i, &w) in widths.iter().enumerate() {
+                let cell = r.get(i).map(|s| s.as_str()).unwrap_or("");
+                out.push(' ');
+                out.push_str(&pad(cell, w));
+                out.push(' ');
+                out.push_str(&sep);
+            }
+            out.push('\n');
+        }
+    }
+    out.push_str(&border);
+
+    Ok(Value::str_from(out))
 }

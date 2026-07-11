@@ -246,3 +246,36 @@ mod tests {
             "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
     }
 }
+
+/// hmac_sha256 计算 HMAC-SHA256，返回 32 字节 Vec<u8>。
+///
+/// 用于 JWT 签名、消息认证等场景。
+pub fn hmac_sha256(key: &[u8], message: &[u8]) -> Vec<u8> {
+    const BLOCK_SIZE: usize = 64;
+
+    let key_processed: Vec<u8> = if key.len() > BLOCK_SIZE {
+        sha256(key).to_vec()
+    } else {
+        key.to_vec()
+    };
+
+    let mut k_padded = [0u8; BLOCK_SIZE];
+    k_padded[..key_processed.len()].copy_from_slice(&key_processed);
+
+    let mut ipad = [0u8; BLOCK_SIZE];
+    let mut opad = [0u8; BLOCK_SIZE];
+    for i in 0..BLOCK_SIZE {
+        ipad[i] = k_padded[i] ^ 0x36;
+        opad[i] = k_padded[i] ^ 0x5c;
+    }
+
+    let mut inner_input = Vec::with_capacity(BLOCK_SIZE + message.len());
+    inner_input.extend_from_slice(&ipad);
+    inner_input.extend_from_slice(message);
+    let inner_hash = sha256(&inner_input);
+
+    let mut outer_input = Vec::with_capacity(BLOCK_SIZE + inner_hash.len());
+    outer_input.extend_from_slice(&opad);
+    outer_input.extend_from_slice(&inner_hash);
+    sha256(&outer_input).to_vec()
+}

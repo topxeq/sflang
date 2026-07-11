@@ -40,6 +40,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("dtAddSeconds", bi_dt_add_seconds);
     vm.register_builtin("dtAddMillis", bi_dt_add_millis);
     vm.register_builtin("dtToMillis", bi_dt_to_millis);
+    // 便捷函数
+    vm.register_builtin("getNowStr", bi_get_now_str);
 }
 
 /// MONOTONIC_BASE 进程级单调时钟基准（懒初始化）。
@@ -202,4 +204,19 @@ fn bi_dt_add_millis(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 fn bi_dt_to_millis(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let dt = as_dt(args, 0, "dtToMillis")?;
     Ok(Value::Int(dt.to_millis()))
+}
+
+/// bi_get_now_str 返回当前时间的格式化字符串。
+///
+/// 用法：getNowStr() → "2026-07-11 14:30:25"（默认格式）
+///       getNowStr("2006-01-02") → "2026-07-11"（自定义格式）
+fn bi_get_now_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    let fmt = if args.is_empty() {
+        "2006-01-02 15:04:05"
+    } else {
+        bh::as_str(args, 0, "getNowStr")?
+    };
+    let dt = DateTime::now();
+    Ok(Value::str_from(dt.format(fmt)))
 }

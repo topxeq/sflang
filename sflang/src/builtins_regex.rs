@@ -35,6 +35,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("regCompile", bi_reg_compile);
     vm.register_builtin("regQuote", bi_reg_quote);
     vm.register_builtin("regCount", bi_reg_count);
+    vm.register_builtin("regContains", bi_reg_match);  // regMatch 的语义化别名
 }
 
 /// get_regex 从参数获取正则：支持 string（现场编译）或 regCompile 预编译对象。

@@ -52,6 +52,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("systemCmd", bi_system_cmd);
     vm.register_builtin("exit", bi_exit);
     vm.register_builtin("getOsArgs", bi_get_os_args);
+    vm.register_builtin("getInput", bi_get_input);
+    vm.register_builtin("getChar", bi_get_char);
 }
 
 /// bi_get_env 读取环境变量，无则返回 undefined。
@@ -268,4 +270,77 @@ fn bi_exit(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 fn bi_get_os_args(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
     let full_args: Vec<Value> = std::env::args().map(Value::str_from).collect();
     Ok(Value::Array(Arc::new(std::sync::Mutex::new(full_args))))
+}
+
+/// bi_get_input 从标准输入读取一行文本（去除末尾换行）。
+///
+/// 用法：line := getInput()
+///       name := getInput("请输入姓名: ")  // 带提示
+/// EOF（Ctrl+D / Ctrl+Z）返回 undefined。
+fn bi_get_input(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use std::io::Write;
+    // 可选提示
+    if !args.is_empty() {
+        let prompt = bh::as_str(args, 0, "getInput")?;
+        if !prompt.is_empty() {
+            print!("{}", prompt);
+            let _ = std::io::stdout().flush();
+        }
+    }
+    let mut line = String::new();
+    match std::io::stdin().read_line(&mut line) {
+        Ok(0) => Ok(Value::Undefined),  // EOF
+        Ok(_) => {
+            // 去除末尾换行（\n 或 \r\n）
+            while line.ends_with('\n') || line.ends_with('\r') {
+                line.pop();
+            }
+            Ok(Value::str_from(line))
+        }
+        Err(e) => Err(crate::value::error_value(format!(
+            "getInput() 读取输入失败: {} (可能原因：stdin 被关闭或重定向)", e,
+        ))),
+    }
+}
+
+/// bi_get_char 从标准输入读取单个字符（无回车，需按键即返回）。
+///
+/// 用法：ch := getChar()
+/// EOF 返回 undefined。
+fn bi_get_char(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
+    use std::io::Read;
+    let mut buf = [0u8; 1];
+    match std::io::stdin().read(&mut buf) {
+        Ok(0) => Ok(Value::Undefined),
+        Ok(_) => {
+            // 处理 UTF-8 多字节字符
+            let first = buf[0];
+            let need = if first < 0x80 { 1 }
+                       else if first < 0xC0 { 1 }  // 无效 UTF-8 前导，按 1 字节
+                       else if first < 0xE0 { 2 }
+                       else if first < 0xF0 { 3 }
+                       else { 4 };
+            if need == 1 {
+                // ASCII 或无效字节，尝试转 char
+                Ok(Value::str_from((first as char).to_string()))
+            } else {
+                // 读取剩余字节
+                let mut full = vec![first];
+                for _ in 1..need {
+                    let mut b = [0u8; 1];
+                    match std::io::stdin().read(&mut b) {
+                        Ok(0) => break,
+                        Ok(_) => full.push(b[0]),
+                        Err(e) => return Err(crate::value::error_value(format!(
+                            "getChar() 读取多字节字符失败: {}", e,
+                        ))),
+                    }
+                }
+                Ok(Value::str_from(String::from_utf8_lossy(&full).to_string()))
+            }
+        }
+        Err(e) => Err(crate::value::error_value(format!(
+            "getChar() 读取字符失败: {} (可能原因：stdin 被关闭)", e,
+        ))),
+    }
 }
