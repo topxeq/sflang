@@ -1,0 +1,58 @@
+// zip 压缩与解压示例
+// 演示数据压缩、gzip、ZIP 文件基本操作
+
+pln("=== Sflang zip 压缩示例 ===")
+
+// 1. 数据压缩 (deflate)
+text := "这是一段需要压缩的文本数据，包含中文和 English 内容。"
+pln("原文:", text)
+pln("原文长度:", len(text), "字符")
+
+compressed := compressBytes(text, 9)
+pln("压缩后:", len(compressed), "字节")
+
+decompressed := decompressBytes(compressed)
+pln("解压后:", strFromBytes(decompressed))
+pln("")
+
+// 2. gzip 格式
+gz := gzipBytes(text, 6)
+pln("gzip 压缩:", len(gz), "字节")
+pln("gunzip 还原:", strFromBytes(gunzipBytes(gz)))
+pln("")
+
+// 3. ZIP 文件操作
+zipPath := joinPath(getTempDir(), "sflang_zipdemo.zip")
+
+// 创建 zip
+zw := zipCreate(zipPath)
+zipAddBytes(zw, "Hello from Sflang!", "hello.txt")
+zipAddBytes(zw, "中文内容测试", "中文文件.txt")
+zipAddBytes(zw, "嵌套目录文件", "dir/nested.txt")
+zipClose(zw)
+pln("zip 已创建:", zipPath)
+
+// 列出条目
+entries := zipList(zipPath)
+pln("条目数:", len(entries))
+for e in entries {
+    pl("  %s (%d 字节)\n", e["name"], e["size"])
+}
+
+// 读取单个文件
+content := zipReadFile(zipPath, "中文文件.txt")
+pln("读取 中文文件.txt:", strFromBytes(content))
+
+// 解压全部
+extractDir := joinPath(getTempDir(), "sflang_zipdemo_extract")
+count := zipExtract(zipPath, extractDir)
+pln("解压", count, "个文件到:", extractDir)
+
+// 清理（用系统命令递归删除目录）
+deleteFile(zipPath)
+if osName() == "windows" {
+    systemCmd("rmdir /s /q \"" + extractDir + "\"")
+} else {
+    systemCmd("rm -rf \"" + extractDir + "\"")
+}
+pln("清理完成")

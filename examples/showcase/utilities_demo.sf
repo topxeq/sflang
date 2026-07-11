@@ -1,0 +1,200 @@
+// 高价值内置函数综合示例
+// 演示字符串、HTML、文件、数组、正则、URL、调试、容器等常用函数
+//
+// 用法：sf examples/showcase/utilities_demo.sf
+
+pln("========================================")
+pln("    Sflang 实用函数综合示例")
+pln("========================================")
+
+// ============================================================
+// 1. 字符串包含判断 (strContains / contains)
+// ============================================================
+pln("")
+pln("【1. 字符串包含判断】")
+
+text := "Sflang 是一门轻量级语言"
+pln("  contains(text, \"轻量级\"):", contains(text, "轻量级"))    // true
+pln("  strContains(text, \"Python\"):", strContains(text, "Python"))  // false
+pln("  contains([1,2,3], 2):", contains([1, 2, 3], 2))          // true
+
+// ============================================================
+// 2. HTML 实体编解码 (htmlEncode / htmlDecode)
+// ============================================================
+pln("")
+pln("【2. HTML 实体编解码】")
+
+raw := "<div class=\"item\">a & b</div>"
+encoded := htmlEncode(raw)
+pln("  原文:", raw)
+pln("  编码:", encoded)
+pln("  解码:", htmlDecode(encoded))
+pln("  数字实体:", htmlDecode("&#65;&#66;&#67;"))  // ABC
+
+// ============================================================
+// 3. 文件操作 (copyFile / createTempFile / createTempDir)
+// ============================================================
+pln("")
+pln("【3. 文件操作】")
+
+// 临时文件
+tmpFile := createTempFile("sflang_demo_")
+writeFile(tmpFile, "临时文件内容")
+pln("  临时文件:", tmpFile)
+pln("  大小:", getFileSize(tmpFile), "字节")
+
+// 复制文件
+tmpFile2 := createTempFile("sflang_demo_")
+copyFile(tmpFile, tmpFile2)
+pln("  复制后内容:", readFile(tmpFile2))
+
+// 临时目录
+tmpDir := createTempDir("sflang_demo_")
+pln("  临时目录:", tmpDir, "isDir:", isDir(tmpDir))
+
+// 清理
+deleteFile(tmpFile)
+deleteFile(tmpFile2)
+
+// ============================================================
+// 4. 数组打乱 (shuffle)
+// ============================================================
+pln("")
+pln("【4. 数组打乱】")
+
+cards := [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+pln("  原始:", cards)
+shuffle(cards)
+pln("  打乱:", cards)
+pln("  排序:", sort(concat([], cards)))  // concat 克隆后再排序
+
+// ============================================================
+// 5. 数字格式化 (toKMG)
+// ============================================================
+pln("")
+pln("【5. 数字 KMG 格式化】")
+
+sizes := [500, 1536, 1048576, 1073741824, 1099511627776]
+for n in sizes {
+    pln("  ", n, "->", toKMG(n))
+}
+
+// ============================================================
+// 6. 正则工具 (regQuote / regCount)
+// ============================================================
+pln("")
+pln("【6. 正则工具】")
+
+// regQuote：转义用户输入，安全嵌入正则
+userInput := "price: $1.50 (each)"
+quoted := regQuote(userInput)
+pln("  原文:", userInput)
+pln("  转义:", quoted)
+pln("  匹配:", regMatch(quoted, userInput))  // true
+
+// regCount：统计匹配次数
+content := "abc123def456ghi789jkl"
+pln("  文本:", content)
+pln("  数字段数:", regCount(`\d+`, content))  // 3
+
+// ============================================================
+// 7. URL 解析 (parseUrl)
+// ============================================================
+pln("")
+pln("【7. URL 解析】")
+
+url := "https://example.com:8080/path/to/file?q=1&r=2#section"
+parts := parseUrl(url)
+pln("  URL:", url)
+pln("  scheme:", parts["scheme"])
+pln("  host:", parts["host"])
+pln("  port:", parts["port"])
+pln("  path:", parts["path"])
+pln("  query:", parts["query"])
+pln("  fragment:", parts["fragment"])
+
+// ============================================================
+// 8. MIME 类型 (getMimeType)
+// ============================================================
+pln("")
+pln("【8. MIME 类型】")
+
+files := ["photo.jpg", "doc.pdf", "data.json", "script.sf", "song.mp3", "archive.zip"]
+for f in files {
+    pln("  ", f, "->", getMimeType(f))
+}
+
+// ============================================================
+// 9. 调试与反射 (dumpVar / globals)
+// ============================================================
+pln("")
+pln("【9. 调试与反射】")
+
+// dumpVar 输出变量详细信息
+pln("  dumpVar(42):")
+pln(dumpVar(42))
+
+pln("  dumpVar(map):")
+sample := {"name": "Sflang", "version": 1}
+pln(dumpVar(sample))
+
+// globals 列出所有全局变量名
+allGlobals := globals()
+pln("  全局变量数量:", len(allGlobals))
+
+// ============================================================
+// 10. Stack 栈容器 (LIFO)
+// ============================================================
+pln("")
+pln("【10. Stack 栈容器】")
+
+// 栈：后进先出，适合撤销栈、括号匹配、表达式求值
+undoStack := newStack()
+
+// 模拟编辑器操作
+stackPush(undoStack, "输入Hello")
+stackPush(undoStack, "输入World")
+stackPush(undoStack, "删除字符")
+
+pln("  栈深度:", stackLen(undoStack))
+pln("  栈顶:", stackPeek(undoStack))  // 删除字符
+
+// 撤销操作：逆序出栈
+pln("  撤销 1:", stackPop(undoStack))  // 删除字符
+pln("  撤销 2:", stackPop(undoStack))  // 输入World
+pln("  撤销 3:", stackPop(undoStack))  // 输入Hello
+pln("  撤销 4:", stackPop(undoStack), "(空栈返回 undefined)")
+
+// ============================================================
+// 11. Queue 队列容器 (FIFO)
+// ============================================================
+pln("")
+pln("【11. Queue 队列容器】")
+
+// 队列：先进先出，适合任务调度、消息处理
+taskQueue := newQueue(3)  // 容量上限 3
+
+queuePush(taskQueue, "任务A")
+queuePush(taskQueue, "任务B")
+queuePush(taskQueue, "任务C")
+
+pln("  队列长度:", queueLen(taskQueue))
+pln("  队首:", queuePeek(taskQueue))  // 任务A
+
+// 容量满时返回 error
+try {
+    queuePush(taskQueue, "任务D")
+} catch (e) {
+    pln("  队列已满:", e)
+}
+
+// 按顺序处理任务
+pln("  处理:", queuePop(taskQueue))  // 任务A
+pln("  处理:", queuePop(taskQueue))  // 任务B
+pln("  处理:", queuePop(taskQueue))  // 任务C
+pln("  处理:", queuePop(taskQueue), "(空队列返回 undefined)")
+
+pln("")
+pln("========================================")
+pln("    全部示例完成")
+pln("========================================")

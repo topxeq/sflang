@@ -20,11 +20,13 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("sortByFunc", bi_sort_by_func);
     vm.register_builtin("reverse", bi_reverse);
     vm.register_builtin("contains", bi_contains);
+    vm.register_builtin("strContains", bi_contains);  // str 前缀别名，命名一致性
     vm.register_builtin("indexOf", bi_index_of);
     vm.register_builtin("slice", bi_slice);
     vm.register_builtin("concat", bi_concat);
     vm.register_builtin("insert", bi_insert);
     vm.register_builtin("remove", bi_remove);
+    vm.register_builtin("shuffle", bi_shuffle);
 }
 
 /// sort_key 为元素生成可比较的排序键。
@@ -272,4 +274,17 @@ fn bi_remove(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         )));
     }
     Ok(guard.remove(idx as usize))
+}
+
+/// bi_shuffle 原地随机打乱数组（Fisher-Yates 洗牌）。
+fn bi_shuffle(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let arr = bh::as_array(args, 0, "shuffle")?;
+    let mut guard = arr.lock().unwrap();
+    let n = guard.len();
+    // Fisher-Yates：从末尾向前，与随机位置交换
+    for i in (1..n).rev() {
+        let j = (crate::builtins_math::next_rand() as usize) % (i + 1);
+        guard.swap(i, j);
+    }
+    Ok(args[0].clone())
 }

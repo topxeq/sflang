@@ -1,27 +1,41 @@
-// port of queue.char — 队列数据结构（FIFO）
+// 队列数据结构示例（FIFO）
+//
+// Sflang 提供原生 Queue 类型，支持容量上限。
+// 用法：sf examples/charlang/queue.sf
 
-// 基于 array 实现
-queue := []
+pln("== 基本队列操作 ==")
 
-func enqueue(q, v) {
-    push(q, v)
+// newQueue() 创建无上限队列，newQueue(n) 创建容量上限为 n 的队列
+q := newQueue()
+
+// 入队
+queuePush(q, "first")
+queuePush(q, "second")
+queuePush(q, "third")
+
+pln("len:", queueLen(q))            // 3
+pln("peek:", queuePeek(q))          // first（查看队首，不出队）
+pln("dequeue:", queuePop(q))       // first
+pln("dequeue:", queuePop(q))       // second
+pln("len:", queueLen(q))            // 1
+pln("dequeue:", queuePop(q))       // third
+pln("dequeue:", queuePop(q), "(空队列返回 undefined)")
+
+pln("")
+pln("== 容量上限 ==")
+
+// 容量上限为 2 的队列，超过时返回 error
+q2 := newQueue(2)
+queuePush(q2, 10)
+queuePush(q2, 20)
+
+try {
+    queuePush(q2, 30)
+} catch (e) {
+    pln("队列已满，正确拦截:", e)
 }
 
-func dequeue(q) {
-    if len(q) == 0 {
-        return undefined
-    }
-    return remove(q, 0)
-}
-
-// 测试
-enqueue(queue, "first")
-enqueue(queue, "second")
-enqueue(queue, "third")
-
-pln("len:", len(queue))
-pln("dequeue:", dequeue(queue))
-pln("dequeue:", dequeue(queue))
-pln("len:", len(queue))
-pln("dequeue:", dequeue(queue))
-pln("dequeue:", dequeue(queue), "(空队列返回 undefined)")
+pln("len:", queueLen(q2))           // 2
+pln("dequeue:", queuePop(q2))       // 10
+queueClear(q2)
+pln("clear 后 len:", queueLen(q2))  // 0

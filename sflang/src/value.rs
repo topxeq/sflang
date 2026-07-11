@@ -307,6 +307,12 @@ impl Value {
                 if n.downcast_ref::<std::sync::Arc<crate::builtins_http::SfHttpServer>>().is_some() {
                     return "httpServer".to_string();
                 }
+                if n.downcast_ref::<std::sync::Arc<crate::builtins_containers::StackT>>().is_some() {
+                    return "stack".to_string();
+                }
+                if n.downcast_ref::<std::sync::Arc<crate::builtins_containers::QueueT>>().is_some() {
+                    return "queue".to_string();
+                }
                 "native".to_string()
             }
             other => other.type_code().name().to_string(),

@@ -27,6 +27,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("urlDecode", bi_url_decode);
     vm.register_builtin("urlFormEncode", bi_url_form_encode);
     vm.register_builtin("urlFormDecode", bi_url_form_decode);
+    vm.register_builtin("htmlEncode", bi_html_encode);
+    vm.register_builtin("htmlDecode", bi_html_decode);
 }
 
 /// to_bytes 将参数转为字节 Vec（接受 string/bytes/byteArray）。
@@ -313,4 +315,85 @@ fn bi_base64url_decode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         out.push((n >> 8) as u8);
     }
     Ok(Value::Bytes(Arc::new(out)))
+}
+
+// ---- HTML 实体编解码 ----
+
+/// bi_html_encode 将字符串中的 HTML 特殊字符转义为实体。
+///
+/// 转义规则：& < > " ' → &amp; &lt; &gt; &quot; &#39;
+/// 适用于将用户输入安全嵌入 HTML 文本，防止 XSS。
+fn bi_html_encode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "htmlEncode")?;
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            other => out.push(other),
+        }
+    }
+    Ok(Value::str_from(out))
+}
+
+/// bi_html_decode 将 HTML 实体解码回原始字符。
+///
+/// 支持命名实体（&amp; &lt; &gt; &quot; &#39; &apos; &nbsp;）和数字实体（&#NN; &#xNN;）。
+fn bi_html_decode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "htmlDecode")?;
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'&' {
+            // 查找分号
+            if let Some(semi) = bytes[i..].iter().position(|&b| b == b';') {
+                let entity = &s[i + 1..i + semi];
+                let end = i + semi + 1;
+                if let Some(decoded) = decode_html_entity(entity) {
+                    out.push_str(&decoded);
+                    i = end;
+                    continue;
+                }
+            }
+            // 无法识别的实体，原样输出 &
+            out.push('&');
+            i += 1;
+        } else {
+            // 安全取字符（UTF-8 边界）
+            let ch = s[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    Ok(Value::str_from(out))
+}
+
+/// decode_html_entity 解码单个 HTML 实体内容（不含 & 和 ;）。
+fn decode_html_entity(entity: &str) -> Option<String> {
+    match entity {
+        "amp" => Some("&".to_string()),
+        "lt" => Some("<".to_string()),
+        "gt" => Some(">".to_string()),
+        "quot" => Some("\"".to_string()),
+        "apos" => Some("'".to_string()),
+        "nbsp" => Some("\u{00A0}".to_string()),
+        other => {
+            // 数字实体：&#NN; 或 &#xNN;
+            if let Some(hex) = other.strip_prefix("#x") {
+                u32::from_str_radix(hex, 16).ok()
+                    .and_then(char::from_u32)
+                    .map(|c| c.to_string())
+            } else if let Some(dec) = other.strip_prefix('#') {
+                dec.parse::<u32>().ok()
+                    .and_then(char::from_u32)
+                    .map(|c| c.to_string())
+            } else {
+                None
+            }
+        }
+    }
 }

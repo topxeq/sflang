@@ -33,6 +33,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("regReplace", bi_reg_replace);
     vm.register_builtin("regSplit", bi_reg_split);
     vm.register_builtin("regCompile", bi_reg_compile);
+    vm.register_builtin("regQuote", bi_reg_quote);
+    vm.register_builtin("regCount", bi_reg_count);
 }
 
 /// get_regex 从参数获取正则：支持 string（现场编译）或 regCompile 预编译对象。
@@ -138,4 +140,31 @@ fn bi_reg_compile(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     )))?;
     // 用 Arc<Regex> 包装为 Native 值
     Ok(Value::Native(Arc::new(Arc::new(re))))
+}
+
+/// bi_reg_quote 转义字符串中的正则特殊字符。
+///
+/// 将用户输入安全嵌入正则模式串。特殊字符 . * + ? ( ) [ ] { } ^ $ | \ 被加反斜杠前缀。
+fn bi_reg_quote(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "regQuote")?;
+    let mut out = String::with_capacity(s.len() * 2);
+    for c in s.chars() {
+        match c {
+            '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            other => out.push(other),
+        }
+    }
+    Ok(Value::str_from(out))
+}
+
+/// bi_reg_count 统计正则匹配次数。
+///
+/// 用法：regCount(pattern, s)
+fn bi_reg_count(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let re = get_regex(&args[0])?;
+    let s = bh::as_str(args, 1, "regCount")?;
+    Ok(Value::Int(re.find_iter(s).count() as i64))
 }

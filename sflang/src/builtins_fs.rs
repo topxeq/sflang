@@ -11,6 +11,10 @@
 //!     writeFile(path, text)   — 覆盖写入字符串
 //!     appendFile(path, text)  — 追加写入字符串
 //!     fileExists(path)        — 判断路径是否存在
+//!     isFile(path)            — 判断路径是否为文件
+//!     isDir(path)             — 判断路径是否为目录
+//!     getFileInfo(path)       — 获取文件信息（大小/修改时间/类型）
+//!     getFileSize(path)       — 获取文件大小（字节）
 //!     deleteFile(path)        — 删除文件
 //!     readLines(path)         — 按行读取为数组（保留行内容，去换行符）
 //!     readFileBytes(path)     — 读取整个文件为 bytes
@@ -42,6 +46,13 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("writeFile", bi_write_file);
     vm.register_builtin("appendFile", bi_append_file);
     vm.register_builtin("fileExists", bi_file_exists);
+    vm.register_builtin("isFile", bi_is_file);
+    vm.register_builtin("isDir", bi_is_dir);
+    vm.register_builtin("getFileInfo", bi_get_file_info);
+    vm.register_builtin("getFileSize", bi_get_file_size);
+    vm.register_builtin("copyFile", bi_copy_file);
+    vm.register_builtin("createTempFile", bi_create_temp_file);
+    vm.register_builtin("createTempDir", bi_create_temp_dir);
     vm.register_builtin("deleteFile", bi_delete_file);
     vm.register_builtin("readLines", bi_read_lines);
     // 二进制 IO（读取/写入原始字节，不经过 UTF-8 解码）
@@ -112,6 +123,134 @@ fn bi_append_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 fn bi_file_exists(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let path = bh::as_str(args, 0, "fileExists")?;
     Ok(Value::Bool(Path::new(path).exists()))
+}
+
+/// bi_is_file 判断路径是否为文件（不存在返回 false）。
+fn bi_is_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let path = bh::as_str(args, 0, "isFile")?;
+    Ok(Value::Bool(Path::new(path).is_file()))
+}
+
+/// bi_is_dir 判断路径是否为目录（不存在返回 false）。
+fn bi_is_dir(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let path = bh::as_str(args, 0, "isDir")?;
+    Ok(Value::Bool(Path::new(path).is_dir()))
+}
+
+/// bi_get_file_info 获取文件信息，返回 map。
+///
+/// 返回字段：
+///   size: int            文件大小（字节）
+///   modified: int        修改时间（Unix 时间戳，秒）
+///   isDir: bool          是否目录
+///   isFile: bool         是否文件
+///   isReadOnly: bool     是否只读
+///
+/// 不存在则返回 error。
+fn bi_get_file_info(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let path = bh::as_str(args, 0, "getFileInfo")?;
+    let meta = fs::metadata(Path::new(path)).map_err(|e| io_err("getFileInfo", path, e))?;
+
+    let size = meta.len() as i64;
+    let is_dir = meta.is_dir();
+    let is_file = meta.is_file();
+    let is_readonly = meta.permissions().readonly();
+
+    // 修改时间转为 Unix 时间戳（秒）
+    let modified: i64 = meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let obj = crate::object_map::new_map();
+    {
+        let mut m = obj.lock().unwrap();
+        m.set("size".to_string(), Value::Int(size));
+        m.set("modified".to_string(), Value::Int(modified));
+        m.set("isDir".to_string(), Value::Bool(is_dir));
+        m.set("isFile".to_string(), Value::Bool(is_file));
+        m.set("isReadOnly".to_string(), Value::Bool(is_readonly));
+    }
+    Ok(Value::Object(obj))
+}
+
+/// bi_get_file_size 获取文件大小（字节）。
+///
+/// 不存在则返回 error。
+fn bi_get_file_size(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let path = bh::as_str(args, 0, "getFileSize")?;
+    let meta = fs::metadata(Path::new(path)).map_err(|e| io_err("getFileSize", path, e))?;
+    Ok(Value::Int(meta.len() as i64))
+}
+
+/// bi_copy_file 复制文件（覆盖目标）。
+///
+/// 用法：copyFile(srcPath, dstPath)
+/// 源须为文件，目标目录不存在则报错。
+fn bi_copy_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let src = bh::as_str(args, 0, "copyFile")?;
+    let dst = bh::as_str(args, 1, "copyFile")?;
+    fs::copy(Path::new(src), Path::new(dst)).map_err(|e| {
+        let hint = if e.kind() == std::io::ErrorKind::NotFound {
+            "源文件不存在或目标目录不存在"
+        } else {
+            "权限不足或路径非法"
+        };
+        crate::value::error_value(format!(
+            "copyFile() 失败: '{}' -> '{}' - {} (可能原因：{})",
+            src, dst, e, hint,
+        ))
+    })?;
+    Ok(Value::Undefined)
+}
+
+/// bi_create_temp_file 创建临时文件，返回路径。
+///
+/// 用法：createTempFile() 或 createTempFile(prefix)
+/// 在系统临时目录下创建唯一命名的空文件，返回完整路径。
+fn bi_create_temp_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let prefix = match args.get(0) {
+        Some(Value::Str(s)) => s.to_string(),
+        _ => "sflang_".to_string(),
+    };
+    // 用进程唯一计数 + 随机数生成唯一名，避免依赖未稳定的 std::fs::tempfile
+    let id = std::process::id();
+    let rand = crate::builtins_math::next_rand();
+    let name = format!("{}{}_{}_{:x}", prefix, id, std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0), rand);
+    let dir = std::env::temp_dir();
+    let path = dir.join(&name);
+    // 创建空文件
+    fs::File::create(&path).map_err(|e| crate::value::error_value(format!(
+        "createTempFile() 创建失败: {} (临时目录: {})", e, dir.display()
+    )))?;
+    Ok(Value::str_from(path.to_string_lossy().into_owned()))
+}
+
+/// bi_create_temp_dir 创建临时目录，返回路径。
+///
+/// 用法：createTempDir() 或 createTempDir(prefix)
+/// 在系统临时目录下创建唯一命名的目录，返回完整路径。
+fn bi_create_temp_dir(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let prefix = match args.get(0) {
+        Some(Value::Str(s)) => s.to_string(),
+        _ => "sflang_".to_string(),
+    };
+    let id = std::process::id();
+    let rand = crate::builtins_math::next_rand();
+    let name = format!("{}{}_{}_{:x}", prefix, id, std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0), rand);
+    let dir = std::env::temp_dir();
+    let path = dir.join(&name);
+    fs::create_dir_all(&path).map_err(|e| crate::value::error_value(format!(
+        "createTempDir() 创建失败: {} (临时目录: {})", e, dir.display()
+    )))?;
+    Ok(Value::str_from(path.to_string_lossy().into_owned()))
 }
 
 /// bi_delete_file 删除文件。返回是否删除成功（不存在视为失败并报错）。

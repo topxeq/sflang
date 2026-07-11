@@ -190,6 +190,10 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("postWeb", bi_post_web);
     vm.register_builtin("downloadFile", bi_download_file);
     vm.register_builtin("urlExists", bi_url_exists);
+
+    // URL 与 MIME 工具
+    vm.register_builtin("parseUrl", bi_parse_url);
+    vm.register_builtin("getMimeType", bi_get_mime_type);
 }
 
 // ===========================================================================
@@ -3001,5 +3005,170 @@ fn bi_url_exists(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     match http_lite::http_get(&url, &[], 10) {
         Ok(resp) => Ok(Value::Bool(resp.status < 400)),
         Err(_) => Ok(Value::Bool(false)),
+    }
+}
+
+// ===========================================================================
+// URL 解析与 MIME 类型
+// ===========================================================================
+
+/// bi_parse_url 解析 URL，返回 map。
+///
+/// 返回字段：scheme, host, port, path, query, fragment
+/// 不含某部分则为空字符串。端口未显式给出时为 0。
+fn bi_parse_url(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let url = match args.get(0) {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(v) => return Err(error_value(format!(
+            "parseUrl() 第 1 个参数应为 string (URL)，得到 {}", v.type_name()
+        ))),
+        None => return Err(error_value("parseUrl() 需要 1 个参数 (URL)")),
+    };
+
+    let mut scheme = String::new();
+    let mut host = String::new();
+    let mut port: i64 = 0;
+    let path: String;
+    let mut query = String::new();
+    let mut fragment = String::new();
+
+    let rest = if let Some(pos) = url.find("://") {
+        scheme = url[..pos].to_string();
+        &url[pos + 3..]
+    } else {
+        &url[..]
+    };
+
+    // 分离 fragment
+    let rest = if let Some(pos) = rest.find('#') {
+        fragment = rest[pos + 1..].to_string();
+        &rest[..pos]
+    } else {
+        rest
+    };
+
+    // 分离 query
+    let rest = if let Some(pos) = rest.find('?') {
+        query = rest[pos + 1..].to_string();
+        &rest[..pos]
+    } else {
+        rest
+    };
+
+    // 分离 path：从第一个 / 开始
+    let (authority, path_part) = if let Some(pos) = rest.find('/') {
+        (&rest[..pos], &rest[pos..])
+    } else {
+        (rest, "")
+    };
+    path = path_part.to_string();
+
+    // 从 authority 分离 host:port
+    if authority.starts_with('[') {
+        // IPv6: [::1]:port
+        if let Some(end) = authority.find(']') {
+            host = authority[1..end].to_string();
+            if let Some(rest) = authority[end + 1..].strip_prefix(':') {
+                port = rest.parse().unwrap_or(0);
+            }
+        }
+    } else if let Some(pos) = authority.rfind(':') {
+        host = authority[..pos].to_string();
+        port = authority[pos + 1..].parse().unwrap_or(0);
+    } else {
+        host = authority.to_string();
+    }
+
+    let obj = crate::object_map::new_map();
+    {
+        let mut m = obj.lock().unwrap();
+        m.set("scheme".to_string(), Value::str_from(scheme));
+        m.set("host".to_string(), Value::str_from(host));
+        m.set("port".to_string(), Value::Int(port));
+        m.set("path".to_string(), Value::str_from(path));
+        m.set("query".to_string(), Value::str_from(query));
+        m.set("fragment".to_string(), Value::str_from(fragment));
+    }
+    Ok(Value::Object(obj))
+}
+
+/// bi_get_mime_type 根据文件扩展名获取 MIME 类型。
+///
+/// 用法：getMimeType(filename) 或 getMimeType(ext)
+/// 未知的扩展名返回 "application/octet-stream"。
+fn bi_get_mime_type(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let filename = match args.get(0) {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(v) => return Err(error_value(format!(
+            "getMimeType() 第 1 个参数应为 string (文件名)，得到 {}", v.type_name()
+        ))),
+        None => return Err(error_value("getMimeType() 需要 1 个参数 (文件名)")),
+    };
+
+    // 提取扩展名（最后一个 . 之后，转小写）
+    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    let mime = mime_type_for_ext(&ext);
+    Ok(Value::str_from(mime.to_string()))
+}
+
+/// mime_type_for_ext 根据扩展名返回 MIME 类型字符串。
+fn mime_type_for_ext(ext: &str) -> &'static str {
+    match ext {
+        // 文本
+        "txt" | "text" => "text/plain",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "csv" => "text/csv",
+        "md" => "text/markdown",
+        // 代码
+        "js" | "mjs" => "text/javascript",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "yaml" | "yml" => "application/yaml",
+        // 图片
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "bmp" => "image/bmp",
+        "tiff" | "tif" => "image/tiff",
+        // 音频
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        // 视频
+        "mp4" => "video/mp4",
+        "avi" => "video/x-msvideo",
+        "mov" => "video/quicktime",
+        "mkv" => "video/x-matroska",
+        "webm" => "video/webm",
+        // 文档
+        "pdf" => "application/pdf",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        // 压缩
+        "zip" => "application/zip",
+        "gz" | "gzip" => "application/gzip",
+        "tar" => "application/x-tar",
+        "rar" => "application/vnd.rar",
+        "7z" => "application/x-7z-compressed",
+        // 字体
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        // 其他
+        "bin" | "exe" | "dll" | "so" | "dylib" => "application/octet-stream",
+        "wasm" => "application/wasm",
+        "sf" => "text/plain",
+        _ => "application/octet-stream",
     }
 }

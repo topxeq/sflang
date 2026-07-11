@@ -79,15 +79,39 @@ pln("  原始URL:", url)
 pln("  URL编码:", urlEncode(url))
 pln("  URL解码:", urlDecode(urlEncode(url)))
 
-// 5. 文件搜索（使用 walkDir 风格）
+// 5. 文件遍历
 pln("")
 pln("【文件遍历】")
 tmpDir := getTempDir()
-files := readLines  // 不存在，用其他方式
-
-// 统计临时目录下的文件
-count := 0
 pln("  临时目录:", tmpDir)
+
+// 递归统计文件数
+func walkDir(dir, fn) {
+    for f in listDir(dir) {
+        full := joinPath(dir, f)
+        if isDir(full) {
+            walkDir(full, fn)
+        } else {
+            fn(full)
+        }
+    }
+}
+
+count := 0
+walkDir(tmpDir, func(path) {
+    count++
+})
+
+pln("  递归文件数:", count)
+
+// 展示前 5 个文件
+shown := 0
+walkDir(tmpDir, func(path) {
+    if shown < 5 {
+        pl("    %s\n", path)
+        shown++
+    }
+})
 
 pln("")
 pln("========================================")

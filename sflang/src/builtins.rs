@@ -98,6 +98,11 @@ pub fn register(vm: &mut VM) {
     // ---- 通用类型判断（取代零散的 isXxx 谓词）----
     vm.register_builtin("isType", bi_is_type);
     vm.register_builtin("isTypeCode", bi_is_type_code);
+    // ---- 调试与反射 ----
+    vm.register_builtin("dumpVar", bi_dump_var);
+    vm.register_builtin("globals", bi_globals);
+    // ---- 格式化辅助 ----
+    vm.register_builtin("toKMG", bi_to_kmg);
 }
 
 /// bi_println 打印并换行。
@@ -1455,4 +1460,53 @@ fn bi_set_value_by_ref(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             "setValueByRef() 第一个参数应为引用，得到 {}", v.type_name(),
         ))),
     }
+}
+
+/// bi_to_kmg 将数字转为带单位的易读字符串（K/M/G/T）。
+///
+/// 用法：toKMG(n) 或 toKMG(n, decimals)
+/// 默认保留 2 位小数。1024 进制（KB = 1024 bytes）。
+/// 例：toKMG(1536) → "1.50K"，toKMG(1048576) → "1.00M"
+fn bi_to_kmg(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    let n = bh::as_float(args, 0, "toKMG")?;
+    let decimals = match args.get(1) {
+        Some(Value::Int(d)) => *d as usize,
+        _ => 2,
+    };
+    let units = ["", "K", "M", "G", "T", "P"];
+    let mut size = n.abs();
+    let mut idx = 0;
+    while size >= 1024.0 && idx < units.len() - 1 {
+        size /= 1024.0;
+        idx += 1;
+    }
+    Ok(Value::str_from(format!("{:.*}{}", decimals, size, units[idx])))
+}
+
+/// bi_dump_var 转储变量详细信息，返回多行诊断字符串。
+///
+/// 输出包含：类型名、类型码、值摘要。
+/// 用于调试与 AI 定位问题。
+fn bi_dump_var(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "dumpVar")?;
+    let v = &args[0];
+    let info = format!(
+        "type: {}\ntypeCode: {}\nvalue: {}",
+        v.type_name_ex(),
+        v.type_code() as u32,
+        v.inspect(),
+    );
+    Ok(Value::str_from(info))
+}
+
+/// bi_globals 列出所有全局变量名，返回 array<string>。
+///
+/// 用于反射与调试。
+fn bi_globals(vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
+    let g = vm.globals_handle();
+    let guard = g.lock().unwrap();
+    let names: Vec<Value> = guard.keys().map(|k| Value::str_from(k.clone())).collect();
+    Ok(Value::Array(std::sync::Arc::new(std::sync::Mutex::new(names))))
 }

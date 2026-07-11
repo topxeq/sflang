@@ -1,0 +1,267 @@
+// 压缩与 ZIP 文件处理示例
+// 演示数据压缩、gzip、ZIP 文件创建与读取、中文文件名兼容
+//
+// 用法：sf examples/showcase/zip_demo.sf
+
+pln("========================================")
+pln("    Sflang 压缩与 ZIP 处理示例")
+pln("========================================")
+
+// ============================================================
+// 1. 内部数据压缩 (deflate)
+// 适合压缩内存数据，如序列化后传输前压缩
+// ============================================================
+pln("")
+pln("【1. deflate 数据压缩】")
+
+original := "Sflang 是一门用 Rust 实现的轻量级解释型语言。" +
+    "它使用字节码 VM 架构，兼顾执行速度与简洁性。" +
+    "支持面向对象、并发、try-catch-finally、defer 等特性。" +
+    "内置丰富函数库，覆盖文件、数据库、网络、加密等常见场景。"
+pln("  原文长度:", len(original), "字符")
+
+// compressBytes 接受 string/bytes/byteArray，返回 bytes
+compressed := compressBytes(original, 9)
+pln("  压缩后长度:", len(compressed), "字节 (level=9)")
+
+ratio := adjustFloat(len(compressed) * 100.0 / len(original), 1)
+pln("  压缩率:", ratio, "%")
+
+// decompressBytes 还原
+decompressed := decompressBytes(compressed)
+restored := strFromBytes(decompressed)
+pln("  解压后长度:", len(restored), "字符")
+pln("  还原一致:", original == restored)
+
+// 不同压缩级别对比
+pln("")
+pln("  压缩级别对比:")
+for level := 1; level <= 9; level += 2 {
+    c := compressBytes(original, level)
+    pl("    level %d: %d 字节\n", level, len(c))
+}
+
+// ============================================================
+// 2. gzip 格式压缩
+// gzip 含文件头，兼容 .gz 文件格式
+// ============================================================
+pln("")
+pln("【2. gzip 格式压缩】")
+
+gzipData := gzipBytes(original, 6)
+pln("  gzip 压缩后:", len(gzipData), "字节")
+
+gunzipData := gunzipBytes(gzipData)
+gunzipText := strFromBytes(gunzipData)
+pln("  gunzip 还原:", original == gunzipText)
+
+// 压缩二进制数据
+binData := bytes([0x00, 0xFF, 0xAA, 0x55, 0x12, 0x34, 0x56, 0x78])
+pln("  原始二进制:", bytesHex(binData))
+gzBin := gzipBytes(binData)
+pln("  gzip 二进制:", len(gzBin), "字节")
+decBin := gunzipBytes(gzBin)
+pln("  还原二进制:", bytesHex(decBin))
+
+// ============================================================
+// 3. ZIP 文件创建
+// 流程：zipCreate → zipAddFile/zipAddBytes/zipAddDir → zipClose
+// ============================================================
+pln("")
+pln("【3. ZIP 文件创建】")
+
+zipPath := joinPath(getTempDir(), "sflang_demo.zip")
+
+// 创建临时文件用于添加到 zip
+file1Path := joinPath(getTempDir(), "sflang_demo_file1.txt")
+writeFile(file1Path, "这是文件1的内容\n包含多行文本\n第三行")
+pln("  准备文件:", file1Path)
+
+// zipCreate 返回 zipWriter 对象
+zw := zipCreate(zipPath)
+
+// zipAddFile 添加磁盘文件，指定 zip 内的条目名
+zipAddFile(zw, file1Path, "file1.txt")
+pln("  添加 file1.txt")
+
+// zipAddBytes 添加内存数据（不需要先写磁盘）
+zipAddBytes(zw, "内存中直接生成的数据，无需临时文件", "data/memory.txt")
+pln("  添加 data/memory.txt")
+
+// 中文文件名
+zipAddBytes(zw, "这是一个中文文件名的文件\n内容也包含中文", "中文文件.txt")
+pln("  添加 中文文件.txt")
+
+zipAddBytes(zw, "Another file with English name", "english.txt")
+pln("  添加 english.txt")
+
+// 嵌套目录结构
+zipAddBytes(zw, "第一层数据", "level1/a.txt")
+zipAddBytes(zw, "第二层数据", "level1/level2/b.txt")
+zipAddBytes(zw, "第三层数据", "level1/level2/level3/c.txt")
+pln("  添加嵌套目录 level1/level2/level3/")
+
+// zipClose 完成并写入磁盘
+zipClose(zw)
+pln("  ZIP 已生成:", zipPath)
+
+// 清理临时文件
+deleteFile(file1Path)
+
+// ============================================================
+// 4. ZIP 文件列表
+// zipList 返回 [{name, size, compressedSize, isDir}, ...]
+// 文件名自动解码（兼容 UTF-8 和 GBK）
+// ============================================================
+pln("")
+pln("【4. ZIP 文件列表】")
+
+entries := zipList(zipPath)
+pln("  条目数:", len(entries))
+pln("")
+pl("  %-30s %10s %10s  %s\n", "名称", "原始大小", "压缩后", "类型")
+pl("  %-30s %10s %10s  %s\n", "----", "--------", "------", "----")
+for e in entries {
+    typeStr := "文件"
+    if e["isDir"] {
+        typeStr = "目录"
+    }
+    pl("  %-30s %10d %10d  %s\n", e["name"], e["size"], e["compressedSize"], typeStr)
+}
+
+// ============================================================
+// 5. 读取 ZIP 中的文件
+// zipReadFile 直接读取内容到 bytes
+// ============================================================
+pln("")
+pln("【5. 读取 ZIP 内文件】")
+
+// 读取中文文件名
+content := zipReadFile(zipPath, "中文文件.txt")
+text := strFromBytes(content)
+pln("  中文文件.txt 内容:")
+for line in strSplitLines(text) {
+    pl("    %s\n", line)
+}
+
+// 读取嵌套文件
+nested := zipReadFile(zipPath, "level1/level2/level3/c.txt")
+pln("  level1/level2/level3/c.txt:", strFromBytes(nested))
+
+// ============================================================
+// 6. 解压单个文件
+// zipExtractFile 按条目名解压到指定路径
+// ============================================================
+pln("")
+pln("【6. 解压单个文件】")
+
+singleOut := joinPath(getTempDir(), "sflang_demo_single.txt")
+r := zipExtractFile(zipPath, "中文文件.txt", singleOut)
+pln("  解压 中文文件.txt:", r)
+pln("  内容:", readFile(singleOut))
+deleteFile(singleOut)
+
+// ============================================================
+// 7. 解压整个 ZIP
+// zipExtract 解压所有条目到指定目录
+// ============================================================
+pln("")
+pln("【7. 解压整个 ZIP】")
+
+extractDir := joinPath(getTempDir(), "sflang_demo_extract")
+count := zipExtract(zipPath, extractDir)
+pln("  解压文件数:", count)
+pln("  解压到:", extractDir)
+
+// 验证解压结果
+pln("  解压目录结构:")
+for f in listDir(extractDir) {
+    pl("    %s\n", f)
+}
+
+// 验证嵌套目录
+nestedPath := joinPath(extractDir, "level1", "level2", "level3", "c.txt")
+if fileExists(nestedPath) {
+    pln("  嵌套文件验证:", readFile(nestedPath))
+}
+
+// ============================================================
+// 8. 中文文件名兼容演示
+// Sflang 读取 zip 时优先 UTF-8，失败则尝试 GBK
+// 兼容 Windows 旧工具生成的 zip
+// ============================================================
+pln("")
+pln("【8. 中文文件名兼容】")
+
+// 列出含中文文件名的条目
+chineseFound := false
+for e in entries {
+    if strFind(e["name"], "中文") >= 0 {
+        pln("  找到中文条目:", e["name"])
+        chineseFound = true
+    }
+}
+
+if chineseFound {
+    pln("  中文文件名读取: 正常")
+} else {
+    pln("  (未找到中文条目)")
+}
+
+// ============================================================
+// 9. 目录递归添加到 ZIP
+// zipAddDir 递归添加整个目录
+// ============================================================
+pln("")
+pln("【9. 目录递归打包】")
+
+// 准备测试目录
+srcDir := joinPath(getTempDir(), "sflang_demo_src")
+makeDirAll(srcDir)
+writeFile(joinPath(srcDir, "a.txt"), "文件A")
+writeFile(joinPath(srcDir, "b.txt"), "文件B")
+makeDirAll(joinPath(srcDir, "sub"))
+writeFile(joinPath(srcDir, "sub", "c.txt"), "子目录文件C")
+
+// 打包整个目录
+dirZipPath := joinPath(getTempDir(), "sflang_demo_dir.zip")
+zw2 := zipCreate(dirZipPath)
+addedCount := zipAddDir(zw2, srcDir, "mydir/")
+zipClose(zw2)
+pln("  添加文件数:", addedCount)
+
+// 列出目录 zip
+dirEntries := zipList(dirZipPath)
+pln("  条目列表:")
+for e in dirEntries {
+    pl("    %s (%d 字节)\n", e["name"], e["size"])
+}
+
+// 清理测试目录（含文件和子目录，用系统命令递归删除）
+if osName() == "windows" {
+    systemCmd("rmdir /s /q \"" + srcDir + "\"")
+} else {
+    systemCmd("rm -rf \"" + srcDir + "\"")
+}
+
+// ============================================================
+// 清理
+// ============================================================
+deleteFile(zipPath)
+deleteFile(dirZipPath)
+if osName() == "windows" {
+    systemCmd("rmdir /s /q \"" + extractDir + "\"")
+} else {
+    systemCmd("rm -rf \"" + extractDir + "\"")
+}
+
+pln("")
+pln("========================================")
+pln("    压缩与 ZIP 处理全部正常 ✓")
+pln("========================================")
+pln("")
+pln("  compressBytes / decompressBytes  — deflate 数据压缩")
+pln("  gzipBytes / gunzipBytes          — gzip 格式压缩")
+pln("  zipCreate / zipAddFile / zipAddBytes / zipAddDir / zipClose")
+pln("  zipList / zipExtract / zipExtractFile / zipReadFile")
+pln("  中文文件名: UTF-8 优先, GBK 兜底")
