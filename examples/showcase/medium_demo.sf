@@ -1,0 +1,203 @@
+// 中级内置函数综合示例
+// 演示 Mutex 互斥锁、XML 解析、剪贴板、汉字转拼音、测试框架
+//
+// 用法：sf examples/showcase/medium_demo.sf
+
+pln("========================================")
+pln("    Sflang 中级功能综合示例")
+pln("========================================")
+
+// ============================================================
+// 1. Mutex 互斥锁
+// ============================================================
+pln("")
+pln("【1. Mutex 互斥锁】")
+
+// newMutex 创建互斥锁，lock/unlock 配对使用，tryLock 非阻塞尝试
+m := newMutex()
+
+// 基本加锁解锁
+lock(m)
+pln("  已加锁，tryLock 应返回 false:", tryLock(m))
+unlock(m)
+pln("  已解锁，tryLock 应返回 true:", tryLock(m))
+unlock(m)
+
+// 配合 defer 保证异常路径也释放锁
+lock(m)
+defer unlock(m)
+pln("  临界区内执行，defer 将在退出时解锁")
+
+// ============================================================
+// 2. XML 解析
+// ============================================================
+pln("")
+pln("【2. XML 解析】")
+
+xmlStr := `<?xml version="1.0" encoding="UTF-8"?>
+<bookstore>
+    <book category="编程">
+        <title lang="zh">Sflang 入门</title>
+        <author>张三</author>
+        <price>59.90</price>
+    </book>
+    <book category="小说">
+        <title lang="zh">三体</title>
+        <author>刘慈欣</author>
+        <price>45.00</price>
+    </book>
+</bookstore>`
+
+// fromXml 解析 XML 字符串为节点 Map
+root := fromXml(xmlStr)
+pln("  根节点名:", root["name"])
+pln("  子节点数:", len(root["children"]))
+
+// 遍历 bookstore 下的 book 节点
+books := root["children"]
+for i := 0; i < len(books); i = i + 1 {
+    book := books[i]
+    category := book["attrs"]["category"]
+    title := xmlGetNodeStr(book["children"][0])
+    author := xmlGetNodeStr(book["children"][1])
+    price := xmlGetNodeStr(book["children"][2])
+    pl("  [%d] %s / %s / %s / %s 元\n", i + 1, category, title, author, price)
+}
+
+// xmlGetNodeStr 提取节点的文本内容
+firstBook := books[0]
+titleText := xmlGetNodeStr(firstBook["children"][0])
+pln("  第一本书标题:", titleText)
+
+// formatXml 将节点格式化为带缩进的 XML
+formatted := formatXml(root)
+pln("  格式化后行数:", len(strSplitLines(formatted)))
+
+// ============================================================
+// 3. 系统剪贴板
+// ============================================================
+pln("")
+pln("【3. 系统剪贴板】")
+
+// setClipText 写入文本到系统剪贴板
+setClipText("Hello from Sflang!")
+pln("  已写入剪贴板: Hello from Sflang!")
+
+// getClipText 读取系统剪贴板文本
+clipContent := getClipText()
+pln("  读取剪贴板:", clipContent)
+
+// 写入中文
+setClipText("Sflang 剪贴板测试 中文")
+pln("  写入中文后读取:", getClipText())
+
+// ============================================================
+// 4. 汉字转拼音
+// ============================================================
+pln("")
+pln("【4. 汉字转拼音】")
+
+// toPinYin 汉字转拼音（无声调，多音字取首读音）
+p1 := toPinYin("中文")
+pln("  toPinYin(中文):", p1)
+
+p2 := toPinYin("Sflang 是一门轻量级语言")
+pln("  toPinYin(Sflang 是一门轻量级语言):", p2)
+
+// 自定义分隔符
+p3 := toPinYin("中华人民共和国", "_")
+pln("  toPinYin(中华人民共和国, _):", p3)
+
+// toPinYinInitial 拼音首字母
+p4 := toPinYinInitial("中文")
+pln("  toPinYinInitial(中文):", p4)
+
+p5 := toPinYinInitial("Sflang 是一门轻量级语言")
+pln("  toPinYinInitial(Sflang 是一门轻量级语言):", p5)
+
+// 混合英文和中文
+p6 := toPinYin("Hello 世界")
+pln("  toPinYin(Hello 世界):", p6)
+
+// ============================================================
+// 5. 测试框架
+// ============================================================
+pln("")
+pln("【5. 脚本内断言测试】")
+
+// testByText 断言实际值文本等于期望值
+passCount := 0
+failCount := 0
+
+// 辅助函数：运行测试并统计结果
+func runTest(name, fn) {
+    try {
+        fn()
+        passCount = passCount + 1
+        pl("  [PASS] %s\n", name)
+    } catch (e) {
+        failCount = failCount + 1
+        pl("  [FAIL] %s: %s\n", name, e)
+    }
+}
+
+// testByText 通过测试
+runTest("testByText 通过", func() {
+    testByText("hello", "hello")
+})
+
+// testByText 失败测试
+runTest("testByText 失败", func() {
+    testByText("world", "hello", "值不匹配")
+})
+
+// testByContains 通过测试
+runTest("testByContains 通过", func() {
+    testByContains("Hello World", "World")
+})
+
+// testByContains 失败测试
+runTest("testByContains 失败", func() {
+    testByContains("Hello World", "Python")
+})
+
+// testByReg 通过测试
+runTest("testByReg 通过", func() {
+    testByReg("abc123", `\d+`)
+})
+
+// testByReg 失败测试
+runTest("testByReg 失败", func() {
+    testByReg("abcdef", `\d+`)
+})
+
+// 实际场景测试
+runTest("字符串操作验证", func() {
+    result := strToUpper("hello") + " " + strRepeat("ab", 3)
+    testByText(result, "HELLO ababab")
+})
+
+runTest("数组操作验证", func() {
+    arr := [3, 1, 2]
+    sort(arr)
+    testByText(toStr(arr), "[1, 2, 3]")
+})
+
+runTest("JSON 解析验证", func() {
+    data := jsonDecode(`{"name":"Sflang","version":1}`)
+    testByText(data["name"], "Sflang")
+})
+
+pln("")
+pl("  测试结果: %d 通过, %d 失败\n", passCount, failCount)
+
+pln("")
+pln("========================================")
+pln("    中级功能全部正常")
+pln("========================================")
+pln("")
+pln("  Mutex:        newMutex / lock / unlock / tryLock")
+pln("  XML:          fromXml / xmlGetNodeStr / formatXml")
+pln("  Clipboard:    getClipText / setClipText")
+pln("  Pinyin:       toPinYin / toPinYinInitial")
+pln("  Test:         testByText / testByContains / testByReg")

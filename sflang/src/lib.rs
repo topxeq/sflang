@@ -64,6 +64,11 @@ pub mod http_lite;
 pub mod builtins_http;
 pub mod builtins_zip;
 pub mod builtins_containers;
+pub mod builtins_xml;
+pub mod builtins_clipboard;
+pub mod builtins_test;
+pub mod builtins_pinyin;
+pub mod pinyin_data;
 pub mod api;
 
 // 重导出常用类型
