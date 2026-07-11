@@ -74,6 +74,9 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("readStr", bi_read_str);
     vm.register_builtin("readBytes", bi_read_bytes);
     vm.register_builtin("readChars", bi_read_chars);
+    vm.register_builtin("getFileList", bi_get_file_list);
+    vm.register_builtin("getFileRel", bi_get_file_rel);
+    vm.register_builtin("loadBytesFromFileLimit", bi_load_bytes_from_file_limit);
 }
 
 /// io_err 将 std::io::Error 转为 AI 友好错误值，附加常见原因提示。
@@ -747,4 +750,197 @@ fn bi_read_chars(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             "readChars() 不支持类型 {} (可能原因：应为 file/string/bytes/byteArray)", v.type_name(),
         ))),
     }
+}
+
+// ---- 通配符文件列表 / 相对路径 / 限量读取 ----
+
+/// glob_match 简单通配符匹配，支持 *（任意序列）和 ?（单个字符）。
+///
+/// 递归回溯实现，处理 * 的任意匹配长度。
+fn glob_match(pattern: &str, name: &str) -> bool {
+    // 转为字节切片以便逐字节匹配
+    fn helper(p: &[u8], n: &[u8]) -> bool {
+        if p.is_empty() {
+            return n.is_empty();
+        }
+        match p[0] {
+            b'*' => {
+                // * 匹配零个或多个字符：尝试跳过 0..n 个字符
+                if helper(&p[1..], n) {
+                    return true;
+                }
+                if !n.is_empty() && helper(p, &n[1..]) {
+                    return true;
+                }
+                false
+            }
+            b'?' => {
+                // ? 匹配单个字符（不含空字符）
+                if n.is_empty() {
+                    false
+                } else {
+                    helper(&p[1..], &n[1..])
+                }
+            }
+            c => {
+                // 普通字符精确匹配
+                if n.is_empty() || n[0] != c {
+                    false
+                } else {
+                    helper(&p[1..], &n[1..])
+                }
+            }
+        }
+    }
+    helper(pattern.as_bytes(), name.as_bytes())
+}
+
+/// walk_dir 递归收集 dir 下所有文件路径（含子目录）。
+fn walk_dir(dir: &Path, out: &mut Vec<String>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return, // 无权限或不存在，跳过
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_dir(&path, out);
+        } else if path.is_file() {
+            out.push(path.to_string_lossy().into_owned());
+        }
+    }
+}
+
+/// bi_get_file_list 通配符文件列表。
+///
+/// 用法：getFileList("*.txt")          — 当前目录下所有 .txt
+///       getFileList("src/*.rs")        — src 目录下所有 .rs
+///       getFileList("src/**/*.rs")     — src 及子目录下所有 .rs
+/// 支持 * 和 ? 通配符。返回 array<string>（匹配文件的完整路径）。
+fn bi_get_file_list(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let pattern = bh::as_str(args, 0, "getFileList")?;
+    // 规范化路径分隔符为 '/'，便于解析
+    let norm = pattern.replace('\\', "/");
+    // 拆分目录部分与文件名部分（最后一个 '/' 之前为目录）
+    let (dir_part, name_part) = match norm.rfind('/') {
+        Some(pos) => (&norm[..pos], &norm[pos + 1..]),
+        None => (".", norm.as_str()),
+    };
+    // 判断是否递归（目录部分含 **）
+    let recursive = dir_part.contains("**");
+    // 计算实际搜索的基准目录：把 ** 当作普通目录跳过
+    let base_dir = if recursive {
+        // 取 ** 之前的部分作为基准目录
+        let before = dir_part.split("**").next().unwrap_or("");
+        // 去掉末尾多余的 '/'
+        let trimmed = before.trim_end_matches('/');
+        if trimmed.is_empty() { "." } else { trimmed }
+    } else if dir_part.is_empty() || dir_part == "." {
+        "."
+    } else {
+        dir_part
+    };
+    // 收集候选文件
+    let mut candidates = Vec::new();
+    let base_path = Path::new(base_dir);
+    if !base_path.exists() {
+        // 基准目录不存在，返回空数组
+        return Ok(Value::Array(Arc::new(Mutex::new(Vec::new()))));
+    }
+    if recursive {
+        // 递归遍历收集所有文件
+        walk_dir(base_path, &mut candidates);
+    } else {
+        // 仅列出基准目录下的文件（不递归）
+        let entries = match fs::read_dir(base_path) {
+            Ok(e) => e,
+            Err(e) => return Err(io_err("getFileList", base_dir, e)),
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                candidates.push(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    // 用文件名通配符匹配筛选
+    let result: Vec<Value> = candidates
+        .into_iter()
+        .filter(|p| {
+            // 取文件名部分进行匹配
+            let name = Path::new(p)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            glob_match(name_part, &name)
+        })
+        .map(Value::str_from)
+        .collect();
+    Ok(Value::Array(Arc::new(Mutex::new(result))))
+}
+
+/// bi_get_file_rel 计算从 basePath 到 targetPath 的相对路径。
+///
+/// 用法：getFileRel("/a/b", "/a/c/d") → "../c/d"
+///       getFileRel("/a/b", "/a/b/x") → "x"
+/// 两路径会先转为绝对路径再比较分量，无需目标文件实际存在。
+fn bi_get_file_rel(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let base = bh::as_str(args, 0, "getFileRel")?;
+    let target = bh::as_str(args, 1, "getFileRel")?;
+    // 将相对路径转为绝对路径（不要求文件存在，故不用 canonicalize）
+    let to_abs = |p: &str| -> std::path::PathBuf {
+        let path = Path::new(p);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir().unwrap_or_default().join(path)
+        }
+    };
+    let abs_base = to_abs(base);
+    let abs_target = to_abs(target);
+    // 提取路径分量数组进行比较
+    let base_comps: Vec<_> = abs_base.components().collect();
+    let target_comps: Vec<_> = abs_target.components().collect();
+    // 找公共前缀长度
+    let mut common = 0;
+    while common < base_comps.len()
+        && common < target_comps.len()
+        && base_comps[common] == target_comps[common]
+    {
+        common += 1;
+    }
+    // 剩余的 base 分量需要用 ".." 回退
+    let up_count = base_comps.len() - common;
+    let mut result = std::path::PathBuf::new();
+    for _ in 0..up_count {
+        result.push("..");
+    }
+    // 剩余的 target 分量依次追加
+    for comp in &target_comps[common..] {
+        result.push(comp);
+    }
+    // 若结果为空，说明两路径相同
+    let s = result.to_string_lossy().into_owned();
+    Ok(Value::str_from(if s.is_empty() { ".".to_string() } else { s }))
+}
+
+/// bi_load_bytes_from_file_limit 限制读取字节数。
+///
+/// 用法：loadBytesFromFileLimit("/path/file", 1024) — 最多读 1024 字节
+/// 用 File::take(limit) 读取，返回 Bytes。文件不存在返回 error。
+fn bi_load_bytes_from_file_limit(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let path = bh::as_str(args, 0, "loadBytesFromFileLimit")?;
+    let limit = bh::as_int(args, 1, "loadBytesFromFileLimit")?;
+    if limit < 0 {
+        return Err(crate::value::error_value(
+            "loadBytesFromFileLimit() limit 不能为负 (可能原因：参数传错或为负值)".to_string(),
+        ));
+    }
+    let file = fs::File::open(Path::new(path)).map_err(|e| io_err("loadBytesFromFileLimit", path, e))?;
+    // take(limit) 限制最多读取 limit 字节
+    let mut reader = file.take(limit as u64);
+    let mut buf = Vec::new();
+    use std::io::Read;
+    reader.read_to_end(&mut buf).map_err(|e| io_err("loadBytesFromFileLimit", path, e))?;
+    Ok(Value::Bytes(Arc::new(buf)))
 }

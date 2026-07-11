@@ -143,6 +143,39 @@ impl DateTime {
         self.add_millis(n * MILLIS_PER_DAY)
     }
 
+    /// add_date 加减年月日（日历运算，处理月份进位与闰年）。
+    ///
+    /// 与 add_days（纯毫秒运算）不同，本方法按公历规则：
+    ///   - 先将 year/month 相加并规范到合法区间（1-12）
+    ///   - day 按目标月份的最大天数截断（如 1月31日 +1月 → 2月28/29日）
+    ///   - 再用 add_days 叠加 days 参数（days 可为负）
+    ///
+    /// 返回新 DateTime（时区偏移不变）。
+    pub fn add_date(&self, years: i32, months: i32, days: i64) -> Self {
+        let (y0, m0, d0) = self.date_part();
+        let h = self.hour();
+        let mi = self.minute();
+        let s = self.second();
+        let ms = self.millis_part();
+        let tz = self.tz_offset;
+
+        // 年月相加并规范：把 month 转为 0-based 偏移便于整除
+        let total_month = (y0 as i64) * 12 + (m0 as i64 - 1)
+            + years as i64 * 12
+            + months as i64;
+        let new_year = (total_month.div_euclid(12)) as i32;
+        let new_month = (total_month.rem_euclid(12)) as i32 + 1; // 1-based
+
+        // day 截断到目标月份最大天数（处理 1月31日 +1月 → 2月28日 等）
+        let max_day = days_in_month(new_year, new_month);
+        let new_day = d0.min(max_day);
+
+        // 用 from_components 构造，再叠加 days（days 部分用 add_days 完成跨月）
+        let base = DateTime::from_components(new_year, new_month, new_day, h, mi, s, ms, tz)
+            .unwrap_or_else(|| DateTime::from_millis_with_tz(self.millis, tz));
+        base.add_days(days)
+    }
+
     /// to_millis 转 Unix 毫秒（UTC，int）。
     pub fn to_millis(&self) -> i64 {
         self.millis

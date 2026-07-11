@@ -15,8 +15,15 @@
 //!     datetimeFromMillis(n)— 毫秒 → datetime（UTC）
 //!     datetimeParse(s,fmt) — 解析字符串
 //!     isDatetime(x)        — 类型判断
+//!   扩展函数：
+//!     getNowTimeStamp()    — 当前 Unix 时间戳（秒）
+//!     timeAddDate(dt, y, m, d) — datetime 加年月日（日历运算）
+//!     runTicker(fn, ms)    — 周期执行函数，返回 ticker 句柄
+//!     formatTime(dt, fmt)  — 格式化 datetime（dtFormat 的别名）
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::datetime::DateTime;
@@ -42,6 +49,11 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("dtToMillis", bi_dt_to_millis);
     // 便捷函数
     vm.register_builtin("getNowStr", bi_get_now_str);
+    // 扩展函数
+    vm.register_builtin("getNowTimeStamp", bi_get_now_timestamp);
+    vm.register_builtin("timeAddDate", bi_time_add_date);
+    vm.register_builtin("runTicker", bi_run_ticker);
+    vm.register_builtin("formatTime", bi_format_time);
 }
 
 /// MONOTONIC_BASE 进程级单调时钟基准（懒初始化）。
@@ -218,5 +230,138 @@ fn bi_get_now_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         bh::as_str(args, 0, "getNowStr")?
     };
     let dt = DateTime::now();
+    Ok(Value::str_from(dt.format(fmt)))
+}
+
+// ---- 扩展内置函数 ----
+
+/// bi_get_now_timestamp 返回当前 Unix 时间戳（秒，int）。
+///
+/// 用法：getNowTimeStamp() → 1720000000
+fn bi_get_now_timestamp(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
+    let s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .map_err(|e| crate::value::error_value(format!(
+            "getNowTimeStamp() 系统时间异常: {}", e,
+        )))?;
+    Ok(Value::Int(s))
+}
+
+/// bi_time_add_date datetime 加年月日（日历运算）。
+///
+/// 用法：timeAddDate(dt, years, months, days) → datetime
+///
+/// 与 dtAddDays 不同，本函数按公历规则处理月份进位：
+///   - years/months 直接相加并规范到 1-12 区间
+///   - days 用毫秒运算叠加（处理跨月）
+///   - day 截断到目标月份最大天数（如 1月31日 +1月 → 2月28/29日）
+fn bi_time_add_date(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    let dt = as_dt(args, 0, "timeAddDate")?;
+    let years = bh::as_int(args, 1, "timeAddDate")? as i32;
+    let months = bh::as_int(args, 2, "timeAddDate")? as i32;
+    let days = bh::as_int(args, 3, "timeAddDate")?;
+    let new_dt = dt.add_date(years, months, days);
+    Ok(Value::DateTime(Arc::new(new_dt)))
+}
+
+/// TickerHandle runTicker 返回的句柄，用于停止周期任务。
+///
+/// 内部用 Arc<AtomicBool> 作为停止标志，新线程检查此标志决定是否继续执行。
+pub struct TickerHandle {
+    /// stop 停止标志，true 时新线程退出循环。
+    pub stop: Arc<AtomicBool>,
+}
+
+/// bi_run_ticker 周期执行函数。
+///
+/// 用法：runTicker(fn, intervalMs) → ticker 句柄
+///
+/// 启动一个独立线程，循环调用 fn()，每次间隔 intervalMs 毫秒。
+/// 返回 TickerHandle，可通过 stopTicker(handle) 停止（或直接调用 handle.stop()）。
+///
+/// 实现说明（参考 vm.rs spawn_thread）：
+///   - 新线程构造独立 VM，共享主线程的 globals 与 output 句柄
+///   - 子线程内异常静默打印，不影响主线程
+///   - 函数闭包与参数所有权转移到子线程
+fn bi_run_ticker(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "runTicker")?;
+    bh::require_arg(args, 1, "runTicker")?;
+
+    // 校验第 1 个参数为函数值（Func 或 Builtin）
+    let fn_val = args[0].clone();
+    match &fn_val {
+        Value::Func(_) | Value::Builtin(_) => {}
+        v => return Err(crate::value::error_value(format!(
+            "runTicker() 第 1 个参数应为 function，得到 {} (可能原因：参数顺序错误或未用 func 定义)",
+            v.type_name(),
+        ))),
+    }
+
+    let interval_ms = bh::as_int(args, 1, "runTicker")?;
+    if interval_ms <= 0 {
+        return Err(crate::value::error_value(format!(
+            "runTicker() intervalMs 必须为正整数 (得到 {}) (可能原因：参数顺序错误或单位错误)",
+            interval_ms,
+        )));
+    }
+
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let stop_clone = stop_flag.clone();
+
+    // 共享主线程的 globals 与 output 句柄，使子线程能访问全局变量与输出
+    let globals = vm.globals_handle();
+    let out = vm.output_handle();
+
+    std::thread::spawn(move || {
+        // 子线程构造独立 VM（独立栈/帧/调用深度），不与主线程共享栈
+        let mut vm_child = VM::new();
+        vm_child.set_globals_handle(globals);
+        vm_child.set_output_handle(out);
+
+        while !stop_clone.load(Ordering::Relaxed) {
+            // 调用用户函数；异常静默打印，不影响后续循环
+            match vm_child.call_function_value(fn_val.clone(), Vec::new()) {
+                Ok(_) => {}
+                Err(e) => {
+                    // 异常输出到共享输出，提示但不中断 ticker
+                    let msg = match &e {
+                        Value::Error(er) => er.message.clone(),
+                        other => other.to_str(),
+                    };
+                    let _ = writeln!(
+                        vm_child.output_handle().lock().unwrap(),
+                        "[runTicker 线程异常] {}",
+                        msg,
+                    );
+                }
+            }
+            // 间隔休眠（每次循环检查 stop 标志，避免长时间阻塞）
+            // 将总间隔拆分为不超过 100ms 的片段，以便及时响应 stop 信号
+            let mut remaining = interval_ms as u64;
+            while remaining > 0 && !stop_clone.load(Ordering::Relaxed) {
+                let chunk = remaining.min(100);
+                std::thread::sleep(std::time::Duration::from_millis(chunk));
+                remaining -= chunk;
+            }
+        }
+    });
+
+    // 返回 TickerHandle 作为 Native 值，供 stopTicker/close 使用
+    Ok(Value::Native(Arc::new(Arc::new(TickerHandle { stop: stop_flag }))))
+}
+
+/// bi_format_time 格式化 datetime 为字符串（dtFormat 的别名）。
+///
+/// 用法：formatTime(dt, fmt) → string
+///
+/// fmt 为 Go 风格参考时间，如 "2006-01-02 15:04:05"。
+/// 与 dtFormat 功能完全相同，提供更直观的命名。
+fn bi_format_time(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    let dt = as_dt(args, 0, "formatTime")?;
+    let fmt = bh::as_str(args, 1, "formatTime")?;
     Ok(Value::str_from(dt.format(fmt)))
 }

@@ -102,6 +102,10 @@ pub fn register(vm: &mut VM) {
     // ---- 调试与反射 ----
     vm.register_builtin("dumpVar", bi_dump_var);
     vm.register_builtin("globals", bi_globals);
+    // ---- 成员反射 ----
+    vm.register_builtin("getMember", bi_get_member);
+    vm.register_builtin("setMember", bi_set_member);
+    vm.register_builtin("callMethod", bi_call_method);
     // ---- 格式化辅助 ----
     vm.register_builtin("toKMG", bi_to_kmg);
     vm.register_builtin("showTable", bi_show_table);
@@ -1669,4 +1673,124 @@ fn bi_show_table(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     out.push_str(&border);
 
     Ok(Value::str_from(out))
+}
+
+// ---- 成员反射函数 ----
+//
+// 设计要点：
+//   - getMember: 反射式读取 Object/Map 的成员值（字符串 key）
+//   - setMember: 反射式设置 Object/Map 的成员值（修改原对象）
+//   - callMethod: 调用 Object 上的方法（沿原型链查找）
+//   - 与 obj.key / obj.key = v / obj.method(args) 的区别：
+//     内置函数接收动态 key 字符串，便于反射式编程
+
+/// bi_get_member 获取对象/Map 的成员值。
+///
+/// 用法：getMember(obj, key) → value 或 undefined
+///
+/// obj 为 Object 或 Map，key 为字符串。
+/// Object 沿原型链查找；Map 仅查自身（Map 本就是纯数据容器）。
+/// 不存在时返回 undefined（不报错），便于链式判空。
+fn bi_get_member(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    let key = bh::as_str(args, 1, "getMember")?;
+    match &args[0] {
+        Value::Object(o) => {
+            // 沿原型链查找
+            Ok(o.lock().unwrap().get_proto(key).unwrap_or(Value::Undefined))
+        }
+        Value::Map(m) => {
+            // Map 不支持原型链，仅查自身
+            Ok(m.lock().unwrap().get(key).unwrap_or(Value::Undefined))
+        }
+        v => Err(crate::value::error_value(format!(
+            "getMember() 第 1 个参数应为 object 或 map，得到 {} (可能原因：参数顺序错误，正确顺序 getMember(obj, key))",
+            v.type_name(),
+        ))),
+    }
+}
+
+/// bi_set_member 设置对象/Map 的成员值（原地修改）。
+///
+/// 用法：setMember(obj, key, value) → undefined
+///
+/// obj 为 Object 或 Map，key 为字符串。
+/// 仅写入自身（不沿原型链），与 obj.key = v 语义一致。
+fn bi_set_member(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    let key = bh::as_str(args, 1, "setMember")?;
+    bh::require_arg(args, 2, "setMember")?;
+    let val = args[2].clone();
+
+    match &args[0] {
+        Value::Object(o) => {
+            o.lock().unwrap().set(key.to_string(), val);
+            Ok(Value::Undefined)
+        }
+        Value::Map(m) => {
+            m.lock().unwrap().set(key.to_string(), val);
+            Ok(Value::Undefined)
+        }
+        v => Err(crate::value::error_value(format!(
+            "setMember() 第 1 个参数应为 object 或 map，得到 {} (可能原因：参数顺序错误，正确顺序 setMember(obj, key, value))",
+            v.type_name(),
+        ))),
+    }
+}
+
+/// bi_call_method 调用对象的方法（沿原型链查找）。
+///
+/// 用法：
+///   callMethod(obj, methodName)              — 无参数调用
+///   callMethod(obj, methodName, argsArray)    — 带参数调用
+///
+/// 先在 Object 上沿原型链查找 methodName，找到则调用。
+/// 调用时 obj 作为隐式 self（第一个参数）传入，args 数组中的元素作为后续参数。
+/// 如果对象没有该方法，返回错误。
+///
+/// 与 obj.method(args) 的区别：methodName 为动态字符串，便于反射式调用。
+fn bi_call_method(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    let obj = match args.get(0) {
+        Some(v) => v.clone(),
+        None => return Err(crate::value::error_value(
+            "callMethod() 需要至少 2 个参数 (可能原因：参数缺失)",
+        )),
+    };
+    let method_name = bh::as_str(args, 1, "callMethod")?;
+
+    // 收集调用参数（obj 作为第一个 self 参数）
+    let mut call_args: Vec<Value> = vec![obj.clone()];
+    if let Some(args_val) = args.get(2) {
+        match args_val {
+            Value::Array(a) => {
+                let items: Vec<Value> = a.lock().unwrap().clone();
+                call_args.extend(items);
+            }
+            other => {
+                // 非数组的单个值作为单个参数
+                call_args.push(other.clone());
+            }
+        }
+    }
+
+    // 在 Object 上沿原型链查找方法
+    let method = match &obj {
+        Value::Object(o) => {
+            match o.lock().unwrap().get_proto(method_name) {
+                Some(v) => v,
+                None => return Err(crate::value::error_value(format!(
+                    "callMethod() 对象上找不到方法 '{}' (可能原因：方法名拼写错误或未在原型链上定义)",
+                    method_name,
+                ))),
+            }
+        }
+        v => return Err(crate::value::error_value(format!(
+            "callMethod() 第 1 个参数应为 object，得到 {} (可能原因：参数顺序错误，正确顺序 callMethod(obj, methodName, args?))",
+            v.type_name(),
+        ))),
+    };
+
+    // 调用方法（self 作为第一个参数）
+    vm.call_function_value(method, call_args)
 }

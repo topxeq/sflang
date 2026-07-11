@@ -42,6 +42,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("e", bi_e);
     vm.register_builtin("random", bi_random);
     vm.register_builtin("randInt", bi_rand_int);
+    vm.register_builtin("flexEval", bi_flex_eval);
+    vm.register_builtin("calDistanceOfLatLon", bi_cal_distance_of_lat_lon);
 }
 
 /// 对浮点结果按需装回 Int（若为整数值），否则保持 Float。
@@ -322,4 +324,222 @@ fn bi_rand_int(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let span = (hi as i128 - lo as i128 + 1) as u128;
     let r = ((next_rand() as u128) % span) as i64;
     Ok(Value::Int(lo + r))
+}
+
+// ---- 表达式求值（递归下降解析器）----
+//
+// 支持 + - * / % 和括号，整数和浮点数。
+// 不支持变量、函数调用、幂运算等复杂特性（保持简单）。
+// 返回 int 或 float：若表达式仅含整数且运算结果为整数则返回 int，
+// 否则返回 float。
+
+/// EvalParser 表达式求值解析器。
+struct EvalParser<'a> {
+    // 输入字节切片
+    src: &'a [u8],
+    // 当前位置
+    pos: usize,
+}
+
+impl<'a> EvalParser<'a> {
+    fn new(src: &'a str) -> Self {
+        EvalParser { src: src.as_bytes(), pos: 0 }
+    }
+
+    /// skip_ws 跳过空白字符。
+    fn skip_ws(&mut self) {
+        while self.pos < self.src.len() && self.src[self.pos].is_ascii_whitespace() {
+            self.pos += 1;
+        }
+    }
+
+    /// peek 当前字节（不消费）。
+    fn peek(&self) -> Option<u8> {
+        self.src.get(self.pos).copied()
+    }
+
+    /// parse_expr 解析表达式（顶层：加减）。
+    fn parse_expr(&mut self) -> Result<f64, String> {
+        let mut left = self.parse_term()?;
+        loop {
+            self.skip_ws();
+            match self.peek() {
+                Some(b'+') => {
+                    self.pos += 1;
+                    let right = self.parse_term()?;
+                    left += right;
+                }
+                Some(b'-') => {
+                    self.pos += 1;
+                    let right = self.parse_term()?;
+                    left -= right;
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    /// parse_term 解析项（乘除模）。
+    fn parse_term(&mut self) -> Result<f64, String> {
+        let mut left = self.parse_factor()?;
+        loop {
+            self.skip_ws();
+            match self.peek() {
+                Some(b'*') => {
+                    self.pos += 1;
+                    let right = self.parse_factor()?;
+                    left *= right;
+                }
+                Some(b'/') => {
+                    self.pos += 1;
+                    let right = self.parse_factor()?;
+                    if right == 0.0 {
+                        return Err("除以零 (可能原因：表达式中分母为 0)".to_string());
+                    }
+                    left /= right;
+                }
+                Some(b'%') => {
+                    self.pos += 1;
+                    let right = self.parse_factor()?;
+                    if right == 0.0 {
+                        return Err("模零 (可能原因：表达式中取模的除数为 0)".to_string());
+                    }
+                    left = left % right;
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    /// parse_factor 解析因子（数字 / 括号 / 一元正负号）。
+    fn parse_factor(&mut self) -> Result<f64, String> {
+        self.skip_ws();
+        match self.peek() {
+            Some(b'(') => {
+                self.pos += 1;
+                let v = self.parse_expr()?;
+                self.skip_ws();
+                if self.peek() != Some(b')') {
+                    return Err("缺少右括号 ')' (可能原因：括号未闭合)".to_string());
+                }
+                self.pos += 1;
+                Ok(v)
+            }
+            Some(b'+') => {
+                self.pos += 1;
+                self.parse_factor()
+            }
+            Some(b'-') => {
+                self.pos += 1;
+                let v = self.parse_factor()?;
+                Ok(-v)
+            }
+            Some(c) if c.is_ascii_digit() || c == b'.' => {
+                self.parse_number()
+            }
+            other => Err(format!(
+                "意外的字符 '{}' (可能原因：表达式语法错误)",
+                other.map(|c| c as char).unwrap_or('?'),
+            )),
+        }
+    }
+
+    /// parse_number 解析数字（整数或浮点）。
+    fn parse_number(&mut self) -> Result<f64, String> {
+        let start = self.pos;
+        // 整数部分
+        while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+            self.pos += 1;
+        }
+        // 小数部分
+        if self.pos < self.src.len() && self.src[self.pos] == b'.' {
+            self.pos += 1;
+            while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+                self.pos += 1;
+            }
+        }
+        // 科学计数法（e/E[+/-]digits）
+        if self.pos < self.src.len() && (self.src[self.pos] == b'e' || self.src[self.pos] == b'E') {
+            self.pos += 1;
+            if self.pos < self.src.len() && (self.src[self.pos] == b'+' || self.src[self.pos] == b'-') {
+                self.pos += 1;
+            }
+            while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+                self.pos += 1;
+            }
+        }
+        let s = std::str::from_utf8(&self.src[start..self.pos])
+            .map_err(|_| "数字解析失败 (UTF-8 异常)".to_string())?;
+        s.parse::<f64>().map_err(|_| format!("无效数字: '{}' (可能原因：数字格式错误)", s))
+    }
+}
+
+/// bi_flex_eval 表达式求值。
+///
+/// 用法：flexEval(expr) → int 或 float
+///
+/// 支持四则运算（+ - * /）、取模（%）和括号。
+/// 支持整数和浮点数（含科学计数法如 1e3）。
+/// 一元正负号支持（如 -5、+3.14）。
+///
+/// 返回值：若表达式仅含整数且结果为整数则返回 int，否则返回 float。
+/// 除零、模零、语法错误均返回错误对象。
+fn bi_flex_eval(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let expr = bh::as_str(args, 0, "flexEval")?;
+    if expr.trim().is_empty() {
+        return Err(crate::value::error_value(
+            "flexEval() 表达式为空 (可能原因：未传入表达式或仅含空白字符)",
+        ));
+    }
+    let mut parser = EvalParser::new(expr);
+    let result = parser.parse_expr().map_err(|e| crate::value::error_value(format!(
+        "flexEval() 解析失败: {} (表达式: '{}')", e, expr,
+    )))?;
+
+    // 检查是否所有输入都已消费（避免 "1 + 2 xxx" 这类被静默接受）
+    parser.skip_ws();
+    if parser.pos < parser.src.len() {
+        let rest = std::str::from_utf8(&parser.src[parser.pos..]).unwrap_or("");
+        return Err(crate::value::error_value(format!(
+            "flexEval() 表达式末尾有未识别的内容: '{}' (可能原因：多余的字符或语法错误)", rest,
+        )));
+    }
+
+    // 结果若为整数值则返回 int，否则返回 float
+    Ok(num(result))
+}
+
+/// bi_cal_distance_of_lat_lon 经纬度距离计算（Haversine 公式）。
+///
+/// 用法：calDistanceOfLatLon(lat1, lon1, lat2, lon2) → float (米)
+///
+/// lat/lon 为十进制度数（东经/北纬为正，西经/南纬为负）。
+/// 返回两点之间的球面距离，单位为米。
+/// 地球半径取 6371000 米（平均半径）。
+fn bi_cal_distance_of_lat_lon(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let lat1 = bh::as_float(args, 0, "calDistanceOfLatLon")?;
+    let lon1 = bh::as_float(args, 1, "calDistanceOfLatLon")?;
+    let lat2 = bh::as_float(args, 2, "calDistanceOfLatLon")?;
+    let lon2 = bh::as_float(args, 3, "calDistanceOfLatLon")?;
+
+    // 地球半径（米）
+    const R: f64 = 6_371_000.0;
+
+    // 度 → 弧度
+    let to_rad = |d: f64| d * std::f64::consts::PI / 180.0;
+
+    let lat1_rad = to_rad(lat1);
+    let lat2_rad = to_rad(lat2);
+    let d_lat = to_rad(lat2 - lat1);
+    let d_lon = to_rad(lon2 - lon1);
+
+    // Haversine 公式
+    let a = (d_lat / 2.0).sin().powi(2)
+        + lat1_rad.cos() * lat2_rad.cos() * (d_lon / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+    let d = R * c;
+
+    Ok(Value::Float(d))
 }

@@ -36,6 +36,9 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("regQuote", bi_reg_quote);
     vm.register_builtin("regCount", bi_reg_count);
     vm.register_builtin("regContains", bi_reg_match);  // regMatch 的语义化别名
+    vm.register_builtin("regFindAllIndex", bi_reg_find_all_index);
+    vm.register_builtin("regFindAllGroups", bi_reg_find_all_groups);
+    vm.register_builtin("regContainsIn", bi_reg_contains_in);
 }
 
 /// get_regex 从参数获取正则：支持 string（现场编译）或 regCompile 预编译对象。
@@ -168,4 +171,83 @@ fn bi_reg_count(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let re = get_regex(&args[0])?;
     let s = bh::as_str(args, 1, "regCount")?;
     Ok(Value::Int(re.find_iter(s).count() as i64))
+}
+
+/// bi_reg_find_all_index 找全部匹配的 [起始, 结束] 位置数组。
+///
+/// 用法：regFindAllIndex(pattern, text) → array<[start, end]>
+/// 位置基于 UTF-8 字节偏移（与 regex crate 原生一致）。
+/// 无匹配返回空数组。
+///
+/// 示例：
+///   regFindAllIndex(\d+, "a12b34") → [[1, 3], [4, 6]]
+fn bi_reg_find_all_index(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let re = get_regex(&args[0])?;
+    let s = bh::as_str(args, 1, "regFindAllIndex")?;
+    let mut result: Vec<Value> = Vec::new();
+    for m in re.find_iter(s) {
+        // 每个 Match 带 start()/end() 字节偏移
+        let pair = vec![
+            Value::Int(m.start() as i64),
+            Value::Int(m.end() as i64),
+        ];
+        result.push(Value::Array(Arc::new(std::sync::Mutex::new(pair))));
+    }
+    Ok(Value::Array(Arc::new(std::sync::Mutex::new(result))))
+}
+
+/// bi_reg_find_all_groups 找全部匹配及其捕获组。
+///
+/// 用法：regFindAllGroups(pattern, text) → array<array<string>>
+/// 每个内层数组 [0]=完整匹配, [1..]=捕获组。
+/// 未匹配的可选捕获组用 undefined 填充（与 regFindFirst 一致）。
+/// 无匹配返回空数组。
+///
+/// 示例：
+///   regFindAllGroups((\w)(\d), "a1b2") → [["a1", "a", "1"], ["b2", "b", "2"]]
+fn bi_reg_find_all_groups(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let re = get_regex(&args[0])?;
+    let s = bh::as_str(args, 1, "regFindAllGroups")?;
+    let mut result: Vec<Value> = Vec::new();
+    for caps in re.captures_iter(s) {
+        let group: Vec<Value> = caps.iter()
+            .map(|c| match c {
+                Some(m) => Value::str_from(m.as_str().to_string()),
+                None => Value::Undefined, // 可选捕获组未匹配
+            })
+            .collect();
+        result.push(Value::Array(Arc::new(std::sync::Mutex::new(group))));
+    }
+    Ok(Value::Array(Arc::new(std::sync::Mutex::new(result))))
+}
+
+/// bi_reg_contains_in 判断文本是否匹配 patterns 数组中任意一个正则。
+///
+/// 用法：regContainsIn(text, patterns) → bool
+/// patterns 是 array<string>。任一匹配即返回 true，全部不匹配返回 false。
+///
+/// 示例：
+///   regContainsIn("hello world", ["\\d+", "world"]) → true
+///   regContainsIn("hello", ["\\d+", "\\s+"])         → false
+fn bi_reg_contains_in(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let text = bh::as_str(args, 0, "regContainsIn")?;
+    let patterns = bh::as_array(args, 1, "regContainsIn")?;
+    let guard = patterns.lock().unwrap();
+    for (i, p) in guard.iter().enumerate() {
+        let pat = match p {
+            Value::Str(s) => s.as_ref(),
+            v => return Err(crate::value::error_value(format!(
+                "regContainsIn() patterns 数组元素应为 string，第 {} 个为 {} (可能原因：数组元素类型不一致)",
+                i + 1, v.type_name(),
+            ))),
+        };
+        let re = Regex::new(pat).map_err(|e| crate::value::error_value(format!(
+            "regContainsIn() 第 {} 个正则编译失败: '{}' - {} (可能原因：模式语法错误；注：不支持前后向断言)",
+            i + 1, pat, e,
+        )))?;
+        if re.is_match(text) {
+            return Ok(Value::Bool(true));
+        }
+    }
+    Ok(Value::Bool(false))
 }

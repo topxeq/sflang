@@ -62,6 +62,15 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("strToFloat", bi_str_to_float);
     vm.register_builtin("strContainsAny", bi_str_contains_any);
     vm.register_builtin("strContainsIn", bi_str_contains_in);
+    // 编码与字符串分析
+    vm.register_builtin("strFindDiffPos", bi_str_find_diff_pos);
+    vm.register_builtin("strRemoveBomHead", bi_str_remove_bom_head);
+    vm.register_builtin("strToUtf8", bi_str_to_utf8);
+    vm.register_builtin("bytesGbToUtf8Str", bi_bytes_gb_to_utf8_str);
+    vm.register_builtin("strToGbkBytes", bi_str_to_gbk_bytes);
+    vm.register_builtin("isUtf8", bi_is_utf8);
+    vm.register_builtin("simpleStrToMap", bi_simple_str_to_map);
+    vm.register_builtin("reverseMap", bi_reverse_map);
 }
 
 fn s_owned(t: String) -> Value {
@@ -588,4 +597,179 @@ fn bi_str_contains_in(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         }
     }
     Ok(Value::Bool(false))
+}
+
+// ---- 编码与字符串分析 ----
+
+/// bi_str_find_diff_pos 找两个字符串第一个不同字符的位置（按 Unicode 字符计数）。
+///
+/// 用法：strFindDiffPos(s1, s2) → int
+/// 完全相同返回 -1。较短字符串耗尽时返回其长度（即"位置 i 处一个有字符，另一个已结束"）。
+///
+/// 示例：
+///   strFindDiffPos("abc", "abd") → 2
+///   strFindDiffPos("abc", "abc") → -1
+///   strFindDiffPos("ab",  "abc") → 2
+fn bi_str_find_diff_pos(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s1 = bh::as_str(args, 0, "strFindDiffPos")?;
+    let s2 = bh::as_str(args, 1, "strFindDiffPos")?;
+    let c1: Vec<char> = s1.chars().collect();
+    let c2: Vec<char> = s2.chars().collect();
+    let min_len = c1.len().min(c2.len());
+    for i in 0..min_len {
+        if c1[i] != c2[i] {
+            return Ok(Value::Int(i as i64));
+        }
+    }
+    // 公共前缀完全相同：若长度一致视为相等，否则较短字符串结束位置即差异点
+    if c1.len() == c2.len() {
+        Ok(Value::Int(-1))
+    } else {
+        Ok(Value::Int(min_len as i64))
+    }
+}
+
+/// bi_str_remove_bom_head 去除字符串开头的 UTF-8 BOM（\xEF\xBB\xBF），如果有的话。
+///
+/// BOM 是 U+FEFF 字符的 UTF-8 编码三字节序列。返回新字符串（无 BOM 则原样返回）。
+///
+/// 示例：
+///   strRemoveBomHead("\u{FEFF}hello") → "hello"
+///   strRemoveBomHead("hello")         → "hello"
+fn bi_str_remove_bom_head(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "strRemoveBomHead")?;
+    // U+FEFF 即 UTF-8 BOM 字符
+    if let Some(rest) = s.strip_prefix('\u{FEFF}') {
+        Ok(s_owned(rest.to_string()))
+    } else {
+        Ok(s_owned(s.to_string()))
+    }
+}
+
+/// bi_str_to_utf8 将字符串转为 UTF-8 编码的 bytes（即 string.as_bytes()）。
+///
+/// 与 bytes(s) 等价，提供语义化命名。
+///
+/// 示例：
+///   strToUtf8("中") → bytes(3)  （"中" 的 UTF-8 编码为 3 字节）
+fn bi_str_to_utf8(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "strToUtf8")?;
+    Ok(Value::Bytes(std::sync::Arc::new(s.as_bytes().to_vec())))
+}
+
+/// bytes_to_vec 将 string/bytes/byteArray 统一转为 Vec<u8>（内部辅助函数）。
+///
+/// 接受类型：
+///   string    — UTF-8 编码字节
+///   bytes     — 不可变字节序列（拷贝）
+///   byteArray — 可变字节序列（拷贝）
+fn bytes_to_vec(arg: &Value, fn_name: &str) -> Result<Vec<u8>, Value> {
+    match arg {
+        Value::Str(s) => Ok(s.as_bytes().to_vec()),
+        Value::Bytes(b) => Ok(b.as_ref().to_vec()),
+        Value::ByteArray(b) => Ok(b.lock().unwrap().clone()),
+        v => Err(crate::value::error_value(format!(
+            "{}() 参数应为 string/bytes/byteArray，得到 {} (可能原因：参数类型不匹配)",
+            fn_name, v.type_name(),
+        ))),
+    }
+}
+
+/// bi_bytes_gb_to_utf8_str 将 GBK 编码的字节转为 UTF-8 字符串。
+///
+/// 参数接受 string/bytes/byteArray。用 encoding_rs::GBK.decode。
+///
+/// 示例：
+///   bytesGbToUtf8Str(b) → string  （b 是 GBK 编码的字节序列）
+fn bi_bytes_gb_to_utf8_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let bytes = bytes_to_vec(&args[0], "bytesGbToUtf8Str")?;
+    // encoding_rs::GBK.decode 返回 (Cow<str>, &Encoding, bool)
+    let (cow, _, _) = encoding_rs::GBK.decode(&bytes);
+    Ok(s_owned(cow.into_owned()))
+}
+
+/// bi_str_to_gbk_bytes 将字符串编码为 GBK 字节。
+///
+/// 用 encoding_rs::GBK.encode。无法用 GBK 表示的字符会被替换为问号 '?'。
+///
+/// 示例：
+///   strToGbkBytes("中文") → bytes  （GBK 编码的字节序列）
+fn bi_str_to_gbk_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "strToGbkBytes")?;
+    let (cow, _, _) = encoding_rs::GBK.encode(s);
+    Ok(Value::Bytes(std::sync::Arc::new(cow.into_owned())))
+}
+
+/// bi_is_utf8 判断字节序列是否为有效 UTF-8。
+///
+/// 参数接受 string/bytes/byteArray。用 std::str::from_utf8 判断。
+///
+/// 示例：
+///   isUtf8(b)        → bool  （b 是 bytes/byteArray/string）
+///   isUtf8("hello")  → true
+fn bi_is_utf8(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let bytes = bytes_to_vec(&args[0], "isUtf8")?;
+    Ok(Value::Bool(std::str::from_utf8(&bytes).is_ok()))
+}
+
+/// bi_simple_str_to_map 简单字符串转 Map。
+///
+/// 用法：simpleStrToMap(s, pairSep, kvSep) → Map
+/// 如 "a=1,b=2,c=3" → map{a: "1", b: "2", c: "3"}
+/// 空字符串返回空 Map。键值都按字符串处理。
+///
+/// 示例：
+///   simpleStrToMap("a=1,b=2", ",", "=") → map{a: "1", b: "2"}
+///   simpleStrToMap("x:1;y:2", ";", ":")  → map{x: "1", y: "2"}
+fn bi_simple_str_to_map(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "simpleStrToMap")?;
+    let pair_sep = bh::as_str(args, 1, "simpleStrToMap")?;
+    let kv_sep = bh::as_str(args, 2, "simpleStrToMap")?;
+    let mut om = crate::ord_map::OrdMap::new();
+    if s.is_empty() {
+        return Ok(Value::Map(std::sync::Arc::new(std::sync::Mutex::new(om))));
+    }
+    // 空分隔符保护：split 在空串上会产出无限空段
+    if pair_sep.is_empty() || kv_sep.is_empty() {
+        return Err(crate::value::error_value(
+            "simpleStrToMap() pairSep 与 kvSep 不能为空 (可能原因：分隔符参数顺序错误；正确顺序 simpleStrToMap(s, pairSep, kvSep))",
+        ));
+    }
+    for pair in s.split(pair_sep) {
+        // 用 splitn(2, kv_sep) 避免值中含 kvSep 时被切断
+        let mut parts = pair.splitn(2, kv_sep);
+        let key = match parts.next() {
+            Some(k) => k.to_string(),
+            None => continue,
+        };
+        let val = parts.next().unwrap_or("").to_string();
+        om.set(key, Value::str_from(val));
+    }
+    Ok(Value::Map(std::sync::Arc::new(std::sync::Mutex::new(om))))
+}
+
+/// bi_reverse_map 反转 Map 的键值（值需能转为字符串才能作为键）。
+///
+/// 用法：reverseMap(m) → Map（新 Map，原 Map 不变）
+/// 值通过 to_str() 转为字符串作为新键，原键（string）作为新值。
+/// 若多个键映射到同一字符串值，后处理的覆盖前者（与 Map.set 语义一致）。
+///
+/// 示例：
+///   reverseMap(map{a: "1", b: "2"}) → map{"1": "a", "2": "b"}
+fn bi_reverse_map(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "reverseMap")?;
+    let snapshot: Vec<(String, Value)> = match &args[0] {
+        Value::Map(m) => m.lock().unwrap().snapshot(),
+        v => return Err(crate::value::error_value(format!(
+            "reverseMap() 参数应为 map，得到 {} (可能原因：参数类型不匹配；用 newMap() 创建 Map)",
+            v.type_name(),
+        ))),
+    };
+    let mut om = crate::ord_map::OrdMap::new();
+    for (k, v) in snapshot {
+        // 值转字符串作为新键；原键（string）作为新值
+        let new_key = v.to_str();
+        om.set(new_key, Value::str_from(k));
+    }
+    Ok(Value::Map(std::sync::Arc::new(std::sync::Mutex::new(om))))
 }

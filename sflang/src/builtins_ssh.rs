@@ -30,6 +30,10 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("sshCreateFile", bi_ssh_create_file);
     vm.register_builtin("sshUploadBytes", bi_ssh_upload_bytes);
     vm.register_builtin("sshDownloadBytes", bi_ssh_download_bytes);
+    vm.register_builtin("sshIfFileExists", bi_ssh_if_file_exists);
+    vm.register_builtin("sshGetFileInfo", bi_ssh_get_file_info);
+    vm.register_builtin("sshEnsureMakeDirs", bi_ssh_ensure_make_dirs);
+    vm.register_builtin("sshJoinPath", bi_ssh_join_path);
 }
 
 fn get_switch(args: &[Value], key: &str, default: &str) -> String {
@@ -565,4 +569,167 @@ fn bi_ssh_download_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         Ok(data) => Ok(Value::Bytes(Arc::new(data))),
         Err(e) => Ok(crate::value::error_value(e)),
     }
+}
+
+// ===========================================================================
+// 文件信息与目录管理
+// ===========================================================================
+
+/// bi_ssh_if_file_exists 检查远程文件是否存在（用 SFTP stat）。
+///
+/// 用法：sshIfFileExists("--host=...", "--user=...", "--password=...", "--remotePath=/path")
+/// 返回 bool：true 表示文件或目录存在，false 表示不存在
+fn bi_ssh_if_file_exists(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ssh_params(args)?;
+    let remote_path = get_switch(args, "remotePath", "");
+
+    if remote_path.is_empty() {
+        return Ok(crate::value::error_value("sshIfFileExists() 需要 --remotePath 参数"));
+    }
+
+    match do_ssh(&params, |handle| async move {
+        let sftp = sftp_open(&handle).await?;
+        // metadata 内部调用 SFTP stat，文件不存在时返回错误
+        let exists = sftp.metadata(&remote_path).await.is_ok();
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok::<bool, String>(exists)
+    }) {
+        Ok(exists) => Ok(Value::Bool(exists)),
+        Err(e) => Ok(crate::value::error_value(e)),
+    }
+}
+
+/// bi_ssh_get_file_info 获取远程文件信息（大小、修改时间、是否目录等）。
+///
+/// 用法：sshGetFileInfo("--host=...", "--user=...", "--password=...", "--remotePath=/path")
+/// 返回 Map：{size: int, mtime: int, isDir: bool, isFile: bool, isSymlink: bool}
+/// 文件不存在时返回 Error
+fn bi_ssh_get_file_info(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ssh_params(args)?;
+    let remote_path = get_switch(args, "remotePath", "");
+
+    if remote_path.is_empty() {
+        return Ok(crate::value::error_value("sshGetFileInfo() 需要 --remotePath 参数"));
+    }
+
+    match do_ssh(&params, |handle| async move {
+        let sftp = sftp_open(&handle).await?;
+        let meta = sftp.metadata(&remote_path).await
+            .map_err(|e| format!("SFTP 获取文件信息失败: {} (可能原因：文件不存在、权限不足)", e))?;
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok::<russh_sftp::protocol::FileAttributes, String>(meta)
+    }) {
+        Ok(meta) => {
+            let mut map = crate::ord_map::OrdMap::new();
+            // size 文件大小（字节），文件不存在时可能为 None
+            map.set("size".to_string(), Value::Int(meta.size.unwrap_or(0) as i64));
+            // mtime 修改时间（Unix 时间戳，秒）
+            map.set("mtime".to_string(), Value::Int(meta.mtime.unwrap_or(0) as i64));
+            // atime 访问时间（Unix 时间戳，秒）
+            map.set("atime".to_string(), Value::Int(meta.atime.unwrap_or(0) as i64));
+            // isDir 是否为目录
+            map.set("isDir".to_string(), Value::Bool(meta.file_type().is_dir()));
+            // isFile 是否为普通文件
+            map.set("isFile".to_string(), Value::Bool(meta.file_type().is_file()));
+            // isSymlink 是否为符号链接
+            map.set("isSymlink".to_string(), Value::Bool(meta.file_type().is_symlink()));
+            Ok(Value::Map(Arc::new(std::sync::Mutex::new(map))))
+        }
+        Err(e) => Ok(crate::value::error_value(e)),
+    }
+}
+
+/// bi_ssh_ensure_make_dirs 递归创建远程目录（类似 mkdir -p）。
+///
+/// 用法：sshEnsureMakeDirs("--host=...", "--user=...", "--password=...", "--remotePath=/a/b/c")
+/// 逐级检查并创建不存在的目录，已存在的目录跳过
+fn bi_ssh_ensure_make_dirs(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ssh_params(args)?;
+    let remote_path = get_switch(args, "remotePath", "");
+
+    if remote_path.is_empty() {
+        return Ok(crate::value::error_value("sshEnsureMakeDirs() 需要 --remotePath 参数"));
+    }
+
+    match do_ssh(&params, |handle| async move {
+        let sftp = sftp_open(&handle).await?;
+
+        // 将路径按 / 分割，逐级创建
+        // 如 /a/b/c → ["", "a", "b", "c"]
+        let parts: Vec<&str> = remote_path.split('/').collect();
+        let mut current = String::new();
+
+        for part in &parts {
+            if part.is_empty() {
+                // 开头的 / 或连续的 //，保持根路径
+                continue;
+            }
+            // 拼接当前层级路径
+            if current.is_empty() {
+                current = format!("/{}", part);
+            } else {
+                current = format!("{}/{}", current, part);
+            }
+
+            // 检查当前层级是否存在
+            let exists = sftp.metadata(&current).await.is_ok();
+            if !exists {
+                // 不存在则创建
+                sftp.create_dir(&current).await
+                    .map_err(|e| format!("SFTP 创建目录 '{}' 失败: {} (可能原因：权限不足、父目录不存在)", current, e))?;
+            }
+        }
+
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok::<(), String>(())
+    }) {
+        Ok(()) => Ok(Value::Undefined),
+        Err(e) => Ok(crate::value::error_value(e)),
+    }
+}
+
+/// bi_ssh_join_path 拼接远程路径（固定用 / 分隔符）。
+///
+/// 用法：sshJoinPath("/home/user", "data") → "/home/user/data"
+/// sshJoinPath("/home/user/", "/data") → "/home/user/data"
+/// sshJoinPath("/home/user", "sub/dir/") → "/home/user/sub/dir/"
+/// 纯字符串操作，不需要 SSH 连接
+fn bi_ssh_join_path(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let base = match args.get(0) {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(v) => return Err(crate::value::error_value(format!(
+            "sshJoinPath() 第 1 个参数应为 string (base 路径)，得到 {} (可能原因：参数顺序错误)",
+            v.type_name()
+        ))),
+        None => return Err(crate::value::error_value("sshJoinPath() 需要 2 个参数 (base, sub)")),
+    };
+    let sub = match args.get(1) {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(v) => return Err(crate::value::error_value(format!(
+            "sshJoinPath() 第 2 个参数应为 string (sub 路径)，得到 {}", v.type_name()
+        ))),
+        None => return Err(crate::value::error_value("sshJoinPath() 需要 2 个参数 (base, sub)")),
+    };
+
+    // 处理 base 末尾和 sub 开头的 /，避免重复
+    let result = if sub.is_empty() {
+        base
+    } else if base.is_empty() {
+        sub
+    } else {
+        let base_has_slash = base.ends_with('/');
+        let sub_has_slash = sub.starts_with('/');
+        if base_has_slash && sub_has_slash {
+            // 两边都有 /，去掉 sub 开头的 /
+            format!("{}{}", base, &sub[1..])
+        } else if !base_has_slash && !sub_has_slash {
+            // 两边都没有 /，补一个
+            format!("{}/{}", base, sub)
+        } else {
+            // 一边有一边没有，直接拼接
+            format!("{}{}", base, sub)
+        }
+    };
+
+    Ok(Value::str_from(result))
 }

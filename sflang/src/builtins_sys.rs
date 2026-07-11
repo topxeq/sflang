@@ -54,6 +54,10 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("getOsArgs", bi_get_os_args);
     vm.register_builtin("getInput", bi_get_input);
     vm.register_builtin("getChar", bi_get_char);
+    vm.register_builtin("changeDir", bi_change_dir);
+    vm.register_builtin("lookPath", bi_look_path);
+    vm.register_builtin("getInputPassword", bi_get_input_password);
+    vm.register_builtin("systemCmdDetached", bi_system_cmd_detached);
 }
 
 /// bi_get_env 读取环境变量，无则返回 undefined。
@@ -343,4 +347,236 @@ fn bi_get_char(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
             "getChar() 读取字符失败: {} (可能原因：stdin 被关闭)", e,
         ))),
     }
+}
+
+/// bi_change_dir 改变当前工作目录。
+///
+/// 用法：changeDir("/tmp") 或 changeDir("..")
+fn bi_change_dir(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let path = bh::as_str(args, 0, "changeDir")?;
+    std::env::set_current_dir(path).map_err(|e| crate::value::error_value(format!(
+        "changeDir() 失败: '{}' - {} (可能原因：目录不存在或权限不足)", path, e,
+    )))?;
+    Ok(Value::Undefined)
+}
+
+/// bi_look_path 在 PATH 中查找可执行文件路径。
+///
+/// 用法：lookPath("go") → "/usr/local/go/bin/go"
+///       lookPath("python") → undefined（未找到）
+/// Windows 下会自动尝试 PATHEXT 中的扩展名（.exe/.bat/.cmd 等）。
+fn bi_look_path(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let name = bh::as_str(args, 0, "lookPath")?;
+    // 若 name 已含路径分隔符，直接检查是否为文件
+    if name.contains('/') || name.contains('\\') {
+        let p = std::path::Path::new(name);
+        if p.is_file() {
+            return Ok(Value::str_from(p.to_string_lossy().into_owned()));
+        }
+        return Ok(Value::Undefined);
+    }
+    // 从 PATH 环境变量获取搜索目录列表
+    let path_var = match std::env::var("PATH") {
+        Ok(v) => v,
+        Err(_) => return Ok(Value::Undefined),
+    };
+    // 路径分隔符：Windows 用 ';'，Unix 用 ':'
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    // Windows 下 PATHEXT 提供可执行扩展名列表
+    let exts: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".EXE;.BAT;.CMD;.COM".to_string())
+            .split(';')
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    for dir in path_var.split(sep) {
+        if dir.is_empty() {
+            continue;
+        }
+        let base = std::path::PathBuf::from(dir);
+        if cfg!(windows) {
+            // Windows：先试原名，再试各扩展名
+            let cand = base.join(name);
+            if cand.is_file() {
+                return Ok(Value::str_from(cand.to_string_lossy().into_owned()));
+            }
+            for ext in &exts {
+                let cand = base.join(format!("{}{}", name, ext));
+                if cand.is_file() {
+                    return Ok(Value::str_from(cand.to_string_lossy().into_owned()));
+                }
+            }
+        } else {
+            // Unix：直接拼接检查
+            let cand = base.join(name);
+            if cand.is_file() {
+                return Ok(Value::str_from(cand.to_string_lossy().into_owned()));
+            }
+        }
+    }
+    Ok(Value::Undefined)
+}
+
+// ---- 密码输入（不回显）----
+
+/// read_line_plain 读取一行（无回显控制），用于密码输入的回退。
+fn read_line_plain(prompt: &str) -> Result<String, Value> {
+    use std::io::Write;
+    if !prompt.is_empty() {
+        print!("{}", prompt);
+        let _ = std::io::stdout().flush();
+    }
+    let mut line = String::new();
+    match std::io::stdin().read_line(&mut line) {
+        Ok(0) => Ok(String::new()),
+        Ok(_) => {
+            while line.ends_with('\n') || line.ends_with('\r') {
+                line.pop();
+            }
+            Ok(line)
+        }
+        Err(e) => Err(crate::value::error_value(format!(
+            "getInputPassword() 读取失败: {} (可能原因：stdin 被关闭)", e,
+        ))),
+    }
+}
+
+/// read_password_windows 读取密码（关闭控制台回显），失败时退化为普通输入。
+#[cfg(windows)]
+fn read_password_windows(prompt: &str) -> Result<String, Value> {
+    use std::io::Write;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Console::{
+        GetConsoleMode, SetConsoleMode, ENABLE_ECHO_INPUT,
+    };
+    // 显示提示
+    if !prompt.is_empty() {
+        print!("{}", prompt);
+        let _ = std::io::stdout().flush();
+    }
+    let stdin = std::io::stdin();
+    let handle = stdin.as_raw_handle();
+    // 获取当前控制台模式
+    let mut old_mode: u32 = 0;
+    let mode_ok = unsafe { GetConsoleMode(handle, &mut old_mode) } != 0;
+    if !mode_ok {
+        // 非控制台（如管道重定向），退化为普通输入
+        return read_line_plain("");
+    }
+    // 关闭回显
+    let new_mode = old_mode & !ENABLE_ECHO_INPUT;
+    unsafe { SetConsoleMode(handle, new_mode) };
+    // 读取一行
+    let mut line = String::new();
+    let read_result = stdin.read_line(&mut line);
+    // 恢复回显
+    unsafe { SetConsoleMode(handle, old_mode) };
+    // 密码输入后换行，保持终端整洁
+    println!();
+    match read_result {
+        Ok(0) => Ok(String::new()),
+        Ok(_) => {
+            while line.ends_with('\n') || line.ends_with('\r') {
+                line.pop();
+            }
+            Ok(line)
+        }
+        Err(e) => Err(crate::value::error_value(format!(
+            "getInputPassword() 读取失败: {} (可能原因：stdin 被关闭)", e,
+        ))),
+    }
+}
+
+/// read_password_unix 读取密码（用 stty 关闭回显），失败时退化为普通输入。
+#[cfg(not(windows))]
+fn read_password_unix(prompt: &str) -> Result<String, Value> {
+    use std::io::Write;
+    // 显示提示
+    if !prompt.is_empty() {
+        print!("{}", prompt);
+        let _ = std::io::stdout().flush();
+    }
+    // 尝试用 stty 关闭回显
+    let stty_ok = std::process::Command::new("stty")
+        .arg("-echo")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let mut line = String::new();
+    let read_result = std::io::stdin().read_line(&mut line);
+    // 恢复回显
+    if stty_ok {
+        let _ = std::process::Command::new("stty").arg("echo").status();
+    }
+    // 密码输入后换行，保持终端整洁
+    println!();
+    match read_result {
+        Ok(0) => Ok(String::new()),
+        Ok(_) => {
+            while line.ends_with('\n') || line.ends_with('\r') {
+                line.pop();
+            }
+            Ok(line)
+        }
+        Err(e) => Err(crate::value::error_value(format!(
+            "getInputPassword() 读取失败: {} (可能原因：stdin 被关闭)", e,
+        ))),
+    }
+}
+
+/// bi_get_input_password 读取密码输入（不回显）。
+///
+/// 用法：pw := getInputPassword("请输入密码: ")
+///       pw := getInputPassword()  // 无提示
+/// Windows 用 windows-sys 控制台 API 关闭 ECHO，Linux 用 stty。
+/// 若无法隐藏回显（如 stdin 被重定向），退化为普通输入。
+fn bi_get_input_password(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let prompt = if !args.is_empty() {
+        bh::as_str(args, 0, "getInputPassword")?
+    } else {
+        ""
+    };
+    // 用 cfg 条件编译选择对应平台的实现（不能用 if cfg! 因另一平台函数不存在）
+    let pw = {
+        #[cfg(windows)]
+        { read_password_windows(prompt) }
+        #[cfg(not(windows))]
+        { read_password_unix(prompt) }
+    }?;
+    Ok(Value::str_from(pw))
+}
+
+/// bi_system_cmd_detached 分离执行系统命令（不等待完成）。
+///
+/// 用法：pid := systemCmdDetached("notepad")
+///       pid := systemCmdDetached("ping", ["127.0.0.1", "-n", "3"])
+/// 第二个参数可为字符串或字符串数组。返回子进程 PID（int）。
+fn bi_system_cmd_detached(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let cmd = bh::as_str(args, 0, "systemCmdDetached")?;
+    let mut command = std::process::Command::new(cmd);
+    // 第二个参数可为字符串或字符串数组
+    if args.len() > 1 {
+        match &args[1] {
+            Value::Array(a) => {
+                let snap = a.lock().unwrap().clone();
+                for v in snap.iter() {
+                    command.arg(v.to_str());
+                }
+            }
+            Value::Str(s) => {
+                command.arg(s.as_ref());
+            }
+            v => return Err(crate::value::error_value(format!(
+                "systemCmdDetached() 第二个参数应为 string 或 array<string>，得到 {} (可能原因：参数类型错误)",
+                v.type_name(),
+            ))),
+        }
+    }
+    let child = command.spawn().map_err(|e| crate::value::error_value(format!(
+        "systemCmdDetached() 启动失败: '{}' - {} (可能原因：命令不存在或权限不足)", cmd, e,
+    )))?;
+    Ok(Value::Int(child.id() as i64))
 }

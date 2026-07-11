@@ -24,6 +24,9 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("fromJson", bi_json_decode);
     vm.register_builtin("getJsonNodeStr", bi_get_json_node_str);
     vm.register_builtin("getJsonNode", bi_get_json_node);
+    vm.register_builtin("formatJson", bi_format_json);
+    vm.register_builtin("compactJson", bi_compact_json);
+    vm.register_builtin("getJsonNodeStrs", bi_get_json_node_strs);
 }
 
 // ---- 编码（Value → JSON 字符串）----
@@ -511,4 +514,220 @@ fn bi_get_json_node_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     };
     let result = query_json_node(root, path);
     Ok(Value::str_from(result.to_str()))
+}
+
+// ---- 格式化/紧凑输出 ----
+
+/// push_indent 向输出追加 level 层缩进，每层用 indent_str 个空格。
+fn push_indent(out: &mut String, level: usize, indent_str: &str) {
+    for _ in 0..level {
+        out.push_str(indent_str);
+    }
+}
+
+/// pretty_encode 递归编码 Value 为带换行和缩进的美化 JSON。
+///
+/// 与 encode_value 的区别：对象/数组元素各占一行，按 indent 层级缩进。
+/// 标量类型（数字/字符串/布尔/undefined 等）复用 encode_value 的紧凑输出。
+fn pretty_encode(v: &Value, out: &mut String, indent: usize, indent_str: &str) {
+    match v {
+        Value::Array(a) => {
+            // 克隆快照后释放锁，再递归避免持锁死锁
+            let snapshot: Vec<Value> = a.lock().unwrap().clone();
+            if snapshot.is_empty() {
+                out.push_str("[]");
+                return;
+            }
+            out.push('[');
+            for (i, elem) in snapshot.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push('\n');
+                push_indent(out, indent + 1, indent_str);
+                pretty_encode(elem, out, indent + 1, indent_str);
+            }
+            out.push('\n');
+            push_indent(out, indent, indent_str);
+            out.push(']');
+        }
+        Value::Object(o) => {
+            let snapshot: Vec<(String, Value)> = o.lock().unwrap().snapshot();
+            if snapshot.is_empty() {
+                out.push_str("{}");
+                return;
+            }
+            out.push('{');
+            for (i, (k, val)) in snapshot.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push('\n');
+                push_indent(out, indent + 1, indent_str);
+                encode_string(k, out);
+                out.push_str(": ");
+                pretty_encode(val, out, indent + 1, indent_str);
+            }
+            out.push('\n');
+            push_indent(out, indent, indent_str);
+            out.push('}');
+        }
+        Value::Map(m) => {
+            let snapshot: Vec<(String, Value)> = m.lock().unwrap().snapshot();
+            if snapshot.is_empty() {
+                out.push_str("{}");
+                return;
+            }
+            out.push('{');
+            for (i, (k, val)) in snapshot.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push('\n');
+                push_indent(out, indent + 1, indent_str);
+                encode_string(k, out);
+                out.push_str(": ");
+                pretty_encode(val, out, indent + 1, indent_str);
+            }
+            out.push('\n');
+            push_indent(out, indent, indent_str);
+            out.push('}');
+        }
+        // 标量类型复用紧凑编码
+        _ => encode_value(v, out),
+    }
+}
+
+/// bi_format_json 美化 JSON 输出（带换行和缩进）。
+///
+/// 用法：formatJson(v)          — 默认 2 空格缩进
+///       formatJson(v, 4)       — 4 空格缩进
+fn bi_format_json(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "formatJson")?;
+    // 缩进空格数，默认 2
+    let spaces = if args.len() > 1 {
+        let n = bh::as_int(args, 1, "formatJson")?;
+        if n < 0 {
+            return Err(crate::value::error_value(
+                "formatJson() 缩进空格数不能为负 (可能原因：参数传错或为负值)".to_string(),
+            ));
+        }
+        n as usize
+    } else {
+        2
+    };
+    let indent_str = " ".repeat(spaces);
+    let mut out = String::new();
+    pretty_encode(&args[0], &mut out, 0, &indent_str);
+    Ok(Value::str_from(out))
+}
+
+/// bi_compact_json 紧凑 JSON 输出（无空格无换行）。
+///
+/// 与 jsonEncode 等价，直接复用 encode_value。
+fn bi_compact_json(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "compactJson")?;
+    let mut out = String::new();
+    encode_value(&args[0], &mut out);
+    Ok(Value::str_from(out))
+}
+
+// ---- JSON 路径批量查询（通配符）----
+
+/// collect_json_strs 按路径分段递归收集所有匹配节点的字符串值。
+///
+/// 路径分段用 '.' 分隔。支持：
+///   "*" 或 "#" — 通配符，遍历数组所有元素或对象所有值
+///   数字       — 数组索引（支持负数，-1 为末尾）
+///   其他       — 对象键名
+fn collect_json_strs(root: &Value, parts: &[&str], out: &mut Vec<String>) {
+    if parts.is_empty() {
+        out.push(root.to_str());
+        return;
+    }
+    let part = parts[0];
+    let rest = &parts[1..];
+    if part.is_empty() {
+        // 空段（连续点号或首尾点号），跳过
+        collect_json_strs(root, rest, out);
+        return;
+    }
+    if part == "*" || part == "#" {
+        // 通配符：遍历数组所有元素或对象所有值
+        match root {
+            Value::Array(arr) => {
+                let snap = arr.lock().unwrap().clone();
+                for elem in snap.iter() {
+                    collect_json_strs(elem, rest, out);
+                }
+            }
+            Value::Object(o) => {
+                let snap = o.lock().unwrap().snapshot();
+                for (_, v) in snap.iter() {
+                    collect_json_strs(v, rest, out);
+                }
+            }
+            Value::Map(m) => {
+                let snap = m.lock().unwrap().snapshot();
+                for (_, v) in snap.iter() {
+                    collect_json_strs(v, rest, out);
+                }
+            }
+            // 非容器类型无法遍历，跳过
+            _ => {}
+        }
+        return;
+    }
+    // 数组索引
+    if let Ok(idx) = part.parse::<i64>() {
+        if let Value::Array(arr) = root {
+            let guard = arr.lock().unwrap();
+            let len = guard.len() as i64;
+            let actual = if idx < 0 { idx + len } else { idx };
+            if actual >= 0 && actual < len {
+                collect_json_strs(&guard[actual as usize], rest, out);
+            }
+        }
+        return;
+    }
+    // 对象键
+    let next: Option<Value> = match root {
+        Value::Object(o) => o.lock().unwrap().get(part),
+        Value::Map(m) => m.lock().unwrap().get(part),
+        _ => None,
+    };
+    match next {
+        Some(v) => collect_json_strs(&v, rest, out),
+        None => {} // 键不存在，跳过
+    }
+}
+
+/// bi_get_json_node_strs 按 JSON 路径查询所有匹配节点的字符串值数组。
+///
+/// 用法：getJsonNodeStrs(json, "items.*.name") → ["a", "b"]
+///       getJsonNodeStrs(json, "items.#.name") → ["a", "b"]
+/// 支持 * 和 # 作为通配符表示所有元素。第一个参数可为 JSON 字符串或已解析 Value。
+fn bi_get_json_node_strs(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 1, "getJsonNodeStrs")?;
+    let path = bh::as_str(args, 1, "getJsonNodeStrs")?;
+    // 第一个参数可以是 JSON 字符串或已解析的 Value
+    let parsed;
+    let root = match &args[0] {
+        Value::Str(s) => {
+            let mut dec = Decoder::new(s);
+            let v = dec.parse_value().map_err(|e| {
+                crate::value::error_value(format!(
+                    "getJsonNodeStrs() JSON 解析失败: {} (可能原因：JSON 格式错误)", e.to_str(),
+                ))
+            })?;
+            parsed = v;
+            &parsed
+        }
+        other => other,
+    };
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut result = Vec::new();
+    collect_json_strs(root, &parts, &mut result);
+    let arr: Vec<Value> = result.into_iter().map(Value::str_from).collect();
+    Ok(Value::Array(std::sync::Arc::new(std::sync::Mutex::new(arr))))
 }

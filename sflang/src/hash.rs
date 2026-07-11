@@ -279,3 +279,38 @@ pub fn hmac_sha256(key: &[u8], message: &[u8]) -> Vec<u8> {
     outer_input.extend_from_slice(&inner_hash);
     sha256(&outer_input).to_vec()
 }
+
+/// hmac_sha1 计算 HMAC-SHA1，返回 20 字节 Vec<u8>。
+///
+/// 用于 TOTP 等需要 HMAC-SHA1 的场景（RFC 2104）。
+/// 与 hmac_sha256 同样的实现方式，仅内层/外层哈希换成 sha1。
+pub fn hmac_sha1(key: &[u8], message: &[u8]) -> Vec<u8> {
+    const BLOCK_SIZE: usize = 64;
+
+    // 超过块大小则先哈希
+    let key_processed: Vec<u8> = if key.len() > BLOCK_SIZE {
+        sha1(key).to_vec()
+    } else {
+        key.to_vec()
+    };
+
+    let mut k_padded = [0u8; BLOCK_SIZE];
+    k_padded[..key_processed.len()].copy_from_slice(&key_processed);
+
+    let mut ipad = [0u8; BLOCK_SIZE];
+    let mut opad = [0u8; BLOCK_SIZE];
+    for i in 0..BLOCK_SIZE {
+        ipad[i] = k_padded[i] ^ 0x36;
+        opad[i] = k_padded[i] ^ 0x5c;
+    }
+
+    let mut inner_input = Vec::with_capacity(BLOCK_SIZE + message.len());
+    inner_input.extend_from_slice(&ipad);
+    inner_input.extend_from_slice(message);
+    let inner_hash = sha1(&inner_input);
+
+    let mut outer_input = Vec::with_capacity(BLOCK_SIZE + inner_hash.len());
+    outer_input.extend_from_slice(&opad);
+    outer_input.extend_from_slice(&inner_hash);
+    sha1(&outer_input).to_vec()
+}

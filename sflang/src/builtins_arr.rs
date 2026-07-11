@@ -7,6 +7,7 @@
 //!
 //! 函数列表：
 //!   sort reverse contains indexOf slice concat insert remove
+//!   appendArray removeItems shuffle
 
 use std::sync::{Arc, Mutex};
 
@@ -26,6 +27,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("concat", bi_concat);
     vm.register_builtin("insert", bi_insert);
     vm.register_builtin("remove", bi_remove);
+    vm.register_builtin("appendArray", bi_append_array);
+    vm.register_builtin("removeItems", bi_remove_items);
     vm.register_builtin("shuffle", bi_shuffle);
 }
 
@@ -286,5 +289,79 @@ fn bi_shuffle(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         let j = (crate::builtins_math::next_rand() as usize) % (i + 1);
         guard.swap(i, j);
     }
+    Ok(args[0].clone())
+}
+
+/// bi_append_array 批量追加元素到数组末尾（原地修改）。
+///
+/// 用法：appendArray(arr, items)
+///   - items 为数组：将其所有元素逐一追加到 arr 末尾
+///   - items 为其他值：作为单个元素追加
+///
+/// 与 push 的区别：push 仅追加单个元素；appendArray 支持批量展开数组。
+/// 返回修改后的数组本身（与 push 行为一致，便于链式调用）。
+fn bi_append_array(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let arr = bh::as_array(args, 0, "appendArray")?;
+    bh::require_arg(args, 1, "appendArray")?;
+
+    match &args[1] {
+        // 数组：展开追加
+        Value::Array(src) => {
+            let items: Vec<Value> = src.lock().unwrap().clone();
+            arr.lock().unwrap().extend(items);
+        }
+        // 其他值：作为单个元素追加
+        other => {
+            arr.lock().unwrap().push(other.clone());
+        }
+    }
+    Ok(args[0].clone())
+}
+
+/// bi_remove_items 范围移除（原地修改）。
+///
+/// 用法：removeItems(arr, start, count)
+///   - 从 start 索引开始移除 count 个元素
+///   - start 可为负数（距末端的偏移，与 slice 一致）
+///   - count 超出可移除范围时自动截断到实际可移除数量
+///
+/// 返回修改后的数组本身。
+fn bi_remove_items(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let arr = bh::as_array(args, 0, "removeItems")?;
+    let mut start = bh::as_int(args, 1, "removeItems")?;
+    let count = bh::as_int(args, 2, "removeItems")?;
+
+    if count < 0 {
+        return Err(crate::value::error_value(format!(
+            "removeItems() count 不能为负数: {} (可能原因：参数顺序错误，正确顺序 removeItems(arr, start, count))",
+            count,
+        )));
+    }
+
+    let mut guard = arr.lock().unwrap();
+    let len = guard.len() as i64;
+
+    // 负索引：从末尾计算
+    if start < 0 {
+        start += len;
+    }
+    if start < 0 {
+        // 起点仍为负：什么都不移除
+        return Ok(args[0].clone());
+    }
+    if start >= len {
+        // 起点越界：什么都不移除
+        return Ok(args[0].clone());
+    }
+
+    // 计算实际可移除范围，防止 drain 越界
+    let start_usize = start as usize;
+    let available = (len - start) as usize;
+    let remove_count = (count as usize).min(available);
+
+    if remove_count > 0 {
+        guard.drain(start_usize..(start_usize + remove_count));
+    }
+
     Ok(args[0].clone())
 }

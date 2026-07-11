@@ -187,6 +187,7 @@ pub fn register(vm: &mut VM) {
     // HTTP 客户端
     vm.register_builtin("getWeb", bi_get_web);
     vm.register_builtin("getWebBytes", bi_get_web_bytes);
+    vm.register_builtin("getWebBytesWithHeaders", bi_get_web_bytes_with_headers);
     vm.register_builtin("postWeb", bi_post_web);
     vm.register_builtin("downloadFile", bi_download_file);
     vm.register_builtin("urlExists", bi_url_exists);
@@ -194,6 +195,14 @@ pub fn register(vm: &mut VM) {
     // URL 与 MIME 工具
     vm.register_builtin("parseUrl", bi_parse_url);
     vm.register_builtin("getMimeType", bi_get_mime_type);
+    vm.register_builtin("parseQuery", bi_parse_query);
+    vm.register_builtin("joinUrlPath", bi_join_url_path);
+
+    // Multipart 构建
+    vm.register_builtin("prepareMultiPartFieldFromBytes", bi_prepare_multipart_field_from_bytes);
+
+    // 响应刷新
+    vm.register_builtin("flushResp", bi_flush_resp);
 }
 
 // ===========================================================================
@@ -3008,6 +3017,77 @@ fn bi_url_exists(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
 }
 
+/// extract_headers_from_map 从 Map/Object 值中提取 header 键值对。
+///
+/// 支持两种格式：
+/// - Value::Map (OrdMap) — 有序映射
+/// - Value::Object (object_map::Map) — 对象映射
+/// 返回 Vec<String>，每个元素为 "Key: Value" 格式（与 http_lite::http_get 的 headers 参数格式一致）
+fn extract_headers_from_map(v: &Value) -> Result<Vec<String>, Value> {
+    let mut headers = Vec::new();
+    match v {
+        Value::Map(m) => {
+            let m = m.lock().unwrap();
+            for (k, val) in &m.entries {
+                let val_str = match val {
+                    Value::Str(s) => s.to_string(),
+                    other => other.to_str(),
+                };
+                headers.push(format!("{}: {}", k, val_str));
+            }
+        }
+        Value::Object(o) => {
+            let o = o.lock().unwrap();
+            for (k, val) in o.data.iter() {
+                let val_str = match val {
+                    Value::Str(s) => s.to_string(),
+                    other => other.to_str(),
+                };
+                headers.push(format!("{}: {}", k, val_str));
+            }
+        }
+        Value::Undefined => {
+            // 无 headers，返回空列表
+        }
+        _ => return Err(error_value(format!(
+            "headers 参数应为 map/object，得到 {} (可能原因：参数类型错误或顺序错误)",
+            v.type_name()
+        ))),
+    }
+    Ok(headers)
+}
+
+/// bi_get_web_bytes_with_headers 带 header 的 HTTP GET，返回响应体字节。
+///
+/// 用法：`getWebBytesWithHeaders(url, headers)`
+/// headers 为 Map/Object{key: value}，如 {"Authorization": "Bearer xxx", "Accept": "application/json"}
+/// 也支持可选的 --timeout=N 参数
+fn bi_get_web_bytes_with_headers(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let url = match args.get(0) {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(v) => return Err(error_value(format!(
+            "getWebBytesWithHeaders() 第 1 个参数应为 string (URL)，得到 {} (可能原因：参数顺序错误)",
+            v.type_name()
+        ))),
+        None => return Err(error_value("getWebBytesWithHeaders() 需要至少 2 个参数 (url, headers)")),
+    };
+
+    let headers = match args.get(1) {
+        Some(hv) => extract_headers_from_map(hv)?,
+        None => Vec::new(),
+    };
+
+    let timeout = get_timeout_from_args(args, 2);
+
+    match http_lite::http_get(&url, &headers, timeout) {
+        Ok(resp) => Ok(Value::Bytes(Arc::new(resp.body))),
+        Err(e) => Ok(error_value(format!(
+            "getWebBytesWithHeaders() 请求失败: {} (可能原因：URL 格式错误、网络不通、DNS 解析失败、服务器超时、header 格式错误)",
+            e
+        ))),
+    }
+}
+
 // ===========================================================================
 // URL 解析与 MIME 类型
 // ===========================================================================
@@ -3171,4 +3251,175 @@ fn mime_type_for_ext(ext: &str) -> &'static str {
         "sf" => "text/plain",
         _ => "application/octet-stream",
     }
+}
+
+// ===========================================================================
+// Query 解析与 URL 路径拼接
+// ===========================================================================
+
+/// bi_parse_query 解析 URL query string 为 Map。
+///
+/// 用法：`parseQuery("a=1&b=2&c=hello%20world")`
+/// 返回 OrdMap：{a:"1", b:"2", c:"hello world"}
+/// 支持 + 和 %XX 百分号编码解码
+fn bi_parse_query(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let query = match args.get(0) {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(v) => return Err(error_value(format!(
+            "parseQuery() 第 1 个参数应为 string (query string)，得到 {} (可能原因：参数顺序错误)",
+            v.type_name()
+        ))),
+        None => return Err(error_value("parseQuery() 需要 1 个参数 (query string)")),
+    };
+
+    let pairs = http_lite::url_decode_pairs(&query);
+    let mut map = crate::ord_map::OrdMap::new();
+    for (k, v) in pairs {
+        map.set(k, Value::str(&v));
+    }
+    Ok(Value::Map(Arc::new(Mutex::new(map))))
+}
+
+/// bi_join_url_path 拼接 URL 路径，避免重复斜杠。
+///
+/// 用法：`joinUrlPath("http://example.com", "/api/v1")` → "http://example.com/api/v1"
+/// `joinUrlPath("http://example.com/", "api/v1")` → "http://example.com/api/v1"
+/// `joinUrlPath("http://example.com/", "/api/v1")` → "http://example.com/api/v1"
+/// `joinUrlPath("base/", "sub/")` → "base/sub/"
+fn bi_join_url_path(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let base = match args.get(0) {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(v) => return Err(error_value(format!(
+            "joinUrlPath() 第 1 个参数应为 string (base URL)，得到 {}", v.type_name()
+        ))),
+        None => return Err(error_value("joinUrlPath() 需要 2 个参数 (base, path)")),
+    };
+    let path = match args.get(1) {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(v) => return Err(error_value(format!(
+            "joinUrlPath() 第 2 个参数应为 string (path)，得到 {}", v.type_name()
+        ))),
+        None => return Err(error_value("joinUrlPath() 需要 2 个参数 (base, path)")),
+    };
+
+    let result = join_url_path_impl(&base, &path);
+    Ok(Value::str(&result))
+}
+
+/// join_url_path_impl 拼接 URL 路径的内部实现。
+///
+/// 规则：
+/// - base 末尾的 / 和 path 开头的 / 合并为单个 /
+/// - 如果 path 为空，返回 base
+/// - 如果 base 为空，返回 path
+fn join_url_path_impl(base: &str, path: &str) -> String {
+    if path.is_empty() {
+        return base.to_string();
+    }
+    if base.is_empty() {
+        return path.to_string();
+    }
+    let base_has_slash = base.ends_with('/');
+    let path_has_slash = path.starts_with('/');
+    if base_has_slash && path_has_slash {
+        // 两边都有 /，去掉 path 开头的 /
+        format!("{}{}", base, &path[1..])
+    } else if !base_has_slash && !path_has_slash {
+        // 两边都没有 /，补一个
+        format!("{}/{}", base, path)
+    } else {
+        // 一边有一边没有，直接拼接
+        format!("{}{}", base, path)
+    }
+}
+
+// ===========================================================================
+// Multipart 构建
+// ===========================================================================
+
+/// MULTIPART_BOUNDARY multipart 表单的固定 boundary 分隔符。
+///
+/// 用于 prepareMultiPartFieldFromBytes 构建的字段，
+/// 调用方在设置 Content-Type 时应使用相同的 boundary：
+/// "multipart/form-data; boundary=----SflangBoundary7MA4YWxkTrZu0gW"
+const MULTIPART_BOUNDARY: &str = "----SflangBoundary7MA4YWxkTrZu0gW";
+
+/// bi_prepare_multipart_field_from_bytes 构建 multipart/form-data 的一个字段字节。
+///
+/// 用法：`prepareMultiPartFieldFromBytes(fieldName, fileName, bytes, contentType)`
+/// 返回 Bytes，格式为：
+/// ```text
+/// --boundary\r\n
+/// Content-Disposition: form-data; name="fieldName"; filename="fileName"\r\n
+/// Content-Type: contentType\r\n
+/// \r\n
+/// <bytes>\r\n
+/// ```
+/// 调用方可将多个字段的 Bytes 拼接后，加上结尾的 `--boundary--\r\n`，
+/// 并设置 Content-Type 为 `multipart/form-data; boundary=----SflangBoundary7MA4YWxkTrZu0gW`
+fn bi_prepare_multipart_field_from_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let field_name = match args.get(0) {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(v) => return Err(error_value(format!(
+            "prepareMultiPartFieldFromBytes() 第 1 个参数应为 string (字段名)，得到 {} (可能原因：参数顺序错误)",
+            v.type_name()
+        ))),
+        None => return Err(error_value("prepareMultiPartFieldFromBytes() 需要 4 个参数 (fieldName, fileName, bytes, contentType)")),
+    };
+
+    let file_name = match args.get(1) {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(v) => return Err(error_value(format!(
+            "prepareMultiPartFieldFromBytes() 第 2 个参数应为 string (文件名)，得到 {}", v.type_name()
+        ))),
+        None => return Err(error_value("prepareMultiPartFieldFromBytes() 需要 4 个参数 (fieldName, fileName, bytes, contentType)")),
+    };
+
+    let data = match args.get(2) {
+        Some(Value::Bytes(b)) => b.to_vec(),
+        Some(Value::ByteArray(b)) => b.lock().unwrap().clone(),
+        Some(Value::Str(s)) => s.as_bytes().to_vec(),
+        Some(v) => return Err(error_value(format!(
+            "prepareMultiPartFieldFromBytes() 第 3 个参数应为 bytes/byteArray/string，得到 {} (可能原因：参数类型错误)",
+            v.type_name()
+        ))),
+        None => return Err(error_value("prepareMultiPartFieldFromBytes() 需要 4 个参数 (fieldName, fileName, bytes, contentType)")),
+    };
+
+    let content_type = match args.get(3) {
+        Some(Value::Str(s)) => s.to_string(),
+        Some(v) => return Err(error_value(format!(
+            "prepareMultiPartFieldFromBytes() 第 4 个参数应为 string (Content-Type)，得到 {}", v.type_name()
+        ))),
+        None => return Err(error_value("prepareMultiPartFieldFromBytes() 需要 4 个参数 (fieldName, fileName, bytes, contentType)")),
+    };
+
+    // 构建 multipart 字段字节
+    let mut result = Vec::new();
+    result.extend_from_slice(format!("--{}\r\n", MULTIPART_BOUNDARY).as_bytes());
+    result.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n", field_name, file_name).as_bytes()
+    );
+    result.extend_from_slice(format!("Content-Type: {}\r\n", content_type).as_bytes());
+    result.extend_from_slice(b"\r\n");
+    result.extend_from_slice(&data);
+    result.extend_from_slice(b"\r\n");
+
+    Ok(Value::Bytes(Arc::new(result)))
+}
+
+// ===========================================================================
+// 响应刷新
+// ===========================================================================
+
+/// bi_flush_resp 刷新 HTTP 响应缓冲区。
+///
+/// 用法：`flushResp(resp)`
+///
+/// 当前架构下，writeResp/writeRespBytes 直接将数据写入 HttpResponse.body（内存 Vec<u8>），
+/// 实际的网络写入和 flush 发生在请求处理结束后的 write_response 中。
+/// 因此 flushResp 为空操作（no-op），返回 undefined。
+/// 保留此函数是为了 API 兼容性，便于将来如果改为流式写入时可以使用。
+fn bi_flush_resp(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
+    Ok(Value::Undefined)
 }

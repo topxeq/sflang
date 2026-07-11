@@ -108,7 +108,9 @@ pub fn register(vm: &mut crate::vm::VM) {
     vm.register_builtin("dbQueryStr", bi_db_query_string);  // Charlang 兼容别名
     vm.register_builtin("dbQueryMap", bi_db_query_map);
     vm.register_builtin("dbQueryMapArray", bi_db_query_map_array);
+    vm.register_builtin("dbQueryOrdered", bi_db_query_ordered);
     vm.register_builtin("dbClose", bi_db_close);
+    vm.register_builtin("formatSqlValue", bi_format_sql_value);
 }
 
 // ---- 辅助：包装与提取 ----
@@ -878,6 +880,48 @@ fn bi_db_query(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> 
         }
     }
 }
+
+/// bi_db_query_ordered 查询并按指定列排序。
+///
+/// 用法：dbQueryOrdered(conn, sql, orderByCol, order)
+///   - order 为 "ASC" 或 "DESC"
+///   - 在原 SQL 后追加 ORDER BY "orderByCol" "order"
+///   - 返回与 dbQuery 相同格式（array of map）
+///
+/// 注意：orderByCol 会被双引号包裹以支持含特殊字符的列名，
+/// 并对内部双引号做 SQL 转义（" → ""），防止 SQL 注入。
+/// order 不区分大小写，仅接受 ASC/DESC，其他值返回错误。
+fn bi_db_query_ordered(vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "dbQueryOrdered")?;
+    let sql = bh::as_str(args, 1, "dbQueryOrdered")?;
+    let order_col = bh::as_str(args, 2, "dbQueryOrdered")?;
+    let order_raw = bh::as_str(args, 3, "dbQueryOrdered")?;
+
+    // 校验 order 关键字（仅允许 ASC/DESC，不区分大小写）
+    let order_upper = order_raw.to_uppercase();
+    if order_upper != "ASC" && order_upper != "DESC" {
+        return Err(crate::value::error_value(format!(
+            "dbQueryOrdered() order 必须为 'ASC' 或 'DESC'，得到 '{}' (可能原因：参数顺序错误，正确顺序 dbQueryOrdered(conn, sql, orderByCol, order))",
+            order_raw,
+        )));
+    }
+
+    // 转义 orderByCol 中的双引号（SQL 标识符转义：每对 "" 表示一个 "）
+    let escaped_col: String = order_col.chars().flat_map(|c| {
+        if c == '"' { vec!['"', '"'] } else { vec![c] }
+    }).collect();
+
+    // 追加 ORDER BY 子句
+    let full_sql = format!("{} ORDER BY \"{}\" {}", sql, escaped_col, order_upper);
+
+    // 调用 bi_db_query 执行（替换原 SQL 参数）
+    let new_args: Vec<Value> = vec![args[0].clone(), Value::str_from(full_sql)];
+    let new_args: Vec<Value> = new_args.into_iter()
+        .chain(args.get(4..).unwrap_or(&[]).iter().cloned())
+        .collect();
+    bi_db_query(vm, &new_args)
+}
+
 ///
 /// 与 dbQuery 的区别：
 ///   dbQuery     → [{"col1": v1, "col2": v2}, ...]（array of map）
@@ -1246,4 +1290,50 @@ fn bi_db_query_map_array(vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value
         }
     }
     Ok(Value::Map(Arc::new(Mutex::new(result))))
+}
+
+/// bi_format_sql_value 将 Value 转为 SQL 字面量字符串。
+///
+/// 用法：formatSqlValue(v) → string
+///
+/// 转换规则：
+///   - int / byte: 直接转字符串（如 42）
+///   - float: 直接转字符串（如 3.14）
+///   - string: 用单引号包裹，内部单引号转义为两个单引号（' → ''）
+///   - bool: TRUE / FALSE
+///   - undefined / error: NULL
+///
+/// 用于构造 SQL 语句的值字面量（替代参数化查询的便捷方式）。
+/// 注意：直接拼接 SQL 字面量存在 SQL 注入风险，推荐使用 dbExec/dbQuery
+/// 的参数化查询；formatSqlValue 主要用于生成 DDL/调试等场景。
+fn bi_format_sql_value(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "formatSqlValue")?;
+    let v = &args[0];
+    let s = match v {
+        Value::Int(i) => i.to_string(),
+        Value::Byte(b) => b.to_string(),
+        Value::Float(f) => {
+            // 整数浮点也保留小数形式（与 SQL 语义一致）
+            format!("{}", f)
+        }
+        Value::BigInt(b) => b.to_string_decimal(),
+        Value::Str(s) => {
+            // 单引号转义为两个单引号
+            let escaped: String = s.chars().flat_map(|c| {
+                if c == '\'' { vec!['\'', '\''] } else { vec![c] }
+            }).collect();
+            format!("'{}'", escaped)
+        }
+        Value::Bool(b) => if *b { "TRUE".to_string() } else { "FALSE".to_string() },
+        Value::Undefined | Value::Error(_) => "NULL".to_string(),
+        // 其他类型降级为字符串字面量（按 to_str）
+        other => {
+            let s = other.to_str();
+            let escaped: String = s.chars().flat_map(|c| {
+                if c == '\'' { vec!['\'', '\''] } else { vec![c] }
+            }).collect();
+            format!("'{}'", escaped)
+        }
+    };
+    Ok(Value::str_from(s))
 }
