@@ -164,6 +164,8 @@ fn bi_tcp_listen(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         while !stop_clone.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((stream, addr)) => {
+                    // 将连接恢复为阻塞模式（listener 是非阻塞的，accept 出的 stream 也继承）
+                    let _ = stream.set_nonblocking(false);
                     // 为每个连接创建 TcpConn 并在新线程调用 handler
                     let conn = Arc::new(TcpConn {
                         stream: Mutex::new(stream),

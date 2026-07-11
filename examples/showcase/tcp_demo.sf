@@ -1,0 +1,203 @@
+// TCP socket server/client 示例
+// 演示 Sflang 的 TCP 网络编程能力
+// 用法：sf examples/showcase/tcp_demo.sf
+
+pln("========================================")
+pln("    Sflang TCP socket 示例")
+pln("========================================")
+
+// ============================================================
+// 1. TCP 回显服务器 + 客户端
+// ============================================================
+pln("")
+pln("【1. TCP 回显服务器】")
+
+// 启动服务器，监听随机端口
+port := 0
+serverStarted := false
+
+// 用固定端口（确保可用）
+listenAddr := "127.0.0.1:19800"
+
+server := tcpListen(listenAddr, func(conn) {
+    // 每个连接在此回调中处理
+    remote := tcpRemoteAddr(conn)
+    pln("  [服务器] 新连接来自:", remote)
+
+    // 设置读超时 5 秒
+    tcpSetTimeout(conn, 5000, 0)
+
+    // 循环读取数据并回显
+    while true {
+        line := tcpReadLine(conn)
+        if isUndefined(line) {
+            break
+        }
+        pln("  [服务器] 收到:", line)
+        tcpWriteLine(conn, "echo: " + line)
+        if line == "quit" {
+            break
+        }
+    }
+    tcpClose(conn)
+    pln("  [服务器] 连接关闭:", remote)
+})
+
+pln("  服务器已启动，监听:", listenAddr)
+pln("")
+
+// 等待服务器就绪
+sleep(100)
+
+// 客户端连接
+pln("  客户端连接到", listenAddr)
+conn := tcpConnect("127.0.0.1", 19800, 3000)
+if isError(conn) {
+    pln("  连接失败:", conn)
+    return
+}
+
+pln("  连接成功，本地地址:", tcpLocalAddr(conn))
+pln("  对端地址:", tcpRemoteAddr(conn))
+pln("")
+
+// 发送几条消息
+messages := ["hello", "sflang", "tcp", "quit"]
+for msg in messages {
+    tcpWriteLine(conn, msg)
+    resp := tcpReadLine(conn)
+    pln("  发送:", msg, "→ 收到:", resp)
+}
+
+tcpClose(conn)
+pln("  客户端已关闭")
+pln("")
+
+// 停止服务器
+tcpStopServer(server)
+pln("  服务器已停止")
+
+// ============================================================
+// 2. TCP 字节级读写
+// ============================================================
+pln("")
+pln("【2. TCP 字节级读写】")
+
+// 启动字节回显服务器
+server2 := tcpListen("127.0.0.1:19801", func(conn) {
+    // 读取 4 字节并原样返回
+    data := tcpRead(conn, 4)
+    if !isUndefined(data) {
+        tcpWrite(conn, data)
+    }
+    tcpClose(conn)
+})
+
+sleep(100)
+
+conn2 := tcpConnect("127.0.0.1", 19801, 3000)
+// 发送字节
+tcpWrite(conn2, "ABCD")
+// 读取返回的字节
+echoBytes := tcpRead(conn2, 4)
+pln("  发送 ABCD → 收到:", strFromBytes(echoBytes))
+tcpClose(conn2)
+tcpStopServer(server2)
+
+// ============================================================
+// 3. 多客户端并发服务器
+// ============================================================
+pln("")
+pln("【3. 多客户端并发服务器】")
+
+// 用 WaitGroup 等待所有客户端完成
+wg := newWaitGroup()
+
+// 计数器：记录处理的连接数
+counter := newMutex()
+count := 0
+
+// 预先添加 3 个任务（3 个客户端）
+wgAdd(wg, 3)
+
+server3 := tcpListen("127.0.0.1:19812", func(conn) {
+    line := tcpReadLine(conn)
+    // 累加计数
+    lock(counter)
+    count = count + 1
+    current := count
+    unlock(counter)
+
+    tcpWriteLine(conn, sprintf("你是第 %d 个客户端，消息: %s", current, line))
+    // 等待数据发送到客户端后再关闭连接
+    sleep(50)
+    tcpClose(conn)
+    // 每个连接处理完后通知 WaitGroup
+    wgDone(wg)
+})
+
+sleep(100)
+
+// 启动 3 个并发客户端
+for i := 1; i <= 3; i++ {
+    run func(idx) {
+        c := tcpConnect("127.0.0.1", 19812, 3000)
+        tcpWriteLine(c, sprintf("来自客户端 %d", idx))
+        resp := tcpReadLine(c)
+        pln("  客户端", idx, "→", resp)
+        tcpClose(c)
+    }(i)
+}
+
+// 等待所有连接处理完成
+wgWait(wg)
+pln("  共处理", count, "个连接")
+tcpStopServer(server3)
+
+// ============================================================
+// 4. 简易 HTTP 客户端（用 TCP 原始协议）
+// ============================================================
+pln("")
+pln("【4. 简易 HTTP 请求（用 TCP 原始协议）】")
+pln("  向 example.com 发送 HTTP 请求...")
+
+httpConn := tcpConnect("example.com", 80, 5000)
+if isError(httpConn) {
+    pln("  连接失败:", httpConn)
+} else {
+    // 发送 HTTP GET 请求
+    httpRequest := "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
+    tcpWrite(httpConn, httpRequest)
+    pln("  请求已发送")
+
+    // 读取响应（前 500 字节）
+    resp := tcpRead(httpConn, 500)
+    if isUndefined(resp) {
+        pln("  无响应")
+    } else {
+        // 显示响应前几行
+        respStr := strFromBytes(resp)
+        lines := strSplit(respStr, "\n")
+        pln("  响应前", len(lines), "行:")
+        for i := 0; i < 5 && i < len(lines); i++ {
+            line := lines[i]
+            // 去掉行尾 \r
+            if strEndsWith(line, "\r") {
+                line = strSub(line, 0, len(line) - 1)
+            }
+            pln("    |", line)
+        }
+    }
+    tcpClose(httpConn)
+}
+
+pln("")
+pln("========================================")
+pln("    TCP 示例完成")
+pln("========================================")
+pln("")
+pln("  服务器：tcpListen / tcpStopServer")
+pln("  客户端：tcpConnect / tcpRead / tcpWrite")
+pln("  行读写：tcpReadLine / tcpWriteLine")
+pln("  管理：  tcpClose / tcpSetTimeout")
+pln("  地址：  tcpRemoteAddr / tcpLocalAddr")
