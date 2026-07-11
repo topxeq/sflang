@@ -27,8 +27,14 @@ windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Fou
 rust_xlsxwriter = "0.79"
 # calamine：读 Excel xlsx/xls/ods 文件（MIT, tafia），用于 excel* 读取函数。
 calamine = "0.26"
-# zip：ZIP 压缩/解压（MIT），用于 docx 读写（docx 本质是 ZIP 包）。
+# zip：ZIP 压缩/解压（MIT），用于 docx 读写和 zip* 内置函数。
 zip = "2.4"
+# encoding_rs：网页字符编码转换（MIT OR Apache-2.0），用于 zip 中文文件名 GBK 兼容。
+# 纯 Rust 实现，无 C 依赖，且已是 zip 的传递依赖。
+encoding_rs = "0.8"
+# flate2：deflate/gzip 压缩（MIT OR Apache-2.0），用于 compressBytes/gzipBytes 内置函数。
+# 纯 Rust 后端（miniz_oxide），无 C 依赖，且已是 zip 的传递依赖。
+flate2 = "1"
 # rusqlite：SQLite 数据库（MIT + SQLite 公有领域），bundled 模式自带 C 源码，零配置。
 rusqlite = { version = "0.32", features = ["bundled"] }
 # mysql：纯 Rust MySQL 驱动（MIT/MPL-2.0），同步 API + 连接池。

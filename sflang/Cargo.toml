@@ -20,8 +20,12 @@ regex = { workspace = true }
 # Excel 读写（rust_xlsxwriter 写 + calamine 读，workspace 统一管理版本）
 rust_xlsxwriter = { workspace = true }
 calamine = { workspace = true }
-# ZIP 压缩/解压（用于 docx 读写，docx 本质是 ZIP 包）
+# ZIP 压缩/解压（用于 docx 读写 + zip* 内置函数）
 zip = { workspace = true }
+# 字符编码转换（用于 zip 中文文件名 GBK 兼容）
+encoding_rs = { workspace = true }
+# deflate/gzip 压缩（用于 compressBytes/gzipBytes 内置函数）
+flate2 = { workspace = true }
 # SQLite 数据库（bundled 模式，零配置）
 rusqlite = { workspace = true }
 # MySQL 数据库（纯 Rust 同步驱动 + 连接池）

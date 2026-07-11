@@ -62,6 +62,7 @@ pub mod builtins_email;
 pub mod builtins_ftp;
 pub mod http_lite;
 pub mod builtins_http;
+pub mod builtins_zip;
 pub mod api;
 
 // 重导出常用类型

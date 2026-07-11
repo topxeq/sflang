@@ -3239,3 +3239,196 @@ fn test_http_save_file_uploads() {
     // 清理
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
+
+// ---- 压缩与 ZIP 测试 ----
+
+#[test]
+fn test_compress_decompress_bytes() {
+    // 压缩 → 解压往返
+    let orig = "Hello, Sflang! 这是一个测试字符串，重复多次以增加压缩率。".repeat(50);
+    let mut sf = Sflang::new();
+    sf.set_global("orig", Value::str(&orig));
+    sf.run_string("var compressed = compressBytes(orig, 9)").unwrap();
+    sf.run_string("var decompressed = decompressBytes(compressed)").unwrap();
+
+    let compressed = sf.get_global("compressed").unwrap();
+    let decompressed = sf.get_global("decompressed").unwrap();
+    match (&compressed, &decompressed) {
+        (Value::Bytes(c), Value::Bytes(d)) => {
+            assert!(c.len() < orig.len(), "压缩后应更小: {} < {}", c.len(), orig.len());
+            assert_eq!(&**d, orig.as_bytes(), "解压后应与原文一致");
+        }
+        _ => panic!("类型不匹配"),
+    }
+}
+
+#[test]
+fn test_gzip_gunzip_bytes() {
+    let orig = "gzip 格式压缩测试，包含中文内容。".repeat(30);
+    let mut sf = Sflang::new();
+    sf.set_global("orig", Value::str(&orig));
+    sf.run_string("var gz = gzipBytes(orig, 6)").unwrap();
+    sf.run_string("var restored = gunzipBytes(gz)").unwrap();
+
+    let restored = sf.get_global("restored").unwrap();
+    match restored {
+        Value::Bytes(b) => assert_eq!(&*b, orig.as_bytes()),
+        _ => panic!("期望 bytes"),
+    }
+}
+
+#[test]
+fn test_zip_create_list_extract() {
+    let tmp = std::env::temp_dir();
+    let zip_path = tmp.join("sflang_test_zip.zip");
+    let extract_dir = tmp.join("sflang_test_zip_extract");
+    let _ = std::fs::remove_file(&zip_path);
+    let _ = std::fs::remove_dir_all(&extract_dir);
+
+    let zip_path_str = zip_path.to_string_lossy().replace('\\', "/");
+    let extract_dir_str = extract_dir.to_string_lossy().replace('\\', "/");
+
+    let script = format!(r#"
+        var zw = zipCreate("{zip}")
+        zipAddBytes(zw, bytes("hello world"), "test.txt")
+        zipAddBytes(zw, bytes("中文内容测试"), "中文文件.txt")
+        zipAddBytes(zw, bytes("nested data"), "subdir/nested.txt")
+        zipClose(zw)
+
+        var list = zipList("{zip}")
+        var names = []
+        for item in list {{
+            push(names, item["name"])
+        }}
+
+        var count = zipExtract("{zip}", "{dest}")
+        var r1 = zipReadFile("{zip}", "test.txt")
+        var r2 = zipReadFile("{zip}", "中文文件.txt")
+        var r3 = zipReadFile("{zip}", "subdir/nested.txt")
+    "#, zip = zip_path_str, dest = extract_dir_str);
+
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    sf.run_string(&script).unwrap();
+
+    // 验证 zipList 返回的文件名
+    let names = sf.get_global("names").unwrap();
+    match &names {
+        Value::Array(a) => {
+            let arr = a.lock().unwrap();
+            assert_eq!(arr.len(), 3, "应有 3 个条目");
+            let name_strs: Vec<String> = arr.iter().map(|v| {
+                match v { Value::Str(s) => s.to_string(), _ => panic!("期望 string") }
+            }).collect();
+            assert!(name_strs.contains(&"test.txt".to_string()), "应包含 test.txt: {:?}", name_strs);
+            assert!(name_strs.contains(&"中文文件.txt".to_string()), "应包含中文文件名: {:?}", name_strs);
+            assert!(name_strs.contains(&"subdir/nested.txt".to_string()), "应包含嵌套路径: {:?}", name_strs);
+        }
+        _ => panic!("期望 array"),
+    }
+
+    // 验证解压文件数
+    let count = sf.get_global("count").unwrap();
+    assert_eq!(count, Value::Int(3));
+
+    // 验证 zipReadFile 内容
+    let r1 = sf.get_global("r1").unwrap();
+    match r1 { Value::Bytes(b) => assert_eq!(&*b, b"hello world"), _ => panic!("期望 bytes") }
+    let r2 = sf.get_global("r2").unwrap();
+    match r2 { Value::Bytes(b) => assert_eq!(&*b, "中文内容测试".as_bytes()), _ => panic!("期望 bytes") }
+    let r3 = sf.get_global("r3").unwrap();
+    match r3 { Value::Bytes(b) => assert_eq!(&*b, b"nested data"), _ => panic!("期望 bytes") }
+
+    // 验证解压到磁盘的文件
+    let extracted_file = extract_dir.join("test.txt");
+    assert!(extracted_file.exists(), "解压文件应存在");
+    assert_eq!(std::fs::read_to_string(&extracted_file).unwrap(), "hello world");
+
+    let extracted_cn = extract_dir.join("中文文件.txt");
+    assert!(extracted_cn.exists(), "中文文件名解压应存在");
+    assert_eq!(std::fs::read_to_string(&extracted_cn).unwrap(), "中文内容测试");
+
+    // 清理
+    let _ = std::fs::remove_file(&zip_path);
+    let _ = std::fs::remove_dir_all(&extract_dir);
+}
+
+#[test]
+fn test_zip_extract_single_file() {
+    let tmp = std::env::temp_dir();
+    let zip_path = tmp.join("sflang_test_zip_single.zip");
+    let extract_path = tmp.join("sflang_test_single_out.txt");
+    let _ = std::fs::remove_file(&zip_path);
+    let _ = std::fs::remove_file(&extract_path);
+
+    let zip_path_str = zip_path.to_string_lossy().replace('\\', "/");
+    let extract_path_str = extract_path.to_string_lossy().replace('\\', "/");
+
+    let script = format!(r#"
+        var zw = zipCreate("{zip}")
+        zipAddBytes(zw, bytes("file A content"), "a.txt")
+        zipAddBytes(zw, bytes("file B content"), "b.txt")
+        zipClose(zw)
+
+        var ok = zipExtractFile("{zip}", "b.txt", "{dest}")
+    "#, zip = zip_path_str, dest = extract_path_str);
+
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    sf.run_string(&script).unwrap();
+
+    let ok = sf.get_global("ok").unwrap();
+    assert_eq!(ok, Value::Bool(true));
+    assert!(extract_path.exists());
+    assert_eq!(std::fs::read_to_string(&extract_path).unwrap(), "file B content");
+
+    let _ = std::fs::remove_file(&zip_path);
+    let _ = std::fs::remove_file(&extract_path);
+}
+
+#[test]
+fn test_zip_add_dir() {
+    let tmp = std::env::temp_dir();
+    let src_dir = tmp.join("sflang_test_zip_src");
+    let zip_path = tmp.join("sflang_test_zip_dir.zip");
+    let extract_dir = tmp.join("sflang_test_zip_dir_extract");
+    let _ = std::fs::remove_dir_all(&src_dir);
+    let _ = std::fs::remove_file(&zip_path);
+    let _ = std::fs::remove_dir_all(&extract_dir);
+
+    // 创建源目录结构
+    std::fs::create_dir_all(src_dir.join("sub")).unwrap();
+    std::fs::write(src_dir.join("file1.txt"), "content1").unwrap();
+    std::fs::write(src_dir.join("sub").join("file2.txt"), "content2").unwrap();
+
+    let src_dir_str = src_dir.to_string_lossy().replace('\\', "/");
+    let zip_path_str = zip_path.to_string_lossy().replace('\\', "/");
+    let extract_dir_str = extract_dir.to_string_lossy().replace('\\', "/");
+
+    let script = format!(r#"
+        var zw = zipCreate("{zip}")
+        var n = zipAddDir(zw, "{src}", "")
+        zipClose(zw)
+        var list = zipList("{zip}")
+        var count = zipExtract("{zip}", "{dest}")
+    "#, zip = zip_path_str, src = src_dir_str, dest = extract_dir_str);
+
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    sf.run_string(&script).unwrap();
+
+    // zipAddDir 应返回添加的文件数（不含目录条目）
+    let n = sf.get_global("n").unwrap();
+    assert_eq!(n, Value::Int(2), "应添加 2 个文件");
+
+    // 验证解压后文件存在
+    assert!(extract_dir.join("file1.txt").exists());
+    assert!(extract_dir.join("sub").join("file2.txt").exists());
+    assert_eq!(std::fs::read_to_string(extract_dir.join("file1.txt")).unwrap(), "content1");
+    assert_eq!(std::fs::read_to_string(extract_dir.join("sub").join("file2.txt")).unwrap(), "content2");
+
+    // 清理
+    let _ = std::fs::remove_dir_all(&src_dir);
+    let _ = std::fs::remove_file(&zip_path);
+    let _ = std::fs::remove_dir_all(&extract_dir);
+}
