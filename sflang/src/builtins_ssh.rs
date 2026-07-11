@@ -211,7 +211,7 @@ fn bi_ssh_list(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
 }
 
-pub fn ssh_upload_impl(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+pub fn ssh_upload_impl(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let params = parse_ssh_params(args)?;
     let local_path = get_switch(args, "localPath", "");
     let remote_path = get_switch(args, "remotePath", "");
@@ -239,7 +239,7 @@ pub fn ssh_upload_impl(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
 }
 
-pub fn ssh_download_impl(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+pub fn ssh_download_impl(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let params = parse_ssh_params(args)?;
     let remote_path = get_switch(args, "remotePath", "");
     let local_path = get_switch(args, "localPath", "");

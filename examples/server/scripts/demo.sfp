@@ -1,0 +1,74 @@
+<!-- Sflang 动态页面示例 (.sfp) -->
+<!-- 类似 PHP 的 <?php ?>，.spf 文件中用 <?sf ... ?> 内嵌 Sflang 代码 -->
+<!-- 代码块外的文本原样输出，代码块执行后返回值插入到 HTML 中 -->
+<!-- 多个代码块共享同一个执行环境（变量互通） -->
+<html>
+<head><title>Sflang .sfp 动态页面示例</title></head>
+<body style="font-family: sans-serif; max-width: 800px; margin: 40px auto;">
+<h1>Sflang 动态页面 (.sfp)</h1>
+
+<p>此页面由 .sfp 模板渲染。代码块用 <code>&lt;?sf ... ?&gt;</code> 标记。</p>
+
+<!-- ============================== -->
+<!-- 1. 基本信息展示 -->
+<!-- ============================== -->
+<h2>请求信息</h2>
+<table border="1" cellpadding="8" style="border-collapse: collapse;">
+  <tr><td>请求路径</td><td><?sf return reqPathG ?></td></tr>
+  <tr><td>请求方法</td><td><?sf return reqMethodG ?></td></tr>
+  <tr><td>完整 URI</td><td><?sf return reqUriG ?></td></tr>
+  <tr><td>运行模式</td><td><?sf return runModeG ?></td></tr>
+  <tr><td>当前时间</td><td><?sf return toStr(now()) ?></td></tr>
+</table>
+
+<!-- ============================== -->
+<!-- 2. 变量共享：在一个块中定义，在另一个块中使用 -->
+<!-- ============================== -->
+<h2>变量共享演示</h2>
+<?sf greeting := "Hello from Sflang .sfp!" ?>
+<p><?sf return greeting ?></p>
+
+<!-- ============================== -->
+<!-- 3. 循环生成 HTML -->
+<!-- ============================== -->
+<h2>循环生成列表</h2>
+<ul>
+<?sf
+result := ""
+for i in range(1, 6) {
+    result = result + "<li>第 " + toStr(i) + " 项</li>"
+}
+return result
+?>
+</ul>
+
+<!-- ============================== -->
+<!-- 4. 条件判断 -->
+<!-- ============================== -->
+<h2>条件判断</h2>
+<?sf
+if reqMethodG == "GET" {
+    return "<p style='color:green'>这是 GET 请求</p>"
+} else {
+    return "<p style='color:blue'>这是 " + reqMethodG + " 请求</p>"
+}
+?>
+
+<!-- ============================== -->
+<!-- 5. 数学运算和表达式 -->
+<!-- ============================== -->
+<h2>数学运算</h2>
+<p>1 + 2 = <?sf return toStr(1 + 2) ?></p>
+<p>10 * 10 = <?sf return toStr(10 * 10) ?></p>
+<p>随机数: <?sf return toStr(randInt(1, 100)) ?></p>
+
+<!-- ============================== -->
+<!-- 6. 错误处理（不中断页面） -->
+<!-- ============================== -->
+<h2>错误处理</h2>
+<p>下面的代码块会执行失败，错误内联显示，不影响后续内容：</p>
+<?sf return toStr(undefinedFunction(42)) ?>
+<p>此行在错误之后，仍然正常显示。</p>
+
+</body>
+</html>

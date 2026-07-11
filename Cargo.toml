@@ -62,6 +62,20 @@ russh-keys = "0.46"
 async-trait = "0.1"
 # russh-sftp：SFTP 子系统（Apache-2.0/MIT），用于 SFTP 文件传输。
 russh-sftp = "2.0"
+# rustls：纯 Rust TLS 实现（Apache-2.0/MIT/ISC），用于 HTTPS 服务器。
+# 不依赖系统 OpenSSL/SChannel，跨平台行为一致。
+rustls = "0.23"
+# rustls-pemfile：解析 PEM 格式证书文件（Apache-2.0/MIT），rustls 配套。
+rustls-pemfile = "2"
+# tungstenite：轻量同步 WebSocket 库（MIT OR Apache-2.0），不引入 async runtime。
+# 契合 Sflang 同步 VM 模型。启用 url（客户端 connect 支持 ws://wss:// URL 解析）。
+tungstenite = { version = "0.24", features = ["url", "handshake"] }
+# webpki-roots：Mozilla 内置根证书（ISC），用于 HTTPS 客户端验证。
+# 作为系统证书不可用时的 fallback。
+webpki-roots = "0.26"
+# rustls-native-certs：从系统证书库加载根证书（Apache-2.0/MIT）。
+# Windows 用 SChannel，Linux 用 /etc/ssl/certs，macOS 用 Keychain。
+rustls-native-certs = "0.7"
 
 # 编译优化配置：release 模式启用 LTO 与单代码生成单元，最大化优化
 [profile.release]

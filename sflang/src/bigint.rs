@@ -560,8 +560,6 @@ mod tests {
     #[test]
     fn test_divmod_randomized() {
         // 随机化测试：验证 a == q*b + r 且 |r| < |b|
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
         let mut seed = 12345u64;
         let mut rng = || {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);

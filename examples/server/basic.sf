@@ -1,0 +1,86 @@
+// Sflang HTTP 服务器基础示例
+// 启动：sf examples/server/basic.sf
+// 测试：curl http://127.0.0.1:8080/hello
+//
+// 演示 HTTP 服务器的两种响应风格：
+//   1. 返回字符串/Bytes -> 自动作为响应体
+//   2. 手动 writeResp + 返回非字符串 -> 不追加
+
+server := httpServer("--port=8080", "--host=127.0.0.1")
+
+// 风格1：返回字符串 -> 自动作为响应体（200 OK）
+serverSetHandler(server, "/hello", func(req, resp) {
+    return "Hello from Sflang!"
+})
+
+// 风格2：读取请求信息
+serverSetHandler(server, "/echo", func(req, resp) {
+    setRespContentType(resp, "text/plain")
+    return "Method: " + getReqMethod(req) + "\n" +
+           "Path: " + getReqPath(req) + "\n" +
+           "URI: " + getReqUri(req) + "\n" +
+           "Query: " + getReqQuery(req) + "\n" +
+           "Body: " + getReqBody(req)
+})
+
+// 风格3：查询参数
+serverSetHandler(server, "/greet", func(req, resp) {
+    name := getReqParam(req, "name")
+    if name == undefined {
+        name = "World"
+    }
+    return "Hello, " + name + "!"
+})
+
+// 风格4：手动控制响应（JSON API）
+// 调用 writeResp 后返回非 Str/Bytes -> 服务器不追加
+serverSetHandler(server, "/api/info", func(req, resp) {
+    setRespStatus(resp, 201)
+    setRespContentType(resp, "application/json")
+    writeResp(resp, jsonEncode({
+        "language": "Sflang",
+        "version": "0.1.0",
+        "method": getReqMethod(req),
+        "path": getReqPath(req)
+    }))
+    return true  // bool -> 不追加响应体
+})
+
+// 风格5：返回 Error -> 服务器自动返回 500 + 结构化错误 JSON
+serverSetHandler(server, "/error", func(req, resp) {
+    return error("this is a test error")
+})
+
+// 风格6：返回 Bytes -> 作为二进制响应体
+serverSetHandler(server, "/binary", func(req, resp) {
+    setRespContentType(resp, "application/octet-stream")
+    return bytesFromHex("53666c616e672062696e61727920726573706f6e7365")
+})
+
+// 风格7：前缀路由（"/api/" 匹配 /api/ 下的所有路径）
+serverSetHandler(server, "/api/", func(req, resp) {
+    setRespContentType(resp, "application/json")
+    writeResp(resp, jsonEncode({
+        "matched": "prefix route",
+        "path": getReqPath(req),
+        "query": getReqQuery(req)
+    }))
+    return true
+})
+
+// 风格8：静态文件服务
+serverSetStatic(server, "examples/server/scripts")
+
+println("Sflang HTTP server starting on http://127.0.0.1:8080")
+println("")
+println("Routes:")
+println("  GET  /hello        - 返回字符串")
+println("  GET  /echo         - 回显请求信息")
+println("  GET  /greet?name=X - 查询参数")
+println("  GET  /api/info     - JSON API (手动响应)")
+println("  GET  /error        - 返回 Error -> 500")
+println("  GET  /binary       - 返回 Bytes -> 二进制")
+println("  GET  /api/*        - 前缀路由")
+println("  GET  /<static>     - 静态文件")
+
+serverStart(server)

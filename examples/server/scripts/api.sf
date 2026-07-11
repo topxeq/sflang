@@ -1,0 +1,14 @@
+// JSON API 示例脚本（CLI 服务器模式）
+// 访问：http://127.0.0.1:8080/api.sf
+
+setRespHeader(responseG, "Content-Type", "application/json; charset=utf-8")
+
+// 返回服务器信息
+writeResp(responseG, jsonEncode({
+    "language": "Sflang",
+    "version": "0.1.0",
+    "method": reqMethodG,
+    "path": reqPathG,
+    "time": toStr(now()),
+    "query": reqUriG
+}))

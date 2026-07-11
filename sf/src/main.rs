@@ -4,6 +4,7 @@
 //   sf                       启动 REPL
 //   sf <script.sf> [args...] 执行脚本文件，argsG 为参数数组
 //   sf -e "<code>"           执行代码字符串
+//   sf -server [options]     启动 HTTP 应用服务器
 //   sf --build <script.sf>   编译脚本为独立可执行文件
 //   sf -h | --help | help    显示帮助
 //   sf -v | --version        显示版本
@@ -45,6 +46,12 @@ fn main() -> ExitCode {
         "-h" | "--help" | "help" => {
             print_help();
             ExitCode::SUCCESS
+        }
+        "-server" | "--server" => {
+            // 启动 HTTP 应用服务器
+            let server_args: Vec<String> = args[1..].to_vec();
+            let code = sflang::builtins_http::run_server_cli(&server_args);
+            ExitCode::from(code as u8)
         }
         "-e" | "--eval" => {
             if args.len() < 3 {
@@ -385,6 +392,13 @@ fn print_help() {
     println!("  sf                       启动 REPL（交互式环境）");
     println!("  sf <script.sf> [args...] 执行脚本文件，参数存入 argsG");
     println!("  sf -e \"<code>\"           执行代码字符串");
+    println!("  sf -server [options]     启动 HTTP 应用服务器");
+    println!("      --port=8080          服务端口（默认 8080）");
+    println!("      --host=0.0.0.0       监听地址");
+    println!("      --dir=./scripts      脚本根目录");
+    println!("      --webDir=./web       静态文件目录");
+    println!("      --adminToken=sflang  管理端点令牌");
+    println!("      --verbose            打印请求日志");
     println!("  sf --build <script.sf>   编译脚本为独立可执行文件");
     println!("      [--output <路径>]    指定输出路径");
     println!("  sf -h | --help | help    显示此帮助");

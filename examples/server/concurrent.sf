@@ -1,0 +1,105 @@
+// Sflang HTTP 服务器示例 - 并发与共享状态
+// 启动：sf examples/server/concurrent.sf
+// 测试（多终端并发）：
+//   curl http://127.0.0.1:8080/counter
+//   curl http://127.0.0.1:8080/stats
+//
+// 演示多个并发请求安全地操作共享状态。
+// 每个 HTTP 请求在不同的 OS 线程中执行，
+// 通过 mutex 保护共享计数器。
+
+server := httpServer("--port=8080", "--host=127.0.0.1")
+
+// 共享状态：用 ref 包裹，用 mutex 保护
+counter := newRef(0)
+maxConcurrent := newRef(0)
+currentActive := newRef(0)
+totalRequests := newRef(0)
+mu := newMutex()
+
+// 辅助函数：原子递增
+atomicInc := func(ref) {
+    lock(mu)
+    v := getValueByRef(ref)
+    setValueByRef(ref, v + 1)
+    unlock(mu)
+}
+
+// 辅助函数：原子递减并更新最大值
+atomicDec := func(ref, activeRef, maxRef) {
+    lock(mu)
+    v := getValueByRef(ref)
+    setValueByRef(ref, v - 1)
+    active := getValueByRef(activeRef)
+    max := getValueByRef(maxRef)
+    if active > max {
+        setValueByRef(maxRef, active)
+    }
+    unlock(mu)
+}
+
+// ============================================================
+// GET /counter - 递增计数器并返回当前值
+// ============================================================
+serverSetHandler(server, "/counter", func(req, resp) {
+    atomicInc(totalRequests)
+    atomicInc(currentActive)
+
+    // 模拟一些处理时间
+    sleep(randInt(10, 50))
+
+    atomicInc(counter)
+    current := getValueByRef(counter)
+
+    atomicDec(currentActive, currentActive, maxConcurrent)
+
+    setRespContentType(resp, "application/json")
+    writeResp(resp, jsonEncode({
+        "counter": current,
+        "message": "Request #" + toStr(current) + " processed"
+    }))
+    return true
+})
+
+// ============================================================
+// GET /stats - 获取统计信息
+// ============================================================
+serverSetHandler(server, "/stats", func(req, resp) {
+    setRespContentType(resp, "application/json")
+    writeResp(resp, jsonEncode({
+        "counter": getValueByRef(counter),
+        "totalRequests": getValueByRef(totalRequests),
+        "currentActive": getValueByRef(currentActive),
+        "maxConcurrent": getValueByRef(maxConcurrent)
+    }))
+    return true
+})
+
+// ============================================================
+// GET /reset - 重置所有计数器
+// ============================================================
+serverSetHandler(server, "/reset", func(req, resp) {
+    lock(mu)
+    setValueByRef(counter, 0)
+    setValueByRef(totalRequests, 0)
+    setValueByRef(currentActive, 0)
+    setValueByRef(maxConcurrent, 0)
+    unlock(mu)
+
+    setRespContentType(resp, "application/json")
+    writeResp(resp, jsonEncode({"status": "reset", "message": "all counters reset to 0"}))
+    return true
+})
+
+println("并发计数器服务器启动: http://127.0.0.1:8080")
+println("")
+println("路由:")
+println("  GET /counter  - 递增计数器（模拟处理延迟）")
+println("  GET /stats    - 查看统计信息")
+println("  GET /reset    - 重置所有计数器")
+println("")
+println("并发测试（开多个终端同时执行）:")
+println("  for i in $(seq 1 20); do curl -s http://127.0.0.1:8080/counter & done; wait")
+println("  curl http://127.0.0.1:8080/stats")
+
+serverStart(server)

@@ -1,0 +1,129 @@
+// Sflang HTTP 服务器高级特性示例
+// 启动：sf examples/server/advanced.sf
+// 测试：curl http://127.0.0.1:8080/
+//
+// 演示：路由参数、Cookie、CORS、文件上传
+
+server := httpServer("--port=8080", "--host=127.0.0.1")
+
+// ============================================================
+// 路由参数：/api/users/:id 自动提取 id
+// 访问 /api/users/42 -> routeParamsG["id"] = "42"
+// ============================================================
+serverSetHandler(server, "/api/users/:id", func(req, resp) {
+    setRespContentType(resp, "application/json; charset=utf-8")
+    userId := routeParamsG["id"]
+    return jsonEncode({
+        "userId": userId,
+        "message": "获取用户 " + toStr(userId) + " 的信息"
+    })
+})
+
+// ============================================================
+// 多参数路由：/api/posts/:postId/comments/:commentId
+// ============================================================
+serverSetHandler(server, "/api/posts/:postId/comments/:commentId", func(req, resp) {
+    setRespContentType(resp, "application/json; charset=utf-8")
+    return jsonEncode({
+        "postId": routeParamsG["postId"],
+        "commentId": routeParamsG["commentId"]
+    })
+})
+
+// ============================================================
+// Cookie 读写
+// GET /set-cookie -> 设置 Cookie
+// GET /get-cookie -> 读取 Cookie
+// ============================================================
+serverSetHandler(server, "/set-cookie", func(req, resp) {
+    setRespCookie(resp, "sessionId", "abc123456", "--path=/", "--maxAge=3600", "--httpOnly", "--sameSite=strict")
+    setRespContentType(resp, "application/json; charset=utf-8")
+    return jsonEncode({"message": "Cookie 已设置", "cookie": "sessionId=abc123456"})
+})
+
+serverSetHandler(server, "/get-cookie", func(req, resp) {
+    setRespContentType(resp, "application/json; charset=utf-8")
+    sessionId := getReqCookie(req, "sessionId")
+    if sessionId == undefined {
+        sessionId = "(无)"
+    }
+    return jsonEncode({"sessionId": sessionId})
+})
+
+// ============================================================
+// CORS 支持
+// GET /cors-api -> 自动设置 CORS 头
+// ============================================================
+serverSetHandler(server, "/cors-api", func(req, resp) {
+    setCorsHeaders(resp, "*")
+    setRespContentType(resp, "application/json; charset=utf-8")
+    return jsonEncode({"message": "跨域请求成功", "cors": "enabled"})
+})
+
+// ============================================================
+// 文件上传：POST /upload
+// 使用 multipart/form-data 上传文件，自动保存到 ./uploads 目录
+// 测试：curl -F "avatar=@test.txt" http://127.0.0.1:8080/upload
+// ============================================================
+serverSetHandler(server, "/upload", func(req, resp) {
+    setRespContentType(resp, "application/json; charset=utf-8")
+    r := saveFileUploads(req, "./uploads")
+    if isErr(r) {
+        setRespStatus(resp, 500)
+        return jsonEncode({"error": getErrStr(r)})
+    }
+    return jsonEncode(r)
+})
+
+// ============================================================
+// 综合示例：Cookie + CORS + 路由参数
+// ============================================================
+serverSetHandler(server, "/api/products/:id", func(req, resp) {
+    setCorsHeaders(resp, "*")
+
+    // 检查 Cookie 认证
+    token := getReqCookie(req, "token")
+    if token == undefined {
+        setRespStatus(resp, 401)
+        setRespContentType(resp, "application/json; charset=utf-8")
+        return jsonEncode({"error": "未登录，请先访问 /set-cookie 设置 token Cookie"})
+    }
+
+    productId := routeParamsG["id"]
+    setRespContentType(resp, "application/json; charset=utf-8")
+    return jsonEncode({
+        "productId": productId,
+        "token": token,
+        "message": "已认证用户访问产品 " + toStr(productId)
+    })
+})
+
+println("高级特性服务器启动: http://127.0.0.1:8080")
+println("")
+println("路由参数:")
+println("  GET /api/users/42           -> 提取 id=42")
+println("  GET /api/posts/1/comments/2  -> 提取 postId=1, commentId=2")
+println("")
+println("Cookie:")
+println("  GET /set-cookie              -> 设置 sessionId Cookie")
+println("  GET /get-cookie              -> 读取 Cookie")
+println("")
+println("CORS:")
+println("  GET /cors-api                -> 自动设置 CORS 头")
+println("")
+println("文件上传:")
+println("  POST /upload                 -> multipart 表单上传，保存到 ./uploads")
+println("  curl -F avatar=@test.txt http://127.0.0.1:8080/upload")
+println("")
+println("综合:")
+println("  先访问: /set-cookie")
+println("  再访问: /api/products/100")
+println("")
+println("测试命令:")
+println("  curl http://127.0.0.1:8080/api/users/42")
+println("  curl http://127.0.0.1:8080/api/posts/1/comments/2")
+println("  curl -c cookies.txt http://127.0.0.1:8080/set-cookie")
+println("  curl -b cookies.txt http://127.0.0.1:8080/get-cookie")
+println("  curl -b cookies.txt http://127.0.0.1:8080/api/products/100")
+
+serverStart(server)

@@ -4,7 +4,6 @@
 
 use sflang::Sflang;
 use sflang::value::Value;
-use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
 
 // ---- 辅助函数 ----
@@ -2646,7 +2645,6 @@ fn test_csv_crlf_line_endings() {
 #[test]
 fn test_csv_write_read_roundtrip() {
     // 写入文件再读回
-    use std::path::PathBuf;
     let mut path = std::env::temp_dir();
     path.push("sflang_csv_test_roundtrip.csv");
     let path_str = path.to_str().unwrap().replace('\\', "/");
@@ -2681,7 +2679,6 @@ fn test_excel_new() {
 
 #[test]
 fn test_excel_write_read_roundtrip() {
-    use std::path::PathBuf;
     let mut path = std::env::temp_dir();
     path.push("sflang_xlsx_test_roundtrip.xlsx");
     let path_str = path.to_str().unwrap().replace('\\', "/");
@@ -2709,7 +2706,6 @@ fn test_excel_write_read_roundtrip() {
 
 #[test]
 fn test_excel_write_float() {
-    use std::path::PathBuf;
     let mut path = std::env::temp_dir();
     path.push("sflang_xlsx_test_float.xlsx");
     let path_str = path.to_str().unwrap().replace('\\', "/");
@@ -2738,7 +2734,6 @@ fn test_excel_write_float() {
 
 #[test]
 fn test_excel_multiple_sheets() {
-    use std::path::PathBuf;
     let mut path = std::env::temp_dir();
     path.push("sflang_xlsx_test_multi.xlsx");
     let path_str = path.to_str().unwrap().replace('\\', "/");
@@ -2775,7 +2770,6 @@ fn test_excel_multiple_sheets() {
 
 #[test]
 fn test_excel_bool_type() {
-    use std::path::PathBuf;
     let mut path = std::env::temp_dir();
     path.push("sflang_xlsx_test_bool.xlsx");
     let path_str = path.to_str().unwrap().replace('\\', "/");
@@ -3094,4 +3088,154 @@ fn test_mysql_is_type() {
     sf.run_string("var db = dbConnect(\"mysql\", \"mysql://root:root@localhost:3306/test\")").unwrap();
     let r = sf.get_global("db").unwrap();
     assert!(matches!(r, Value::Native(_)));
+}
+
+// ---- HTTP 服务器 ----
+
+/// start_test_server 在后台线程启动一个测试服务器，返回端口号。
+/// 测试结束后线程自动随进程退出。
+fn start_test_server(script: &str, port: u16) -> u16 {
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    let script = script.replace("{PORT}", &port.to_string());
+    std::thread::spawn(move || {
+        let _ = sf.run_string(&script);
+    });
+    // 等待服务器启动
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    port
+}
+
+#[test]
+fn test_http_route_params() {
+    let port = 19001;
+    start_test_server("\
+        var server = httpServer(\"--port={PORT}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/users/:id\", func(req, resp) {\n\
+            setRespContentType(resp, \"application/json\")\n\
+            return jsonEncode({\"id\": routeParamsG[\"id\"]})\n\
+        })\n\
+        serverStart(server, \"--thread\")\n\
+    ", port);
+
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    let url = format!("http://127.0.0.1:{}/users/42", port);
+    sf.run_string(&format!("var result = getWeb(\"{}\")", url)).unwrap();
+    let result = sf.get_global("result").unwrap();
+    match result {
+        Value::Str(s) => assert!(s.contains("\"id\":\"42\""), "响应应包含 id=42: {}", s),
+        other => panic!("期望字符串，得到 {:?}", other),
+    }
+}
+
+#[test]
+fn test_http_cookie_read() {
+    let port = 19002;
+    start_test_server("\
+        var server = httpServer(\"--port={PORT}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/get\", func(req, resp) {\n\
+            var v = getReqCookie(req, \"testCookie\")\n\
+            if v == undefined { v = \"none\" }\n\
+            return v\n\
+        })\n\
+        serverStart(server, \"--thread\")\n\
+    ", port);
+
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    // 发送带 Cookie 头的请求
+    let url = format!("http://127.0.0.1:{}/get", port);
+    sf.run_string(&format!("var r = getWeb(\"{}\", \"Cookie: testCookie=hello123\")", url)).unwrap();
+    let r = sf.get_global("r").unwrap();
+    match r {
+        Value::Str(s) => assert_eq!(&*s, "hello123", "Cookie 值应匹配"),
+        other => panic!("期望字符串，得到 {:?}", other),
+    }
+}
+
+#[test]
+fn test_http_multi_route_params() {
+    let port = 19003;
+    start_test_server("\
+        var server = httpServer(\"--port={PORT}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/posts/:postId/comments/:commentId\", func(req, resp) {\n\
+            setRespContentType(resp, \"application/json\")\n\
+            return jsonEncode({\"postId\": routeParamsG[\"postId\"], \"commentId\": routeParamsG[\"commentId\"]})\n\
+        })\n\
+        serverStart(server, \"--thread\")\n\
+    ", port);
+
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    let url = format!("http://127.0.0.1:{}/posts/10/comments/20", port);
+    sf.run_string(&format!("var r = getWeb(\"{}\")", url)).unwrap();
+    let r = sf.get_global("r").unwrap();
+    match r {
+        Value::Str(s) => {
+            assert!(s.contains("\"postId\":\"10\""), "响应应包含 postId=10: {}", s);
+            assert!(s.contains("\"commentId\":\"20\""), "响应应包含 commentId=20: {}", s);
+        }
+        other => panic!("期望字符串，得到 {:?}", other),
+    }
+}
+
+#[test]
+fn test_http_save_file_uploads() {
+    let port = 19004;
+    // 使用系统临时目录，路径用正斜杠避免 Sflang 转义
+    let tmp_base = std::env::temp_dir();
+    let tmp_dir = tmp_base.join(format!("sflang_upload_{}", port));
+    let tmp_dir_str = tmp_dir.to_string_lossy().replace('\\', "/");
+    // 清理旧目录
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    start_test_server(&format!("\
+        var server = httpServer(\"--port={{PORT}}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/upload\", func(req, resp) {{\n\
+            var r = saveFileUploads(req, \"{}\")\n\
+            if isErr(r) {{ return r }}\n\
+            return jsonEncode(r)\n\
+        }})\n\
+        serverStart(server, \"--thread\")\n\
+    ", tmp_dir_str), port);
+
+    // 构造 multipart 请求体
+    let boundary = "----sflangtest";
+    let body = format!(
+        "--{}\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nhello\r\n\
+        --{}\r\nContent-Disposition: form-data; name=\"avatar\"; filename=\"test.txt\"\r\nContent-Type: text/plain\r\n\r\nfile content here\r\n\
+        --{}--\r\n",
+        boundary, boundary, boundary
+    );
+
+    // 用原始 TCP 发送 multipart 请求
+    let req = format!(
+        "POST /upload HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: multipart/form-data; boundary={}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        port, boundary, body.len(), body
+    );
+    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+    use std::io::{Read, Write};
+    stream.write_all(req.as_bytes()).unwrap();
+
+    // 读取响应
+    let mut resp_buf = Vec::new();
+    stream.read_to_end(&mut resp_buf).unwrap();
+    let resp_str = String::from_utf8_lossy(&resp_buf);
+    // 找到响应体（双 \r\n 后）
+    let body_start = resp_str.find("\r\n\r\n").map(|p| p + 4).unwrap_or(0);
+    let body_part = &resp_str[body_start..];
+
+    // 响应中应包含 avatar 字段
+    assert!(body_part.contains("avatar"), "响应应包含 avatar 字段: {}", body_part);
+    assert!(body_part.contains("test.txt"), "响应应包含文件名 test.txt: {}", body_part);
+
+    // 验证文件已写入磁盘
+    let saved_path = tmp_dir.join("test.txt");
+    assert!(saved_path.exists(), "文件应已保存到 {}", saved_path.display());
+    let content = std::fs::read_to_string(&saved_path).unwrap();
+    assert_eq!(content, "file content here");
+
+    // 清理
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }

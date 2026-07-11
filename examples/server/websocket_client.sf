@@ -1,0 +1,94 @@
+// Sflang WebSocket 客户端示例
+// 启动：sf examples/server/websocket_client.sf
+//
+// 演示 WebSocket 客户端连接、收发消息。
+// 需要一个 WebSocket echo 服务器（可用任意 WS echo 服务）。
+
+// ============================================================
+// 1. 连接到 WebSocket echo 服务器
+// ============================================================
+println("=== WebSocket 客户端示例 ===")
+println("正在连接 ws://127.0.0.1:8140/echo ...")
+
+ws := webSocket("ws://127.0.0.1:8140/echo")
+if isErr(ws) {
+    println("连接失败: " + getErrStr(ws))
+    println("")
+    println("请先启动一个 WebSocket echo 服务器，例如用 Python:")
+    println("  python -m websockets 8140  # 需安装 websockets 库")
+    return
+}
+
+println("连接成功! type=" + typeName(ws) + " code=" + toStr(typeCode(ws)))
+
+// ============================================================
+// 2. 发送文本消息并接收回显
+// ============================================================
+println("")
+println("=== 发送文本消息 ===")
+messages := ["Hello WebSocket!", "Sflang is fast", "第三条消息"]
+for i in range(0, len(messages)) {
+    msg := messages[i]
+    wsWriteText(ws, msg)
+    println("  发送: " + msg)
+
+    // 接收回显
+    echo := wsReadText(ws)
+    if echo == undefined {
+        println("  连接已关闭")
+        break
+    }
+    println("  收到: " + echo)
+}
+
+// ============================================================
+// 3. 发送二进制消息
+// ============================================================
+println("")
+println("=== 发送二进制消息 ===")
+binData := bytesFromHex("48656c6c6f")  // "Hello" 的十六进制
+wsWriteBin(ws, binData)
+println("  发送: " + bytesHex(binData))
+
+echoBin := wsReadBin(ws)
+if echoBin != undefined {
+    println("  收到: " + bytesHex(echoBin) + " (长度=" + toStr(len(echoBin)) + ")")
+}
+
+// ============================================================
+// 4. 使用 wsReadMsg 读取消息（返回类型+数据）
+// ============================================================
+println("")
+println("=== wsReadMsg 演示 ===")
+wsWriteText(ws, "readMsg test")
+msg := wsReadMsg(ws)
+if isErr(msg) {
+    println("  读取失败: " + getErrStr(msg))
+} else {
+    // msg 是 [type, data] 数组
+    msgType := msg[0]
+    msgData := msg[1]
+    typeStr := "未知"
+    if msgType == 1 {
+        typeStr = "文本"
+    }
+    if msgType == 2 {
+        typeStr = "二进制"
+    }
+    if msgType == 0 {
+        typeStr = "关闭"
+    }
+    println("  类型: " + typeStr + " (" + toStr(msgType) + ")")
+    println("  数据: " + toStr(msgData))
+}
+
+// ============================================================
+// 5. 关闭连接
+// ============================================================
+println("")
+println("=== 关闭连接 ===")
+wsClose(ws)
+println("已关闭")
+
+println("")
+println("=== WebSocket 客户端示例完成 ===")

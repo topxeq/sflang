@@ -47,6 +47,11 @@ impl Sflang {
         self.vm.get_global(name)
     }
 
+    /// vm_mut 获取 VM 的可变引用（高级用途）。
+    pub fn vm_mut(&mut self) -> &mut VM {
+        &mut self.vm
+    }
+
     /// compile_source 编译源码为 Code。
     pub fn compile_source(src: &str, file: &str) -> Result<Arc<crate::opcode::Code>, String> {
         let tokens = tokenize(src, file).map_err(|e| format!("lex error: {}", e))?;

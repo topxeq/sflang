@@ -1,0 +1,135 @@
+// Sflang HTTP 服务器示例 - JSON API 服务
+// 启动：sf examples/server/json_api.sf
+// 测试：curl http://127.0.0.1:8080/api/users
+//
+// 演示如何用 Sflang 构建一个 JSON REST API 服务。
+// 包含 CRUD 风格的路由、请求体解析、错误处理。
+
+server := httpServer("--port=8080", "--host=127.0.0.1")
+
+// 模拟数据库：用 Map 存储用户数据
+users := newMap()
+users["1"] = {"id": "1", "name": "Alice", "email": "alice@example.com"}
+users["2"] = {"id": "2", "name": "Bob", "email": "bob@example.com"}
+users["3"] = {"id": "3", "name": "Charlie", "email": "charlie@example.com"}
+
+// 并发安全：用 mutex 保护共享数据
+mu := newMutex()
+
+// 辅助函数：返回 JSON 响应
+jsonResp := func(resp, data) {
+    setRespContentType(resp, "application/json; charset=utf-8")
+    writeResp(resp, jsonEncode(data))
+}
+
+// 辅助函数：返回错误
+errResp := func(resp, code, msg) {
+    setRespStatus(resp, code)
+    setRespContentType(resp, "application/json; charset=utf-8")
+    writeResp(resp, jsonEncode({"error": msg}))
+}
+
+// ============================================================
+// GET /api/users - 获取所有用户
+// ============================================================
+serverSetHandler(server, "/api/users", func(req, resp) {
+    if getReqMethod(req) != "GET" {
+        return errResp(resp, 405, "Method Not Allowed")
+    }
+    lock(mu)
+    result := []
+    keys := dataKeys(users)
+    for i in range(0, len(keys)) {
+        push(result, users[keys[i]])
+    }
+    unlock(mu)
+    return jsonResp(resp, {"users": result})
+})
+
+// ============================================================
+// GET /api/users/<id> - 获取单个用户
+// 前缀路由：/api/users/ 匹配 /api/users/1 等
+// ============================================================
+serverSetHandler(server, "/api/users/", func(req, resp) {
+    path := getReqPath(req)
+    // 从路径中提取用户 ID：/api/users/1 -> "1"
+    id := substring(path, len("/api/users/"), len(path))
+    if id == "" {
+        return errResp(resp, 400, "missing user id")
+    }
+
+    lock(mu)
+    user := users[id]
+    unlock(mu)
+
+    if user == undefined {
+        return errResp(resp, 404, "user not found: " + id)
+    }
+    return jsonResp(resp, user)
+})
+
+// ============================================================
+// POST /api/users - 创建新用户
+// ============================================================
+serverSetHandler(server, "/api/users/create", func(req, resp) {
+    if getReqMethod(req) != "POST" {
+        return errResp(resp, 405, "Method Not Allowed, use POST")
+    }
+
+    // 解析请求体 JSON
+    body := getReqBody(req)
+    user := jsonDecode(body)
+    if isErr(user) {
+        return errResp(resp, 400, "invalid JSON body")
+    }
+
+    // 生成 ID
+    lock(mu)
+    newId := toStr(len(dataKeys(users)) + 1)
+    user["id"] = newId
+    users[newId] = user
+    unlock(mu)
+
+    setRespStatus(resp, 201)
+    return jsonResp(resp, user)
+})
+
+// ============================================================
+// GET /health - 健康检查
+// ============================================================
+serverSetHandler(server, "/health", func(req, resp) {
+    return jsonResp(resp, {"status": "ok", "language": "Sflang", "uptime": "running"})
+})
+
+// ============================================================
+// GET / - 根路径，返回 API 文档
+// ============================================================
+serverSetHandler(server, "/", func(req, resp) {
+    setRespContentType(resp, "text/html; charset=utf-8")
+    return `<html><body>
+<h1>Sflang JSON API Server</h1>
+<h2>Endpoints:</h2>
+<ul>
+  <li>GET  /api/users - 获取所有用户</li>
+  <li>GET  /api/users/&lt;id&gt; - 获取单个用户</li>
+  <li>POST /api/users/create - 创建用户</li>
+  <li>GET  /health - 健康检查</li>
+</ul>
+</body></html>`
+})
+
+println("JSON API Server starting on http://127.0.0.1:8080")
+println("Endpoints:")
+println("  GET  /api/users           - 获取所有用户")
+println("  GET  /api/users/<id>      - 获取单个用户")
+println("  POST /api/users/create    - 创建用户 (JSON body)")
+println("  GET  /health              - 健康检查")
+println("")
+println("测试命令:")
+println("  curl http://127.0.0.1:8080/api/users")
+println("  curl http://127.0.0.1:8080/api/users/1")
+println("  curl -X POST -H 'Content-Type: application/json' \\")
+println("    -d '{\"name\":\"Dave\",\"email\":\"dave@example.com\"}' \\")
+println("    http://127.0.0.1:8080/api/users/create")
+
+serverStart(server)

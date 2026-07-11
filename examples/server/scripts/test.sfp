@@ -1,0 +1,47 @@
+<html>
+<head><title>Sflang .sfp 动态页面</title></head>
+<body style="font-family: sans-serif; max-width: 800px; margin: 40px auto;">
+<h1>Sflang 动态页面 (.sfp)</h1>
+<p>此页面由 .sfp 模板渲染，内嵌 <?sf return "Sflang" ?> 代码块。</p>
+
+<h2>基本信息</h2>
+<table border="1" cellpadding="8" style="border-collapse: collapse;">
+  <tr><td>请求路径</td><td><?sf return reqPathG ?></td></tr>
+  <tr><td>请求方法</td><td><?sf return reqMethodG ?></td></tr>
+  <tr><td>完整 URI</td><td><?sf return reqUriG ?></td></tr>
+  <tr><td>运行模式</td><td><?sf return runModeG ?></td></tr>
+  <tr><td>当前时间</td><td><?sf return toStr(now()) ?></td></tr>
+</table>
+
+<h2>循环演示</h2>
+<ul>
+<?sf
+result := ""
+for i in range(1, 4) {
+    result = result + "<li>第 " + toStr(i) + " 项</li>"
+}
+return result
+?>
+</ul>
+
+<h2>条件演示</h2>
+<p>请求方法: <?sf return reqMethodG ?></p>
+<?sf
+if reqMethodG == "GET" {
+    return "<p style='color:green'>这是 GET 请求</p>"
+} else {
+    return "<p style='color:blue'>这是 " + reqMethodG + " 请求</p>"
+}
+?>
+
+<h2>数学运算</h2>
+<p>1 + 2 = <?sf return toStr(1 + 2) ?></p>
+<p>当前时间戳: <?sf return toStr(now()) ?></p>
+
+<h2>错误处理</h2>
+<p>下面的代码块引用了未定义变量，会内联显示错误：</p>
+<?sf return undefinedVar ?>
+<p>错误不会中断页面渲染，后续内容正常显示。</p>
+
+</body>
+</html>

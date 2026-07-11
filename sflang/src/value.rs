@@ -26,6 +26,7 @@ pub use crate::datetime::DateTime;
 pub use crate::ord_map::OrdMap;
 pub use crate::function::{Builtin, BuiltinFn, Function};
 pub use crate::object_map::Map;
+pub use crate::http_lite::{SfHttpRequest, SfHttpResponse, SfWebSocket};
 
 /// TypeCode 类型编码。
 ///
@@ -66,6 +67,12 @@ pub enum TypeCode {
     Map = 18,
     /// StringBuilder 高效字符串构建器（可变，大量拼接用）。
     StringBuilder = 19,
+    /// HttpReq HTTP 请求对象（服务器模式下注入 requestG）。
+    HttpReq = 20,
+    /// HttpResp HTTP 响应对象（服务器模式下注入 responseG）。
+    HttpResp = 21,
+    /// WebSocket 连接对象（服务端升级或客户端连接）。
+    WebSocket = 22,
 }
 
 impl TypeCode {
@@ -92,6 +99,9 @@ impl TypeCode {
             TypeCode::Byte => "byte",
             TypeCode::Map => "map",
             TypeCode::StringBuilder => "stringBuilder",
+            TypeCode::HttpReq => "httpReq",
+            TypeCode::HttpResp => "httpResp",
+            TypeCode::WebSocket => "webSocket",
         }
     }
 }
@@ -168,6 +178,15 @@ pub enum Value {
     /// 对标 Go strings.Builder。底层 Rust String，O(1) 追加、O(n) 构建。
     /// 通过通用的 writeStr/writeBytes/len/toStr/clear/reset 操作。
     StringBuilder(Arc<Mutex<String>>),
+    /// HttpReq HTTP 请求对象（服务器模式下注入 requestG）。
+    /// 用 Arc 共享，inner 用 Mutex 保护（支持跨线程 run）。
+    HttpReq(Arc<SfHttpRequest>),
+    /// HttpResp HTTP 响应对象（服务器模式下注入 responseG）。
+    /// 用 Arc 共享，inner 用 Mutex 保护。
+    HttpResp(Arc<SfHttpResponse>),
+    /// WebSocket 连接对象（服务端升级或客户端连接）。
+    /// 用 Arc 共享，inner 用 Mutex 保护（支持跨线程安全访问）。
+    WebSocket(Arc<SfWebSocket>),
 }
 
 impl PartialEq for Value {
@@ -194,6 +213,9 @@ impl PartialEq for Value {
             (Value::Byte(a), Value::Byte(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => Arc::ptr_eq(a, b),
             (Value::StringBuilder(a), Value::StringBuilder(b)) => Arc::ptr_eq(a, b),
+            (Value::HttpReq(a), Value::HttpReq(b)) => Arc::ptr_eq(a, b),
+            (Value::HttpResp(a), Value::HttpResp(b)) => Arc::ptr_eq(a, b),
+            (Value::WebSocket(a), Value::WebSocket(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -230,6 +252,9 @@ impl Value {
             Value::Byte(_) => TypeCode::Byte,
             Value::Map(_) => TypeCode::Map,
             Value::StringBuilder(_) => TypeCode::StringBuilder,
+            Value::HttpReq(_) => TypeCode::HttpReq,
+            Value::HttpResp(_) => TypeCode::HttpResp,
+            Value::WebSocket(_) => TypeCode::WebSocket,
         }
     }
 
@@ -279,6 +304,9 @@ impl Value {
                 if n.downcast_ref::<crate::builtins_db::DatabaseConn>().is_some() {
                     return "database".to_string();
                 }
+                if n.downcast_ref::<std::sync::Arc<crate::builtins_http::SfHttpServer>>().is_some() {
+                    return "httpServer".to_string();
+                }
                 "native".to_string()
             }
             other => other.type_code().name().to_string(),
@@ -307,6 +335,9 @@ impl Value {
             Value::Byte(b) => *b != 0,
             Value::Map(m) => !m.lock().unwrap().is_empty(),
             Value::StringBuilder(sb) => !sb.lock().unwrap().is_empty(),
+            Value::HttpReq(_) => true,
+            Value::HttpResp(_) => true,
+            Value::WebSocket(_) => true,
         }
     }
 
@@ -397,6 +428,9 @@ impl Value {
                     format!("(stringBuilder){}", s)
                 }
             }
+            Value::HttpReq(_) => "<httpReq>".to_string(),
+            Value::HttpResp(_) => "<httpResp>".to_string(),
+            Value::WebSocket(_) => "<webSocket>".to_string(),
         }
     }
 
@@ -467,6 +501,10 @@ impl Value {
             (Int(a), BigFloat(b)) | (BigFloat(b), Int(a)) => {
                 crate::bigfloat::BigFloat::from_i64(*a).cmp(b) == std::cmp::Ordering::Equal
             }
+            // HttpReq/HttpResp 按指针相等
+            (HttpReq(a), HttpReq(b)) => Arc::ptr_eq(a, b),
+            (HttpResp(a), HttpResp(b)) => Arc::ptr_eq(a, b),
+            (WebSocket(a), WebSocket(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }

@@ -118,6 +118,8 @@ fn encode_value(v: &Value, out: &mut String) {
         }
         // File 句柄无 JSON 表示，编码为 null
         Value::File(_) => out.push_str("null"),
+        // HttpReq/HttpResp/WebSocket 无 JSON 表示，编码为 null
+        Value::HttpReq(_) | Value::HttpResp(_) | Value::WebSocket(_) => out.push_str("null"),
     }
 }
 

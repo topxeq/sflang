@@ -1,0 +1,62 @@
+// Sflang CLI 应用服务器示例脚本
+// 放在脚本目录下，用 CLI 服务器模式访问：
+//
+//   sf -server --port=8080 --dir=examples/server/scripts --verbose
+//
+// 然后浏览器访问：
+//   http://127.0.0.1:8080/index.sf    -> 执行此脚本
+//   http://127.0.0.1:8080/            -> 静态文件（index.html）
+//
+// CLI 服务器模式下，以下全局变量自动注入：
+//   requestG    - HTTP 请求对象
+//   responseG   - HTTP 响应对象
+//   reqMethodG  - 请求方法 (GET/POST/...)
+//   reqPathG    - 请求路径
+//   reqUriG     - 完整 URI
+//   inputG      - 请求体（字符串）
+//   scriptPathG - 脚本文件路径
+//   runModeG    - "sfserver"
+
+// 根据请求方法和路径返回不同内容
+if reqMethodG == "GET" {
+    if reqPathG == "/index.sf" || reqPathG == "/" {
+        // 返回 HTML 页面
+        setRespHeader(responseG, "Content-Type", "text/html; charset=utf-8")
+        return `<html>
+<head><title>Sflang CLI Server</title></head>
+<body style="font-family: sans-serif; max-width: 800px; margin: 40px auto;">
+<h1>🚀 Sflang CLI 应用服务器</h1>
+<p>你好！此页面由 Sflang 脚本动态生成。</p>
+<table border="1" cellpadding="8" style="border-collapse: collapse;">
+  <tr><td>请求方法</td><td>` + reqMethodG + `</td></tr>
+  <tr><td>请求路径</td><td>` + reqPathG + `</td></tr>
+  <tr><td>完整 URI</td><td>` + reqUriG + `</td></tr>
+  <tr><td>脚本路径</td><td>` + scriptPathG + `</td></tr>
+  <tr><td>运行模式</td><td>` + runModeG + `</td></tr>
+</table>
+<h2>测试链接：</h2>
+<ul>
+  <li><a href="/index.sf">/index.sf - 此页面</a></li>
+  <li><a href="/api.sf">/api.sf - JSON API</a></li>
+  <li><a href="/form.sf">/form.sf - 表单页面</a></li>
+</ul>
+</body>
+</html>`
+    }
+}
+
+// POST 请求：回显请求体
+if reqMethodG == "POST" {
+    setRespHeader(responseG, "Content-Type", "application/json")
+    writeResp(responseG, jsonEncode({
+        "method": reqMethodG,
+        "path": reqPathG,
+        "body": inputG,
+        "bodyLength": len(inputG)
+    }))
+    return true
+}
+
+// 其他情况
+setRespStatus(responseG, 404)
+return "404 Not Found: " + reqPathG

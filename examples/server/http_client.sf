@@ -1,0 +1,142 @@
+// Sflang HTTP 客户端示例
+// 启动：sf examples/server/http_client.sf
+//
+// 演示 getWeb / postWeb / downloadFile / urlExists 等客户端函数。
+// 包含 HTTP 和 HTTPS（rustls）请求。
+
+// ============================================================
+// 1. getWeb - HTTP GET 请求（返回字符串）
+// ============================================================
+println("=== getWeb (HTTP) ===")
+html := getWeb("http://example.com", "--timeout=15")
+if isErr(html) {
+    println("  失败: " + getErrStr(html))
+} else {
+    println("  成功，响应长度: " + toStr(len(html)))
+    // 检查是否包含标题
+    pos := strFind(html, "<title>")
+    if pos >= 0 {
+        endPos := strFind(html, "</title>")
+        if endPos > pos {
+            title := substring(html, pos + 7, endPos)
+            println("  页面标题: " + title)
+        }
+    }
+}
+
+// ============================================================
+// 2. getWeb - HTTPS GET 请求（自动 TLS）
+// ============================================================
+println("")
+println("=== getWeb (HTTPS) ===")
+secure := getWeb("https://example.com", "--timeout=15")
+if isErr(secure) {
+    println("  失败: " + getErrStr(secure))
+} else {
+    println("  成功，响应长度: " + toStr(len(secure)))
+}
+
+// ============================================================
+// 3. getWebBytes - 获取二进制内容
+// ============================================================
+println("")
+println("=== getWebBytes ===")
+imgBytes := getWebBytes("https://www.google.com/favicon.ico", "--timeout=15")
+if isErr(imgBytes) {
+    println("  失败: " + getErrStr(imgBytes))
+} else {
+    println("  成功，获取 " + toStr(len(imgBytes)) + " 字节")
+    // 保存到文件
+    writeFile("temp/favicon.ico", imgBytes)
+    println("  已保存到 temp/favicon.ico")
+}
+
+// ============================================================
+// 4. postWeb - HTTP POST 请求
+// ============================================================
+println("")
+println("=== postWeb (JSON) ===")
+jsonBody := jsonEncode({
+    "name": "Sflang",
+    "type": "language",
+    "version": "0.1.0"
+})
+postResp := postWeb("https://httpbin.org/post", jsonBody, "application/json", "--timeout=15")
+if isErr(postResp) {
+    println("  失败: " + getErrStr(postResp))
+} else {
+    println("  成功，响应长度: " + toStr(len(postResp)))
+    // 解析返回的 JSON
+    parsed := jsonDecode(postResp)
+    if !isErr(parsed) {
+        // httpbin.org 会回显请求的 JSON
+        reqBody := parsed["json"]
+        if reqBody != undefined {
+            println("  服务器回显: " + jsonEncode(reqBody))
+        }
+    }
+}
+
+// ============================================================
+// 5. postWeb - 表单提交
+// ============================================================
+println("")
+println("=== postWeb (Form) ===")
+formResp := postWeb("https://httpbin.org/post", "username=admin&password=123456", "application/x-www-form-urlencoded", "--timeout=15")
+if isErr(formResp) {
+    println("  失败: " + getErrStr(formResp))
+} else {
+    println("  成功，响应长度: " + toStr(len(formResp)))
+}
+
+// ============================================================
+// 6. downloadFile - 下载文件
+// ============================================================
+println("")
+println("=== downloadFile ===")
+size := downloadFile("https://example.com", "temp/downloaded_example.html", "--timeout=15")
+if isErr(size) {
+    println("  失败: " + getErrStr(size))
+} else {
+    println("  成功，下载 " + toStr(size) + " 字节到 temp/downloaded_example.html")
+    content := readFile("temp/downloaded_example.html")
+    println("  文件前 80 字符: " + substring(content, 0, 80))
+}
+
+// ============================================================
+// 7. urlExists - 检查 URL 是否可访问
+// ============================================================
+println("")
+println("=== urlExists ===")
+urls := ["https://example.com", "https://github.com", "https://nonexistent.invalid.domain.xyz"]
+for i in range(0, len(urls)) {
+    u := urls[i]
+    exists := urlExists(u)
+    println("  " + u + " -> " + toStr(exists))
+}
+
+// ============================================================
+// 8. 自定义请求头
+// ============================================================
+println("")
+println("=== getWeb with custom headers ===")
+customResp := getWeb("https://httpbin.org/headers", "Accept: application/json", "X-Custom-Header: Sflang/0.1", "--timeout=15")
+if isErr(customResp) {
+    println("  失败: " + getErrStr(customResp))
+} else {
+    println("  成功，响应长度: " + toStr(len(customResp)))
+    // httpbin.org/headers 会回显请求头
+    parsed := jsonDecode(customResp)
+    if !isErr(parsed) {
+        headers := parsed["headers"]
+        if headers != undefined {
+            customHeader := headers["X-Custom-Header"]
+            if customHeader != undefined {
+                println("  服务器收到自定义头: " + toStr(customHeader))
+            }
+        }
+    }
+}
+
+println("")
+println("=== 所有 HTTP 客户端测试完成 ===")

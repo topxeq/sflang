@@ -47,6 +47,14 @@ russh-keys = { workspace = true }
 async-trait = { workspace = true }
 russh-sftp = { workspace = true }
 lettre = "0.11.22"
+# HTTPS/TLS 支持（纯 Rust TLS）
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+# WebSocket 支持（轻量同步库）
+tungstenite = { workspace = true }
+# HTTPS 客户端根证书
+webpki-roots = { workspace = true }
+rustls-native-certs = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }

@@ -264,13 +264,7 @@ fn bi_gui_show(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             }
             _ => {}
         }
-    });
-
-    // 清理全局 VM 指针
-    {
-        let mut ptr = GUI_VM.lock().unwrap();
-        *ptr = 0;
-    }
-
-    Ok(Value::Undefined)
+    })
+    // event_loop.run() 的签名为 -> !，不会返回
+    // GUI_VM 指针的清理由进程退出时自动完成
 }
