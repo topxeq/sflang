@@ -59,6 +59,10 @@ tungstenite = { workspace = true }
 # HTTPS 客户端根证书
 webpki-roots = { workspace = true }
 rustls-native-certs = { workspace = true }
+# 图像处理库（PNG/JPEG/GIF/BMP/WebP 编解码 + 基本操作）
+image = { workspace = true }
+# TrueType 字体渲染（用于 Canvas drawText）
+rusttype = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }

@@ -313,6 +313,15 @@ impl Value {
                 if n.downcast_ref::<std::sync::Arc<crate::builtins_containers::QueueT>>().is_some() {
                     return "queue".to_string();
                 }
+                if n.downcast_ref::<std::sync::Arc<crate::builtins_image::ImageState>>().is_some() {
+                    return "image".to_string();
+                }
+                if n.downcast_ref::<std::sync::Arc<crate::builtins_image::CanvasState>>().is_some() {
+                    return "canvas".to_string();
+                }
+                if n.downcast_ref::<std::sync::Arc<crate::builtins_image::FontState>>().is_some() {
+                    return "font".to_string();
+                }
                 "native".to_string()
             }
             other => other.type_code().name().to_string(),

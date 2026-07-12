@@ -75,6 +75,8 @@ pub mod builtins_tcp;
 pub mod builtins_proxy;
 pub mod des;
 pub mod builtins_xxci;
+pub mod builtins_image;
+pub mod builtins_image_gen;
 pub mod pinyin_data;
 pub mod api;
 

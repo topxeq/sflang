@@ -83,6 +83,13 @@ webpki-roots = "0.26"
 # rustls-native-certs：从系统证书库加载根证书（Apache-2.0/MIT）。
 # Windows 用 SChannel，Linux 用 /etc/ssl/certs，macOS 用 Keychain。
 rustls-native-certs = "0.7"
+# image：Rust 生态最成熟的图像处理库（MIT OR Apache-2.0），纯 Rust 实现。
+# 支持 PNG/JPEG/GIF/BMP/WebP 编解码 + 缩放/裁剪/旋转等基本操作。
+# 用于 imageLoad/imageSave/imageResize 等内置函数。
+image = "0.25"
+# rusttype：TrueType 字体渲染库（MIT OR Apache-2.0），纯 Rust 实现。
+# 用于 Canvas 画布的 drawText 文字渲染。
+rusttype = "0.9"
 
 # 编译优化配置：release 模式启用 LTO 与单代码生成单元，最大化优化
 [profile.release]

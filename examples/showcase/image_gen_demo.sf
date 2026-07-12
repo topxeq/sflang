@@ -1,0 +1,191 @@
+// 程序化图片生成示例
+// 用法：sf examples/showcase/image_gen_demo.sf
+//
+// 演示：
+//   1. 基础噪声（白噪声/Perlin/FBM/Worley/Voronoi）
+//   2. 纹理生成（Plasma/Marble/Wood/Clouds）
+//   3. 渐变（Linear/Radial/Conic）
+//   4. 图案（Checker/Stars/Maze/Circles/Lines/Particles）
+//   5. 分形（Mandelbrot/Julia）
+//   6. 组合应用（叠加混合）
+
+print("=== 程序化图片生成示例 ===")
+print("")
+
+// 固定种子保证可重现
+seed := 42
+size := 128
+
+// ============ 1. 基础噪声 ============
+print("--- 1. 基础噪声 ---")
+
+// 白噪声：每个像素完全随机
+noiseImg := imageGenNoise(size, size, seed)
+imageSave(noiseImg, "temp/gen_noise.png", "png")
+print("imageGenNoise: 白噪声 => temp/gen_noise.png")
+
+// Perlin 噪声：平滑过渡的噪声
+perlinImg := imageGenPerlin(size, size, 0.05, seed)
+imageSave(perlinImg, "temp/gen_perlin.png", "png")
+print("imageGenPerlin: Perlin 噪声（scale=0.05）=> temp/gen_perlin.png")
+
+// FBM：分形布朗运动，多倍频叠加更自然
+fbmImg := imageGenFBM(size, size, 4, 0.05, seed)
+imageSave(fbmImg, "temp/gen_fbm.png", "png")
+print("imageGenFBM: 分形噪声（4 个倍频）=> temp/gen_fbm.png")
+
+// Worley 噪声：细胞状图案
+worleyImg := imageGenWorley(size, size, 16, seed)
+imageSave(worleyImg, "temp/gen_worley.png", "png")
+print("imageGenWorley: 细胞噪声（cellSize=16）=> temp/gen_worley.png")
+
+// Voronoi 图：彩色细胞
+voronoiImg := imageGenVoronoi(size, size, 20, seed)
+imageSave(voronoiImg, "temp/gen_voronoi.png", "png")
+print("imageGenVoronoi: Voronoi 图（20 个特征点）=> temp/gen_voronoi.png")
+print("")
+
+// ============ 2. 纹理生成 ============
+print("--- 2. 纹理生成 ---")
+
+// 等离子体：彩色波纹
+plasmaImg := imageGenPlasma(size, size, 0.05, seed)
+imageSave(plasmaImg, "temp/gen_plasma.png", "png")
+print("imageGenPlasma: 等离子体效果 => temp/gen_plasma.png")
+
+// 大理石纹理
+marbleImg := imageGenMarble(size, size, 0.05, seed)
+imageSave(marbleImg, "temp/gen_marble.png", "png")
+print("imageGenMarble: 大理石纹理 => temp/gen_marble.png")
+
+// 木纹
+woodImg := imageGenWood(size, size, 0.05, seed)
+imageSave(woodImg, "temp/gen_wood.png", "png")
+print("imageGenWood: 木纹纹理 => temp/gen_wood.png")
+
+// 云彩
+cloudsImg := imageGenClouds(size, size, 0.02, seed)
+imageSave(cloudsImg, "temp/gen_clouds.png", "png")
+print("imageGenClouds: 云彩纹理 => temp/gen_clouds.png")
+print("")
+
+// ============ 3. 渐变 ============
+print("--- 3. 渐变 ---")
+
+// 线性渐变（水平）
+linearH := imageGenLinear(size, size, [255, 0, 0, 255], [0, 0, 255, 255], "h")
+imageSave(linearH, "temp/gen_linear_h.png", "png")
+print("imageGenLinear(水平): 红→蓝 => temp/gen_linear_h.png")
+
+// 线性渐变（垂直）
+linearV := imageGenLinear(size, size, [0, 255, 0, 255], [255, 255, 0, 255], "v")
+imageSave(linearV, "temp/gen_linear_v.png", "png")
+print("imageGenLinear(垂直): 绿→黄 => temp/gen_linear_v.png")
+
+// 径向渐变
+radialImg := imageGenRadial(size, size, [255, 255, 255, 255], [0, 0, 0, 255])
+imageSave(radialImg, "temp/gen_radial.png", "png")
+print("imageGenRadial: 白→黑径向 => temp/gen_radial.png")
+
+// 锥形渐变
+conicImg := imageGenConic(size, size, [255, 0, 0, 255], [0, 255, 0, 255])
+imageSave(conicImg, "temp/gen_conic.png", "png")
+print("imageGenConic: 红→绿锥形 => temp/gen_conic.png")
+print("")
+
+// ============ 4. 图案 ============
+print("--- 4. 图案 ---")
+
+// 棋盘格
+checkerImg := imageGenChecker(size, size, 16, [255, 255, 255, 255], [0, 0, 0, 255])
+imageSave(checkerImg, "temp/gen_checker.png", "png")
+print("imageGenChecker: 棋盘格 => temp/gen_checker.png")
+
+// 星空
+starsImg := imageGenStars(size, size, 80, seed)
+imageSave(starsImg, "temp/gen_stars.png", "png")
+print("imageGenStars: 星空（80 颗星）=> temp/gen_stars.png")
+
+// 迷宫
+mazeImg := imageGenMaze(size, size, 8, seed)
+imageSave(mazeImg, "temp/gen_maze.png", "png")
+print("imageGenMaze: 迷宫 => temp/gen_maze.png")
+
+// 随机圆形
+circlesImg := imageGenCircles(size, size, 25, seed)
+imageSave(circlesImg, "temp/gen_circles.png", "png")
+print("imageGenCircles: 随机圆 => temp/gen_circles.png")
+
+// 随机线条
+linesImg := imageGenLines(size, size, 20, seed)
+imageSave(linesImg, "temp/gen_lines.png", "png")
+print("imageGenLines: 随机线条 => temp/gen_lines.png")
+
+// 粒子
+particlesImg := imageGenParticles(size, size, 30, seed)
+imageSave(particlesImg, "temp/gen_particles.png", "png")
+print("imageGenParticles: 粒子（30 个发散）=> temp/gen_particles.png")
+print("")
+
+// ============ 5. 分形 ============
+print("--- 5. 分形 ---")
+
+// 曼德博集合（完整视图）
+mandelbrotImg := imageGenMandelbrot(200, 200, 100, 1.0, -0.5, 0.0)
+imageSave(mandelbrotImg, "temp/gen_mandelbrot.png", "png")
+print("imageGenMandelbrot: 曼德博集合 => temp/gen_mandelbrot.png")
+
+// 曼德博集合放大
+mandelbrotZoom := imageGenMandelbrot(200, 200, 150, 3.0, -0.75, 0.1)
+imageSave(mandelbrotZoom, "temp/gen_mandelbrot_zoom.png", "png")
+print("imageGenMandelbrot(放大): zoom=3.0 => temp/gen_mandelbrot_zoom.png")
+
+// 朱利亚集合
+juliaImg1 := imageGenJulia(200, 200, -0.7, 0.27, 100, 1.0)
+imageSave(juliaImg1, "temp/gen_julia1.png", "png")
+print("imageGenJulia(c=-0.7+0.27i): => temp/gen_julia1.png")
+
+// 朱利亚集合（不同参数）
+juliaImg2 := imageGenJulia(200, 200, -0.4, 0.6, 100, 1.0)
+imageSave(juliaImg2, "temp/gen_julia2.png", "png")
+print("imageGenJulia(c=-0.4+0.6i): => temp/gen_julia2.png")
+
+// 朱利亚集合（第三个参数）
+juliaImg3 := imageGenJulia(200, 200, 0.285, 0.01, 100, 1.0)
+imageSave(juliaImg3, "temp/gen_julia3.png", "png")
+print("imageGenJulia(c=0.285+0.01i): => temp/gen_julia3.png")
+print("")
+
+// ============ 6. 组合应用 ============
+print("--- 6. 组合应用 ---")
+
+// 组合 1：云彩 + 径向渐变（剪影效果）
+cloudBase := imageGenClouds(size, size, 0.03, seed)
+radialMask := imageGenRadial(size, size, [0, 0, 0, 255], [255, 255, 255, 255])
+blendedCloud := imageBlend(cloudBase, radialMask, 0, 0)
+imageSave(blendedCloud, "temp/gen_combo_clouds.png", "png")
+print("组合 1：云彩 + 径向渐变 => temp/gen_combo_clouds.png")
+
+// 组合 2：大理石 + 着色
+marbleBase := imageGenMarble(size, size, 0.04, seed)
+tintedMarble := imageTint(marbleBase, [180, 130, 90, 255])
+imageSave(tintedMarble, "temp/gen_combo_marble.png", "png")
+print("组合 2：大理石 + 棕色着色 => temp/gen_combo_marble.png")
+
+// 组合 3：FBM 噪声 + 棕褐色滤镜
+fbmBase := imageGenFBM(size, size, 5, 0.04, seed)
+sepiaFbm := imageSepia(fbmBase)
+imageSave(sepiaFbm, "temp/gen_combo_fbm_sepia.png", "png")
+print("组合 3：FBM + 棕褐滤镜 => temp/gen_combo_fbm_sepia.png")
+
+// 组合 4：Perlin 噪声 + 透明度 + 叠加到棋盘格
+perlinLayer := imageGenPerlin(size, size, 0.06, seed + 1)
+transparentPerlin := imageOpacity(perlinLayer, 0.7)
+checkerBase := imageGenChecker(size, size, 8, [240, 240, 240, 255], [200, 200, 220, 255])
+comboImg := imageBlend(checkerBase, transparentPerlin, 0, 0)
+imageSave(comboImg, "temp/gen_combo_perlin_checker.png", "png")
+print("组合 4：棋盘格 + 半透明 Perlin => temp/gen_combo_perlin_checker.png")
+print("")
+
+print("=== 示例完成 ===")
+print("所有图片已保存到 temp/ 目录")

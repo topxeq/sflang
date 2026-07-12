@@ -173,6 +173,8 @@ impl VM {
         crate::builtins_tcp::register(&mut vm);
         crate::builtins_proxy::register(&mut vm);
         crate::builtins_xxci::register(&mut vm);
+        crate::builtins_image::register(&mut vm);
+        crate::builtins_image_gen::register(&mut vm);
         // 预定义数学常量全局变量
         vm.set_global("piG", Value::Float(std::f64::consts::PI));
         vm.set_global("eG", Value::Float(std::f64::consts::E));

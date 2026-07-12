@@ -1,0 +1,389 @@
+// 图像处理与画布绘图示例
+// 用法：sf examples/showcase/image_demo.sf
+//
+// 演示：
+//   1. 颜色创建与转换
+//   2. 创建图片、读写像素
+//   3. 图片变换（缩放/裁剪/旋转/翻转）
+//   4. 颜色滤镜（灰度/反色/亮度/对比度）
+//   5. Canvas 画布绘图（线/矩形/圆/填充）
+//   6. Canvas 文字渲染
+//   7. 图片与字节互转、文件保存
+//   8. Canvas 上绘制图片
+//   9. 类型识别
+//   10. 高级滤镜（模糊/锐化/伽马/棕褐/阈值/着色/透明度/边缘检测/卷积）
+//   11. 图片工具（克隆/直方图/任意角度旋转/混合）
+//   12. 高级画布绘图（粗线/圆角矩形/椭圆/三角形/渐变）
+
+print("=== 图像处理与画布绘图示例 ===")
+print("")
+
+// ============ 1. 颜色创建与转换 ============
+print("--- 1. 颜色创建与转换 ---")
+
+red := colorNew(255, 0, 0)
+print("colorNew(255, 0, 0) = " + toStr(red))
+
+green := colorNew(0, 255, 0, 128)
+print("colorNew(0, 255, 0, 128) = " + toStr(green))
+
+fromHex := colorFromHex("#336699")
+print("colorFromHex(\"#336699\") = " + toStr(fromHex))
+
+fromHexAlpha := colorFromHex("#ff8800aa")
+print("colorFromHex(\"#ff8800aa\") = " + toStr(fromHexAlpha))
+
+hexStr := colorToHex([255, 128, 64, 255])
+print("colorToHex([255, 128, 64, 255]) = " + hexStr)
+print("")
+
+// ============ 2. 创建图片、读写像素 ============
+print("--- 2. 创建图片、读写像素 ---")
+
+img := imageNew(200, 100, [30, 60, 90, 255])
+print("imageNew(200, 100) => 宽=" + toStr(imageGetWidth(img)) + " 高=" + toStr(imageGetHeight(img)))
+
+pixel := imageGetPixel(img, 50, 30)
+print("imageGetPixel(img, 50, 30) = " + toStr(pixel))
+
+imageSetPixel(img, 50, 30, [255, 0, 0, 255])
+newPixel := imageGetPixel(img, 50, 30)
+print("imageSetPixel 后 imageGetPixel(img, 50, 30) = " + toStr(newPixel))
+print("")
+
+// ============ 3. 图片变换 ============
+print("--- 3. 图片变换 ---")
+
+resized := imageResize(img, 100, 50)
+print("imageResize(img, 100, 50) => " + toStr(imageGetWidth(resized)) + "x" + toStr(imageGetHeight(resized)))
+
+resizedLanczos := imageResize(img, 100, 50, "lanczos3")
+print("imageResize(img, 100, 50, \"lanczos3\") => " + toStr(imageGetWidth(resizedLanczos)) + "x" + toStr(imageGetHeight(resizedLanczos)))
+
+cropped := imageCrop(img, 10, 10, 80, 40)
+print("imageCrop(img, 10, 10, 80, 40) => " + toStr(imageGetWidth(cropped)) + "x" + toStr(imageGetHeight(cropped)))
+
+rotated := imageRotate(img, 90)
+print("imageRotate(img, 90) => " + toStr(imageGetWidth(rotated)) + "x" + toStr(imageGetHeight(rotated)) + " (宽高互换)")
+
+flippedH := imageFlipH(img)
+print("imageFlipH => " + toStr(imageGetWidth(flippedH)) + "x" + toStr(imageGetHeight(flippedH)) + " (尺寸不变)")
+
+flippedV := imageFlipV(img)
+print("imageFlipV => " + toStr(imageGetWidth(flippedV)) + "x" + toStr(imageGetHeight(flippedV)) + " (尺寸不变)")
+print("")
+
+// ============ 4. 颜色滤镜 ============
+print("--- 4. 颜色滤镜 ---")
+
+grayImg := imageGray(img)
+grayPixel := imageGetPixel(grayImg, 0, 0)
+print("imageGray => 像素 " + toStr(grayPixel) + " (R=G=B)")
+
+invertImg := imageNew(10, 10, [255, 255, 255, 255])
+imageInvert(invertImg)
+invertPixel := imageGetPixel(invertImg, 0, 0)
+print("imageInvert: 白色 => " + toStr(invertPixel) + " (变黑)")
+
+brightImg := imageBrightness(img, 50)
+brightPixel := imageGetPixel(brightImg, 0, 0)
+print("imageBrightness(+50) => " + toStr(brightPixel) + " (更亮)")
+
+contrastImg := imageContrast(img, 1.5)
+contrastPixel := imageGetPixel(contrastImg, 0, 0)
+print("imageContrast(1.5) => " + toStr(contrastPixel) + " (对比度增加)")
+print("")
+
+// ============ 5. Canvas 画布绘图 ============
+print("--- 5. Canvas 画布绘图 ---")
+
+canvas := canvasNew(300, 200, [240, 240, 240, 255])
+print("canvasNew(300, 200) => " + toStr(canvasGetWidth(canvas)) + "x" + toStr(canvasGetHeight(canvas)))
+
+// 画线（对角线）
+canvasDrawLine(canvas, 0, 0, 299, 199, [255, 0, 0, 255])
+print("canvasDrawLine: 画了红色对角线")
+
+// 画矩形边框
+canvasDrawRect(canvas, 10, 10, 100, 80, [0, 0, 255, 255])
+print("canvasDrawRect: 画了蓝色矩形边框 (10,10,100,80)")
+
+// 填充矩形
+canvasFillRect(canvas, 120, 10, 100, 80, [0, 255, 0, 255])
+print("canvasFillRect: 填充了绿色矩形 (120,10,100,80)")
+
+// 画圆边框
+canvasDrawCircle(canvas, 60, 140, 40, [255, 0, 255, 255])
+print("canvasDrawCircle: 画了紫色圆边框 中心(60,140) 半径40")
+
+// 填充圆
+canvasFillCircle(canvas, 200, 140, 40, [255, 165, 0, 255])
+print("canvasFillCircle: 填充了橙色圆 中心(200,140) 半径40")
+
+// 验证像素
+linePixel := canvasGetPixel(canvas, 0, 0)
+print("canvasGetPixel(0, 0) = " + toStr(linePixel) + " (对角线起点应为红色)")
+
+rectPixel := canvasGetPixel(canvas, 10, 10)
+print("canvasGetPixel(10, 10) = " + toStr(rectPixel) + " (矩形角点应为蓝色)")
+
+fillPixel := canvasGetPixel(canvas, 150, 50)
+print("canvasGetPixel(150, 50) = " + toStr(fillPixel) + " (填充矩形内应为绿色)")
+
+circlePixel := canvasGetPixel(canvas, 100, 140)
+print("canvasGetPixel(100, 140) = " + toStr(circlePixel) + " (圆边上应为紫色)")
+
+fillCirclePixel := canvasGetPixel(canvas, 200, 140)
+print("canvasGetPixel(200, 140) = " + toStr(fillCirclePixel) + " (填充圆心应为橙色)")
+print("")
+
+// ============ 6. Canvas 文字渲染 ============
+print("--- 6. Canvas 文字渲染 ---")
+
+// 使用系统默认字体绘制文字
+canvasDrawText(canvas, 10, 100, "Hello Sflang!", [50, 50, 50, 255], 24)
+print("canvasDrawText: 在(10,100)处绘制了 24px 文字 \"Hello Sflang!\"")
+
+// 可选：加载指定字体文件（取消注释并修改路径即可使用）
+// font := loadFont("C:\\Windows\\Fonts\\arial.ttf")
+// canvasDrawText(canvas, 10, 130, "Custom Font", [0, 0, 0, 255], 18, font)
+print("")
+
+// ============ 7. 图片与字节互转、文件保存 ============
+print("--- 7. 图片与字节互转、文件保存 ---")
+
+// 将 Canvas 转为图片
+finalImg := canvasToImage(canvas)
+print("canvasToImage => " + toStr(imageGetWidth(finalImg)) + "x" + toStr(imageGetHeight(finalImg)))
+
+// 图片转字节（PNG 格式）
+pngBytes := imageSaveToBytes(finalImg, "png")
+print("imageSaveToBytes(finalImg, \"png\") => " + toStr(len(pngBytes)) + " 字节")
+
+// 从字节重新加载图片
+reloadedImg := imageLoadFromBytes(pngBytes, "png")
+print("imageLoadFromBytes => " + toStr(imageGetWidth(reloadedImg)) + "x" + toStr(imageGetHeight(reloadedImg)) + " (从字节恢复)")
+
+// 验证像素一致性
+origPixel := imageGetPixel(finalImg, 0, 0)
+reloadPixel := imageGetPixel(reloadedImg, 0, 0)
+if toStr(origPixel) == toStr(reloadPixel) {
+    print("验证通过：保存/加载后像素一致")
+} else {
+    print("验证失败：像素不一致 原始=" + toStr(origPixel) + " 恢复=" + toStr(reloadPixel))
+}
+
+// 保存到临时文件（放在 temp 目录）
+tempPath := "temp/image_demo_output.png"
+imageSave(finalImg, tempPath, "png")
+print("imageSave => 已保存到 " + tempPath)
+
+// 从文件重新加载
+fileImg := imageLoad(tempPath)
+print("imageLoad => " + toStr(imageGetWidth(fileImg)) + "x" + toStr(imageGetHeight(fileImg)) + " (从文件恢复)")
+print("")
+
+// ============ 8. Canvas 上绘制图片 ============
+print("--- 8. Canvas 上绘制图片 ---")
+
+smallImg := imageNew(50, 50, [255, 200, 0, 255])
+canvasDrawImage(canvas, smallImg, 250, 150)
+drawImgPixel := canvasGetPixel(canvas, 260, 160)
+print("canvasDrawImage: 在(250,150)处绘制了50x50图片")
+print("canvasGetPixel(260, 160) = " + toStr(drawImgPixel) + " (应为绘制图片的颜色)")
+print("")
+
+// ============ 9. 类型识别 ============
+print("--- 9. 类型识别 ---")
+print("typeCode(img) = " + toStr(typeCode(img)) + " (Native=11)")
+print("typeName(img) = " + typeName(img))
+print("typeName(canvas) = " + typeName(canvas))
+
+// font 对象的类型（如果加载了字体）
+// font := loadFont("C:\\Windows\\Fonts\\arial.ttf")
+// print("typeName(font) = " + typeName(font))
+print("")
+
+// ============ 10. 高级滤镜 ============
+print("--- 10. 高级滤镜 ---")
+
+// 创建一个测试图片用于滤镜演示
+filterImg := imageNew(100, 100, [120, 80, 60, 255])
+
+// 高斯模糊
+blurImg := imageBlur(filterImg, 2.0)
+blurPixel := imageGetPixel(blurImg, 50, 50)
+print("imageBlur(sigma=2.0) => " + toStr(blurPixel) + " (边缘模糊)")
+
+// 锐化
+sharpImg := imageSharpen(filterImg)
+sharpPixel := imageGetPixel(sharpImg, 50, 50)
+print("imageSharpen => " + toStr(sharpPixel) + " (边缘增强)")
+
+// 伽马校正（变亮）
+gammaImg := imageGamma(filterImg, 0.5)
+gammaPixel := imageGetPixel(gammaImg, 0, 0)
+print("imageGamma(0.5) => " + toStr(gammaPixel) + " (变亮)")
+
+// 伽马校正（变暗）
+gammaDarkImg := imageGamma(filterImg, 2.0)
+gammaDarkPixel := imageGetPixel(gammaDarkImg, 0, 0)
+print("imageGamma(2.0) => " + toStr(gammaDarkPixel) + " (变暗)")
+
+// 棕褐色滤镜（复古效果）
+sepiaImg := imageSepia(filterImg)
+sepiaPixel := imageGetPixel(sepiaImg, 0, 0)
+print("imageSepia => " + toStr(sepiaPixel) + " (复古棕褐)")
+
+// 二值化阈值
+threshImg := imageThreshold(filterImg, 100)
+threshPixel := imageGetPixel(threshImg, 0, 0)
+print("imageThreshold(100) => " + toStr(threshPixel) + " (二值化)")
+
+// 颜色着色（用蓝色着色，保留亮度）
+tintImg := imageTint(filterImg, [0, 0, 255, 255])
+tintPixel := imageGetPixel(tintImg, 0, 0)
+print("imageTint(蓝色) => " + toStr(tintPixel) + " (蓝色着色)")
+
+// 透明度调整
+opacityImg := imageOpacity(filterImg, 0.5)
+opacityPixel := imageGetPixel(opacityImg, 0, 0)
+print("imageOpacity(0.5) => " + toStr(opacityPixel) + " (半透明)")
+
+// Sobel 边缘检测
+edgeImg := imageEdgeDetect(filterImg)
+edgePixel := imageGetPixel(edgeImg, 0, 0)
+print("imageEdgeDetect => " + toStr(edgePixel) + " (边缘检测)")
+
+// 自定义 3x3 卷积核（浮雕效果）
+embossKernel := [-2, -1, 0, -1, 1, 1, 0, 1, 2]
+embossImg := imageConvolve3x3(filterImg, embossKernel)
+embossPixel := imageGetPixel(embossImg, 50, 50)
+print("imageConvolve3x3(浮雕核) => " + toStr(embossPixel))
+print("")
+
+// ============ 11. 图片工具 ============
+print("--- 11. 图片工具 ---")
+
+// 克隆图片
+clonedImg := imageClone(filterImg)
+clonePixel := imageGetPixel(clonedImg, 0, 0)
+origPixel := imageGetPixel(filterImg, 0, 0)
+if toStr(clonePixel) == toStr(origPixel) {
+    print("imageClone: 克隆后像素一致")
+} else {
+    print("imageClone: 克隆失败")
+}
+
+// 修改克隆不影响原图
+imageSetPixel(clonedImg, 0, 0, [0, 0, 0, 255])
+cloneAfterMod := imageGetPixel(clonedImg, 0, 0)
+origAfterMod := imageGetPixel(filterImg, 0, 0)
+if toStr(cloneAfterMod) != toStr(origAfterMod) {
+    print("imageClone: 修改克隆不影响原图 (深拷贝验证通过)")
+}
+
+// 直方图
+hist := imageHistogram(filterImg)
+print("imageHistogram => 返回 " + toStr(len(hist)) + " 个通道")
+print("  R 通道直方图长度: " + toStr(len(hist[0])))
+print("  G 通道直方图长度: " + toStr(len(hist[1])))
+print("  B 通道直方图长度: " + toStr(len(hist[2])))
+print("  A 通道直方图长度: " + toStr(len(hist[3])))
+
+// 任意角度旋转（45度）
+rotatedFree := imageRotateFree(filterImg, 45.0)
+print("imageRotateFree(45) => " + toStr(imageGetWidth(rotatedFree)) + "x" + toStr(imageGetHeight(rotatedFree)) + " (画布扩大)")
+
+// 任意角度旋转带背景色
+rotatedBg := imageRotateFree(filterImg, 30.0, [255, 255, 255, 255])
+print("imageRotateFree(30, 白色背景) => " + toStr(imageGetWidth(rotatedBg)) + "x" + toStr(imageGetHeight(rotatedBg)))
+
+// 图片混合（alpha blending）
+baseImg := imageNew(100, 100, [0, 0, 0, 255])
+overlayImg := imageNew(50, 50, [255, 0, 0, 255])
+blendedImg := imageBlend(baseImg, overlayImg, 25, 25)
+blendedPixel := imageGetPixel(blendedImg, 50, 50)
+print("imageBlend: 在(25,25)处叠加红色 => 中心像素 " + toStr(blendedPixel))
+print("")
+
+// ============ 12. 高级画布绘图 ============
+print("--- 12. 高级画布绘图 ---")
+
+advCanvas := canvasNew(400, 300, [255, 255, 255, 255])
+
+// 清空画布（透明）
+canvasClear(advCanvas)
+print("canvasClear: 清空为透明")
+
+// 清空画布（指定颜色）
+canvasFill(advCanvas, [250, 250, 240, 255])
+print("canvasFill: 填充米色背景")
+
+// 粗线（宽度 5）
+canvasDrawLineW(advCanvas, 10, 10, 200, 10, 5, [255, 0, 0, 255])
+linePixelW := canvasGetPixel(advCanvas, 100, 10)
+print("canvasDrawLineW(5px): 中心像素 " + toStr(linePixelW) + " (粗线)")
+
+// 圆角矩形边框
+canvasDrawRoundRect(advCanvas, 10, 30, 100, 60, 10, [0, 0, 255, 255])
+roundRectPixel := canvasGetPixel(advCanvas, 50, 30)
+print("canvasDrawRoundRect: 顶边像素 " + toStr(roundRectPixel) + " (蓝色边框)")
+
+// 填充圆角矩形
+canvasFillRoundRect(advCanvas, 120, 30, 100, 60, 10, [255, 165, 0, 255])
+fillRoundPixel := canvasGetPixel(advCanvas, 170, 60)
+print("canvasFillRoundRect: 中心像素 " + toStr(fillRoundPixel) + " (橙色填充)")
+
+// 椭圆边框
+canvasDrawEllipse(advCanvas, 50, 150, 40, 20, [128, 0, 128, 255])
+ellipsePixel := canvasGetPixel(advCanvas, 50, 130)
+print("canvasDrawEllipse: 顶部像素 " + toStr(ellipsePixel) + " (紫色椭圆)")
+
+// 填充椭圆
+canvasFillEllipse(advCanvas, 150, 150, 40, 20, [0, 128, 0, 255])
+fillEllipsePixel := canvasGetPixel(advCanvas, 150, 150)
+print("canvasFillEllipse: 中心像素 " + toStr(fillEllipsePixel) + " (绿色椭圆)")
+
+// 三角形边框
+canvasDrawTriangle(advCanvas, 220, 200, 280, 120, 320, 200, [255, 0, 0, 255])
+triPixel := canvasGetPixel(advCanvas, 280, 120)
+print("canvasDrawTriangle: 顶点像素 " + toStr(triPixel) + " (红色三角形)")
+
+// 填充三角形
+canvasFillTriangle(advCanvas, 340, 200, 380, 120, 380, 200, [0, 0, 255, 255])
+fillTriPixel := canvasGetPixel(advCanvas, 370, 180)
+print("canvasFillTriangle: 内部像素 " + toStr(fillTriPixel) + " (蓝色填充)")
+
+// 线性渐变（水平）
+canvasDrawGradient(advCanvas, 10, 220, 200, 30, [255, 0, 0, 255], [0, 0, 255, 255], "h")
+gradStartPixel := canvasGetPixel(advCanvas, 10, 235)
+gradEndPixel := canvasGetPixel(advCanvas, 200, 235)
+print("canvasDrawGradient(水平): 起点 " + toStr(gradStartPixel) + " 终点 " + toStr(gradEndPixel))
+
+// 线性渐变（垂直）
+canvasDrawGradient(advCanvas, 220, 220, 150, 60, [0, 255, 0, 255], [255, 255, 0, 255], "v")
+gradVStart := canvasGetPixel(advCanvas, 280, 220)
+gradVEnd := canvasGetPixel(advCanvas, 280, 279)
+print("canvasDrawGradient(垂直): 起点 " + toStr(gradVStart) + " 终点 " + toStr(gradVEnd))
+
+// 颜色混合
+midColor := colorBlend([255, 0, 0, 255], [0, 0, 255, 255], 0.5)
+print("colorBlend(红, 蓝, 0.5) => " + toStr(midColor) + " (紫红)")
+
+zeroColor := colorBlend([255, 0, 0, 255], [0, 0, 255, 255], 0.0)
+print("colorBlend(红, 蓝, 0.0) => " + toStr(zeroColor) + " (全红)")
+
+// 文字测量
+textSize := canvasMeasureText("Hello", 20)
+print("canvasMeasureText(\"Hello\", 20) => " + toStr(textSize) + " [宽, 高]")
+print("")
+
+// 保存高级画布
+advImg := canvasToImage(advCanvas)
+advPath := "temp/image_demo_advanced.png"
+imageSave(advImg, advPath, "png")
+print("高级画布已保存到 " + advPath)
+print("")
+
+print("=== 示例完成 ===")

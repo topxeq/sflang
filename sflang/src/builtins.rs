@@ -407,11 +407,14 @@ fn bi_type_code(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 }
 
 /// bi_type_name 返回类型名。
+///
+/// 对 Native 类型返回细化的类型名（如 image/canvas/font/ring/channel 等），
+/// 其他类型返回基础类型名。
 fn bi_type_name(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("typeName() 需要 1 个参数"));
     }
-    Ok(Value::str(args[0].type_name()))
+    Ok(Value::str_from(args[0].type_name_ex()))
 }
 
 /// bi_string 转字符串。
