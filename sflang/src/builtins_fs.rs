@@ -378,6 +378,7 @@ fn bi_close_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// - file：关闭文件（等同 closeFile）
 /// - mutex（Native<MutexT>）：释放锁（等同 unlock）
 /// - rwlock（Native<RWMutexT>）：释放写锁（等同 wunlock；读锁需手动 runlock）
+/// - ticker（Native<TickerHandle>）：停止 runTicker 启动的周期任务
 /// - 其他：报错
 fn bi_close_generic(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     bh::require_arg(args, 0, "close")?;
@@ -398,12 +399,17 @@ fn bi_close_generic(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
                 rw.release();
                 return Ok(Value::Undefined);
             }
+            // 尝试 downcast TickerHandle（runTicker 返回的句柄）
+            if let Some(ticker) = n.downcast_ref::<std::sync::Arc<crate::builtins_time::TickerHandle>>() {
+                ticker.release();
+                return Ok(Value::Undefined);
+            }
             Err(crate::value::error_value(format!(
-                "close() 不支持此 native 类型 (可能原因：不是 file/mutex/rwlock)",
+                "close() 不支持此 native 类型 (可能原因：不是 file/mutex/rwlock/ticker)",
             )))
         }
         v => Err(crate::value::error_value(format!(
-            "close() 不支持类型 {} (可能原因：应为 file/mutex/rwlock)", v.type_name(),
+            "close() 不支持类型 {} (可能原因：应为 file/mutex/rwlock/ticker)", v.type_name(),
         ))),
     }
 }

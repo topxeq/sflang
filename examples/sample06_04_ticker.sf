@@ -1,0 +1,80 @@
+// 示例 06.04：runTicker 周期任务
+// ==================================
+// runTicker 启动独立线程，按固定间隔重复调用函数。
+// stopTicker 停止周期任务（或用 close(handle) 统一关闭）。
+
+// ---- 基本用法：定时打印 ----
+pln("--- 基本用法：每 200ms 打印一次 ---")
+count := 0
+
+func tick() {
+    count++
+    pln("  tick", count, "at", getNowStr())
+}
+
+// 启动 ticker，每 200 毫秒执行一次 tick
+t := runTicker(tick, 200)
+
+// 主线程等待 1 秒，期间 ticker 会执行约 5 次
+sleepMs(1000)
+
+// 停止 ticker
+stopTicker(t)
+pln("  已停止 ticker，共执行", count, "次")
+pln("")
+
+// ---- 带状态共享的 ticker：倒计时 ----
+pln("--- 倒计时 ticker ---")
+remaining := [3]
+mu := newMutex()
+
+func countdown() {
+    lock(mu)
+    if remaining[0] > 0 {
+        pln("  倒计时:", remaining[0])
+        remaining[0]--
+    } else {
+        pln("  时间到！")
+    }
+    unlock(mu)
+}
+
+t2 := runTicker(countdown, 500)
+// 主线程等待 2 秒
+sleepMs(2000)
+stopTicker(t2)
+pln("  倒计时结束")
+pln("")
+
+// ---- close() 统一关闭 ticker ----
+pln("--- close() 统一关闭 ---")
+ticks := 0
+func tickFast() {
+    ticks++
+}
+t3 := runTicker(tickFast, 50)
+sleepMs(300)
+// close 也能停止 ticker（与 stopTicker 等价，适合 defer 统一资源释放）
+close(t3)
+pln("  close() 停止 ticker，共执行", ticks, "次")
+pln("")
+
+// ---- ticker 中抛异常不会中断循环 ----
+pln("--- ticker 异常容错 ---")
+errCount := 0
+
+func riskyTick() {
+    errCount++
+    if errCount == 3 {
+        // 第 3 次抛出异常
+        return error("模拟异常")
+    }
+}
+
+t4 := runTicker(riskyTick, 100)
+sleepMs(600)
+stopTicker(t4)
+pln("  ticker 共执行", errCount, "次（第 3 次异常未中断后续执行）")
+pln("")
+
+pln("ticker 示例完成")

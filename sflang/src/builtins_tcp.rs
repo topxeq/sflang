@@ -44,6 +44,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("tcpRemoteAddr", bi_tcp_remote_addr);
     vm.register_builtin("tcpLocalAddr", bi_tcp_local_addr);
     vm.register_builtin("tcpStopServer", bi_tcp_stop_server);
+    vm.register_builtin("tcpPipe", bi_tcp_pipe);
 }
 
 // ============ 类型定义 ============
@@ -69,7 +70,7 @@ pub struct TcpServer {
 // ============ 辅助函数 ============
 
 /// conn_downcast 从 Value 中提取 TcpConn 引用。
-fn conn_downcast<'a>(v: &'a Value, fn_name: &str) -> Result<&'a Arc<TcpConn>, Value> {
+pub fn conn_downcast<'a>(v: &'a Value, fn_name: &str) -> Result<&'a Arc<TcpConn>, Value> {
     match v {
         Value::Native(n) => n.downcast_ref::<Arc<TcpConn>>().ok_or_else(|| {
             error_value(format!(
@@ -481,6 +482,91 @@ fn bi_tcp_local_addr(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 fn bi_tcp_stop_server(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let server = server_downcast(&args[0], "tcpStopServer")?;
     server.stop_flag.store(true, Ordering::Relaxed);
+    Ok(Value::Undefined)
+}
+
+// ============ 双向转发 ============
+
+/// pipe_connections 双向转发两个连接的数据，直到任一方关闭。
+///
+/// 内部启动两个线程分别转发两个方向的数据，阻塞至双方都结束。
+/// 供 tcpPipe 内置函数和 builtins_proxy 模块复用。
+///
+/// 实现要点：用 try_clone 给每个方向的读写各克隆一份独立的 TcpStream，
+/// 避免在阻塞 read 时持有 Mutex 锁导致另一方向无法写入（经典死锁）。
+pub fn pipe_connections(conn1: &Arc<TcpConn>, conn2: &Arc<TcpConn>) {
+    // 克隆出 4 个独立的流句柄，每个方向读写互不锁
+    let (mut read1, mut write2) = {
+        let s1 = conn1.stream.lock().unwrap();
+        let s2 = conn2.stream.lock().unwrap();
+        let r1 = s1.try_clone().expect("pipe_connections: try_clone failed");
+        let w2 = s2.try_clone().expect("pipe_connections: try_clone failed");
+        (r1, w2)
+    };
+    let (mut read2, mut write1) = {
+        let s1 = conn1.stream.lock().unwrap();
+        let s2 = conn2.stream.lock().unwrap();
+        let r2 = s2.try_clone().expect("pipe_connections: try_clone failed");
+        let w1 = s1.try_clone().expect("pipe_connections: try_clone failed");
+        (r2, w1)
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let tx2 = tx.clone();
+
+    // 方向 1: conn1 -> conn2
+    let h1 = std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            match read1.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if write2.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                    let _ = write2.flush();
+                }
+            }
+        }
+        let _ = tx.send(());
+    });
+
+    // 方向 2: conn2 -> conn1
+    let h2 = std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            match read2.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if write1.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                    let _ = write1.flush();
+                }
+            }
+        }
+        let _ = tx2.send(());
+    });
+
+    // 等待任一方向结束，然后关闭两个连接以中断另一方向
+    rx.recv().ok();
+    let _ = conn1.stream.lock().unwrap().shutdown(Shutdown::Both);
+    let _ = conn2.stream.lock().unwrap().shutdown(Shutdown::Both);
+    h1.join().unwrap();
+    h2.join().unwrap();
+}
+
+/// bi_tcp_pipe 双向转发两个连接的数据。
+///
+/// 用法：
+///   tcpPipe(conn1, conn2) — 阻塞直到任一方关闭
+///
+/// 通常用于代理转发场景。调用后阻塞当前线程，
+/// 数据在两个连接间双向流动，直到一方断开。
+fn bi_tcp_pipe(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let conn1 = conn_downcast(&args[0], "tcpPipe")?;
+    let conn2 = conn_downcast(&args[1], "tcpPipe")?;
+    pipe_connections(conn1, conn2);
     Ok(Value::Undefined)
 }
 

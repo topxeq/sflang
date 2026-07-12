@@ -1,0 +1,210 @@
+// SOCKS/HTTP 二合一代理与端口透传示例
+// 用法：sf examples/showcase/proxy_demo.sf
+
+pln("========================================")
+pln("    Sflang 代理与端口透传示例")
+pln("========================================")
+
+// ============================================================
+// 1. 端口透传（Port Forward）
+// ============================================================
+pln("")
+pln("【1. 端口透传】")
+
+// 回显 TCP 服务器作为转发目标
+echoServer := tcpListen("127.0.0.1:19500", func(conn) {
+    while true {
+        line := tcpReadLine(conn)
+        if isUndefined(line) {
+            break
+        }
+        tcpWriteLine(conn, "echo: " + line)
+    }
+    tcpClose(conn)
+})
+sleepMs(100)
+pln("  回显服务器启动: 127.0.0.1:19500")
+
+// 端口转发: 19501 -> 19500
+pf := portForward("127.0.0.1:19501", "127.0.0.1:19500")
+sleepMs(100)
+pln("  端口转发: 127.0.0.1:19501 -> 127.0.0.1:19500")
+
+// 通过转发端口连接
+conn := tcpConnect("127.0.0.1", 19501, 3000)
+tcpWriteLine(conn, "hello port forward")
+resp := tcpReadLine(conn)
+pln("  通过 19501 发送 hello -> 收到:", resp)
+tcpClose(conn)
+
+portForwardStop(pf)
+tcpStopServer(echoServer)
+pln("  端口透传测试完成")
+
+// ============================================================
+// 2. SOCKS5 代理
+// ============================================================
+pln("")
+pln("【2. SOCKS5 代理】")
+
+// 回显服务器作为代理目标
+echoServer2 := tcpListen("127.0.0.1:19502", func(conn) {
+    while true {
+        line := tcpReadLine(conn)
+        if isUndefined(line) {
+            break
+        }
+        tcpWriteLine(conn, "socks echo: " + line)
+    }
+    tcpClose(conn)
+})
+sleepMs(100)
+pln("  回显服务器启动: 127.0.0.1:19502")
+
+// 启动 SOCKS/HTTP 代理（带访问控制）
+proxy := proxyListen("127.0.0.1:1080", func(targetAddr, proto, clientAddr) {
+    pln("  [代理] 允许", proto, "连接到", targetAddr, "来自", clientAddr)
+    return true
+})
+sleepMs(100)
+pln("  SOCKS/HTTP 代理启动: 127.0.0.1:1080")
+
+// 用 SOCKS5 协议通过代理连接回显服务器
+proxyConn := tcpConnect("127.0.0.1", 1080, 3000)
+if isError(proxyConn) {
+    pln("  连接代理失败:", proxyConn)
+} else {
+    // SOCKS5 握手: VER=05 NMETHODS=01 METHOD=00(无认证)
+    tcpWrite(proxyConn, bytes([0x05, 0x01, 0x00]))
+    method := tcpRead(proxyConn, 2)
+    pln("  代理方法回复:", bytesHex(method))
+
+    // SOCKS5 CONNECT 127.0.0.1:19502
+    // VER=05 CMD=01(CONNECT) RSV=00 ATYP=01(IPv4) ADDR=127.0.0.1 PORT=19502
+    // 19502 = 0x4C2E -> portHi=0x4C portLo=0x2E
+    socksReq := bytes([0x05, 0x01, 0x00, 0x01, 0x7f, 0x00, 0x00, 0x01, 0x4c, 0x2e])
+    tcpWrite(proxyConn, socksReq)
+
+    // 等待连接成功回复 (10字节)
+    reply := tcpRead(proxyConn, 10)
+    pln("  代理连接回复:", bytesHex(reply))
+
+    // 通过代理发送数据
+    tcpWriteLine(proxyConn, "hello via socks5")
+    resp := tcpReadLine(proxyConn)
+    pln("  通过 SOCKS5 代理发送 hello -> 收到:", resp)
+
+    tcpClose(proxyConn)
+}
+
+proxyStop(proxy)
+tcpStopServer(echoServer2)
+pln("  SOCKS5 代理测试完成")
+
+// ============================================================
+// 3. HTTP CONNECT 代理
+// ============================================================
+pln("")
+pln("【3. HTTP CONNECT 代理】")
+
+// 回显服务器
+echoServer3 := tcpListen("127.0.0.1:19503", func(conn) {
+    while true {
+        line := tcpReadLine(conn)
+        if isUndefined(line) {
+            break
+        }
+        tcpWriteLine(conn, "http echo: " + line)
+    }
+    tcpClose(conn)
+})
+sleepMs(100)
+pln("  回显服务器启动: 127.0.0.1:19503")
+
+// 启动代理（无 handler，允许所有连接）
+proxy2 := proxyListen("127.0.0.1:1081")
+sleepMs(100)
+pln("  HTTP 代理启动: 127.0.0.1:1081 (无限制)")
+
+// 用 HTTP CONNECT 方法通过代理连接
+httpConn := tcpConnect("127.0.0.1", 1081, 3000)
+if isError(httpConn) {
+    pln("  连接代理失败:", httpConn)
+} else {
+    // 发送 HTTP CONNECT 请求
+    tcpWrite(httpConn, "CONNECT 127.0.0.1:19503 HTTP/1.1\r\nHost: 127.0.0.1:19503\r\n\r\n")
+    // 读取代理回复
+    status := tcpReadLine(httpConn)
+    pln("  代理状态:", status)
+    // 读取空行
+    tcpReadLine(httpConn)
+
+    // 通过代理隧道发送数据
+    tcpWriteLine(httpConn, "hello via http connect")
+    resp := tcpReadLine(httpConn)
+    pln("  通过 HTTP CONNECT 代理发送 hello -> 收到:", resp)
+
+    tcpClose(httpConn)
+}
+
+proxyStop(proxy2)
+tcpStopServer(echoServer3)
+pln("  HTTP CONNECT 代理测试完成")
+
+// ============================================================
+// 4. tcpPipe 双向转发
+// ============================================================
+pln("")
+pln("【4. tcpPipe 双向转发】")
+
+// 回显服务器
+echoServer4 := tcpListen("127.0.0.1:19504", func(conn) {
+    while true {
+        line := tcpReadLine(conn)
+        if isUndefined(line) {
+            break
+        }
+        tcpWriteLine(conn, "pipe echo: " + line)
+    }
+    tcpClose(conn)
+})
+sleepMs(100)
+pln("  回显服务器启动: 127.0.0.1:19504")
+
+// 中继服务器: 接受连接后用 tcpPipe 连接到回显服务器
+relayServer := tcpListen("127.0.0.1:19505", func(conn) {
+    // 连接到回显服务器
+    backend := tcpConnect("127.0.0.1", 19504, 3000)
+    if isError(backend) {
+        pln("  中继: 连接后端失败")
+        tcpClose(conn)
+        return
+    }
+    // 双向转发，阻塞直到任一方关闭
+    tcpPipe(conn, backend)
+    tcpClose(backend)
+})
+sleepMs(100)
+pln("  中继服务器启动: 127.0.0.1:19505")
+
+// 通过中继连接
+pipeConn := tcpConnect("127.0.0.1", 19505, 3000)
+tcpWriteLine(pipeConn, "hello via tcpPipe")
+resp = tcpReadLine(pipeConn)
+pln("  通过 tcpPipe 中继发送 hello -> 收到:", resp)
+tcpClose(pipeConn)
+
+sleepMs(100)
+tcpStopServer(relayServer)
+tcpStopServer(echoServer4)
+pln("  tcpPipe 测试完成")
+
+pln("")
+pln("========================================")
+pln("    代理与端口透传示例完成")
+pln("========================================")
+pln("")
+pln("  代理：  proxyListen / proxyStop")
+pln("  转发：  portForward / portForwardStop")
+pln("  管道：  tcpPipe")
+pln("  协议：  SOCKS5 + HTTP CONNECT 自动识别")

@@ -53,6 +53,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("getNowTimeStamp", bi_get_now_timestamp);
     vm.register_builtin("timeAddDate", bi_time_add_date);
     vm.register_builtin("runTicker", bi_run_ticker);
+    vm.register_builtin("stopTicker", bi_stop_ticker);
     vm.register_builtin("formatTime", bi_format_time);
 }
 
@@ -274,6 +275,14 @@ pub struct TickerHandle {
     pub stop: Arc<AtomicBool>,
 }
 
+impl TickerHandle {
+    /// release 停止 ticker（置 stop 标志为 true，子线程下一轮检查后退出）。
+    /// 幂等：多次调用无副作用。
+    pub fn release(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 /// bi_run_ticker 周期执行函数。
 ///
 /// 用法：runTicker(fn, intervalMs) → ticker 句柄
@@ -351,6 +360,37 @@ fn bi_run_ticker(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
     // 返回 TickerHandle 作为 Native 值，供 stopTicker/close 使用
     Ok(Value::Native(Arc::new(Arc::new(TickerHandle { stop: stop_flag }))))
+}
+
+/// bi_stop_ticker 停止 runTicker 启动的周期任务。
+///
+/// 用法：stopTicker(handle) → undefined
+///
+/// handle 为 runTicker 返回的 TickerHandle。
+/// 调用后子线程会在当前周期结束后（最长 intervalMs）退出。
+/// 幂等：对已停止的 ticker 调用无副作用。
+fn bi_stop_ticker(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "stopTicker")?;
+    match &args[0] {
+        Value::Native(n) => {
+            if let Some(h) = n.downcast_ref::<Arc<TickerHandle>>() {
+                h.release();
+                Ok(Value::Undefined)
+            } else {
+                Err(crate::value::error_value(format!(
+                    "stopTicker() 参数不是 ticker 句柄 (可能原因：传入了其他 native 类型，应使用 runTicker 的返回值)",
+                )))
+            }
+        }
+        Value::Undefined => Err(crate::value::error_value(
+            "stopTicker() 参数为 undefined (可能原因：runTicker 未被调用或返回值未保存)",
+        )),
+        other => Err(crate::value::error_value(format!(
+            "stopTicker() 参数应为 ticker 句柄，得到 {} (可能原因：参数类型不匹配)",
+            other.type_name(),
+        ))),
+    }
 }
 
 /// bi_format_time 格式化 datetime 为字符串（dtFormat 的别名）。

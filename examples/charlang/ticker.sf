@@ -1,25 +1,27 @@
 // port of ticker.char — 定时执行任务
-// Charlang 用 runTicker(1.5, delegate)，Sflang 用 run + while + sleep 模拟
+// Charlang: runTicker(1.5, delegate) + delegate 传参
+// Sflang: runTicker(fn, intervalMs) + 闭包/全局变量共享状态
 
-// 用数组传递可变参数
+// 用数组传递可变参数（与 Charlang 的 delegate 传参等价）
 a1 := [0]
 maxCount := 5
 
-// 定时任务函数（在线程中运行，循环 + sleep）
-func tickTask(state, limit) {
-    while state[0] <= limit {
-        pln("tick: now =", now(), " count =", state[0])
-        state[0]++
-        if state[0] <= limit {
-            sleep(1.5)
-        }
+// 定时任务函数（runTicker 每次调用时执行一次）
+func tickTask() {
+    if a1[0] > maxCount {
+        return
     }
-    pln("达到上限，停止")
+    pln("tick: now =", now(), " count =", a1[0])
+    a1[0]++
 }
 
-// 启动定时任务（在新线程中）
-run tickTask(a1, maxCount)
+// 启动 ticker，每 1500 毫秒执行一次（等价 Charlang 的 runTicker(1.5, d1)）
+t := runTicker(tickTask, 1500)
 
-// 主线程等待子线程完成（毫秒，10000ms = 10秒）
-sleep(10)
+// 主线程等待子线程完成（8 秒足够 5 次 + 余量）
+sleepMs(8000)
+
+// 显式停止 ticker（Charlang 的 delegate 返回 error 停止，Sflang 用 stopTicker）
+stopTicker(t)
+pln("达到上限，停止")
 pln("主线程退出")

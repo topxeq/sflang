@@ -1,0 +1,109 @@
+// xxci 加密代理协议示例（对标 github.com/topxeq/goconnectit，简称 xxci）
+// 用法：sf examples/showcase/xxci_demo.sf
+//
+// 演示：
+//   1. 启动回显服务器作为代理目标
+//   2. 启动 xxci 服务器（加密 SOCKS5 代理）
+//   3. 启动 xxci 客户端（本地 SOCKS5 入口）
+//   4. 通过本地 SOCKS5 入口连接回显服务器
+//   5. 测试 4 种加密方法：des, txdef, txdee, txde
+
+// 辅助：启动回显 TCP 服务器
+func startEcho(addr) {
+    return tcpListen(addr, func(conn) {
+        while true {
+            line := tcpReadLine(conn)
+            if isUndefined(line) {
+                break
+            }
+            tcpWriteLine(conn, "echo: " + line)
+        }
+        tcpClose(conn)
+    })
+}
+
+// 辅助：通过本地 SOCKS5 入口连接目标并收发一行
+func socks5Roundtrip(localProxyPort, targetPort, message) {
+    conn := tcpConnect("127.0.0.1", localProxyPort, 3000)
+    if isError(conn) {
+        return "连接本地代理失败: " + toStr(conn)
+    }
+
+    // SOCKS5 握手：VER=05 NMETHODS=01 METHOD=00（无认证）
+    tcpWrite(conn, bytes([0x05, 0x01, 0x00]))
+    tcpRead(conn, 2)
+
+    // SOCKS5 CONNECT 127.0.0.1:targetPort（IPv4）
+    portHi := targetPort / 256
+    portLo := targetPort % 256
+    tcpWrite(conn, bytes([0x05, 0x01, 0x00, 0x01, 0x7f, 0x00, 0x00, 0x01, portHi, portLo]))
+    tcpRead(conn, 10)
+
+    // 发送并接收
+    tcpWriteLine(conn, message)
+    resp := tcpReadLine(conn)
+    tcpClose(conn)
+    return resp
+}
+
+// 辅助：测试单个加密方法
+func testMethod(method, echoPort, serverPort, clientPort) {
+    pln("----------------------------------------")
+    pln("测试加密方法: " + method)
+
+    password := "mySecret123"
+
+    // 启动 xxci 服务器
+    server := xxciServer("127.0.0.1:" + toStr(serverPort), password, method)
+    sleepMs(100)
+
+    // 启动 xxci 客户端
+    client := xxciClient("127.0.0.1:" + toStr(serverPort), "127.0.0.1:" + toStr(clientPort), password, method)
+    sleepMs(150)
+
+    // 通过本地 SOCKS5 入口连接回显服务器
+    msg := "hello " + method
+    resp := socks5Roundtrip(clientPort, echoPort, msg)
+    pln("  发送: " + msg)
+    pln("  收到: " + toStr(resp))
+
+    if contains(toStr(resp), msg) {
+        pln("  结果: 通过")
+    } else {
+        pln("  结果: 失败")
+    }
+
+    xxciClientStop(client)
+    xxciServerStop(server)
+    sleepMs(50)
+}
+
+// ============================================================
+// 主流程
+// ============================================================
+pln("========================================")
+pln("    Sflang xxci 加密代理示例")
+pln("========================================")
+pln("")
+
+// 启动回显服务器
+echoPort := 19600
+echoAddr := "127.0.0.1:" + toStr(echoPort)
+echoServer := startEcho(echoAddr)
+sleepMs(100)
+pln("回显服务器启动: " + echoAddr)
+pln("")
+
+// 测试 4 种加密方法
+testMethod("txde", echoPort, 19701, 19801)
+testMethod("txdee", echoPort, 19702, 19802)
+testMethod("txdef", echoPort, 19703, 19803)
+testMethod("des", echoPort, 19704, 19804)
+
+pln("")
+pln("========================================")
+pln("所有加密方法测试完成")
+pln("========================================")
+
+// 清理
+tcpStopServer(echoServer)
