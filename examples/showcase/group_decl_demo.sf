@@ -1,0 +1,74 @@
+// 分组声明与 iota 枚举示例
+// 用法：sf examples/showcase/group_decl_demo.sf
+//
+// 演示：
+//   1. var (...) 分组声明
+//   2. const (...) 分组声明
+//   3. iota 枚举基本用法
+//   4. iota 参与表达式运算
+//   5. iota 位标志（常见用法）
+
+print("=== 分组声明与 iota 枚举示例 ===")
+print("")
+
+// ============ 1. var 分组声明 ============
+print("--- 1. var 分组声明 ---")
+
+var (
+    name = "Sflang"
+    version = 1
+    isReady = true
+)
+print("name=" + name + " version=" + toStr(version) + " isReady=" + toStr(isReady))
+print("")
+
+// ============ 2. const 分组声明 ============
+print("--- 2. const 分组声明 ---")
+
+const (
+    MAX_RETRY = 3
+    TIMEOUT = 30
+    BUFFER_SIZE = 4096
+)
+print("MAX_RETRY=" + toStr(MAX_RETRY) + " TIMEOUT=" + toStr(TIMEOUT) + " BUFFER_SIZE=" + toStr(BUFFER_SIZE))
+print("")
+
+// ============ 3. iota 基本用法 ============
+print("--- 3. iota 基本用法 ---")
+
+const (
+    RED = iota
+    GREEN = iota
+    BLUE = iota
+)
+print("RED=" + toStr(RED) + " GREEN=" + toStr(GREEN) + " BLUE=" + toStr(BLUE))
+print("")
+
+// ============ 4. iota 参与运算 ============
+print("--- 4. iota 参与表达式运算 ---")
+
+const (
+    Base = 100
+    Offset1 = Base + iota
+    Offset2 = Base + iota
+    Offset3 = Base + iota
+)
+print("Base=" + toStr(Base) + " Offset1=" + toStr(Offset1) + " Offset2=" + toStr(Offset2) + " Offset3=" + toStr(Offset3))
+print("")
+
+// ============ 5. iota 位标志 ============
+print("--- 5. iota 位标志（常见用法）---")
+
+const (
+    FlagRead    = 1 << iota    // 1
+    FlagWrite   = 1 << iota    // 2
+    FlagExecute  = 1 << iota    // 4
+)
+print("FlagRead=" + toStr(FlagRead) + " FlagWrite=" + toStr(FlagWrite) + " FlagExecute=" + toStr(FlagExecute))
+
+// 位运算组合
+perms := FlagRead | FlagWrite
+print("Read|Write = " + toStr(perms))
+print("")
+
+print("=== 示例结束 ===")

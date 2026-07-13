@@ -13,6 +13,9 @@ pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     file: String,
+    /// iota_counter 当前 const 分组内的 iota 计数器。
+    /// 为 None 表示不在 const 分组内（iota 不可用）。
+    iota_counter: Option<i64>,
 }
 
 /// ParseError 语法错误。
@@ -32,7 +35,7 @@ impl std::error::Error for ParseError {}
 
 impl Parser {
     pub fn new(tokens: Vec<Token>, file: &str) -> Self {
-        Parser { tokens, pos: 0, file: file.to_string() }
+        Parser { tokens, pos: 0, file: file.to_string(), iota_counter: None }
     }
 
     pub fn parse(&mut self) -> Result<Program, ParseError> {
@@ -60,6 +63,8 @@ impl Parser {
         t
     }
     fn check(&self, kind: TokenKind) -> bool { !self.at_end() && self.peek().kind == kind }
+    /// check_at 检查偏移 n 处的 token 是否为指定类型。
+    fn check_at(&self, n: usize, kind: TokenKind) -> bool { self.peek_at(n).kind == kind }
     fn at_end(&self) -> bool { self.peek().kind == TokenKind::EOF }
     fn match_token(&mut self, kind: TokenKind) -> bool {
         if self.check(kind) { self.advance(); true } else { false }
@@ -80,8 +85,20 @@ impl Parser {
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         match self.peek().kind {
-            TokenKind::Var => self.parse_var_decl(),
-            TokenKind::Const => self.parse_const_decl(),
+            TokenKind::Var => {
+                if self.check_at(1, TokenKind::LParen) {
+                    self.parse_var_group(false)
+                } else {
+                    self.parse_var_decl()
+                }
+            }
+            TokenKind::Const => {
+                if self.check_at(1, TokenKind::LParen) {
+                    self.parse_var_group(true)
+                } else {
+                    self.parse_const_decl()
+                }
+            }
             TokenKind::Func => {
                 if matches!(self.peek_at(1).kind, TokenKind::Ident) {
                     self.parse_func_decl()
@@ -176,6 +193,74 @@ impl Parser {
         let value = self.parse_expr()?;
         self.consume_semicolon();
         Ok(Stmt::VarDecl { tok, name, value: Some(value) })
+    }
+
+    /// parse_var_group 解析 var (...) / const (...) 分组声明。
+    ///
+    /// 语法：
+    ///   var ( name = expr; name = expr; ... )
+    ///   const ( name = expr; name; ... )    // const 分组内支持 iota 和省略表达式
+    ///
+    /// is_const=true 时启用 iota 计数器和省略表达式复用（Go 风格）。
+    /// 展开为 Block 包含多个 VarDecl。
+    fn parse_var_group(&mut self, is_const: bool) -> Result<Stmt, ParseError> {
+        let tok = self.advance(); // 消费 var/const
+        self.expect(TokenKind::LParen, "'(' (分组声明)")?;
+
+        let mut stmts = Vec::new();
+        // const 分组启用 iota 计数器
+        let prev_iota = self.iota_counter;
+        if is_const {
+            self.iota_counter = Some(0);
+        }
+
+        // 记录上一个 const 声明的表达式（用于省略 = expr 时复用）
+        let mut last_expr: Option<Expr> = None;
+
+        while !self.check(TokenKind::RParen) && !self.at_end() {
+            // 跳过空语句（单个分号）
+            if self.match_token(TokenKind::Semicolon) { continue; }
+
+            let name_tok = self.expect(TokenKind::Ident, "变量名")?;
+            let name = name_tok.value.clone();
+            let tok_for_stmt = name_tok.clone();
+
+            let value = if self.match_token(TokenKind::Assign) {
+                let e = self.parse_expr()?;
+                last_expr = Some(e.clone());
+                Some(e)
+            } else if is_const {
+                // const 分组内省略 = expr：沿用上一个表达式
+                if let Some(e) = &last_expr {
+                    Some(e.clone())
+                } else {
+                    return Err(self.err("const 分组内第一个声明必须有初始值"));
+                }
+            } else {
+                // var 分组内可以无初始值
+                None
+            };
+
+            stmts.push(Stmt::VarDecl { tok: tok_for_stmt, name, value });
+
+            // const 分组内 iota 递增
+            if is_const {
+                if let Some(c) = &mut self.iota_counter {
+                    *c += 1;
+                }
+            }
+
+            // 分隔符：分号或换行（Sflang 中换行不产生 token，用分号或直接下一个标识符）
+            if !self.check(TokenKind::RParen) {
+                self.match_token(TokenKind::Semicolon);
+            }
+        }
+
+        self.iota_counter = prev_iota;
+        self.expect(TokenKind::RParen, "')'")?;
+        self.consume_semicolon();
+
+        Ok(Stmt::Block { tok, stmts })
     }
 
     fn parse_func_decl(&mut self) -> Result<Stmt, ParseError> {
@@ -782,7 +867,16 @@ impl Parser {
                     self.expect(TokenKind::RBrace, "'}'")?;
                     return Ok(Expr::OrdMapLit { tok, pairs });
                 }
-                self.advance(); let name = tok.value.clone(); Ok(Expr::Ident { tok, name })
+                self.advance();
+                let name = tok.value.clone();
+                // iota 替换：在 const 分组内，iota 标识符替换为当前计数器值的整数字面量
+                if name == "iota" {
+                    if let Some(v) = self.iota_counter {
+                        return Ok(Expr::IntLit { tok, value: v });
+                    }
+                    // 不在 const 分组内：当作普通标识符（运行时会是 undefined）
+                }
+                Ok(Expr::Ident { tok, name })
             }
             TokenKind::LParen => {
                 self.advance();

@@ -229,7 +229,128 @@ fn test_nested_three_levels_break_label() {
     assert_eq!(eval(src), Value::Int(2));
 }
 
-// ---- 函数 ----
+// ---- 分组声明与 iota ----
+
+#[test]
+fn test_var_group_basic() {
+    // var 分组声明
+    let src = r#"
+        var (
+            a = 10
+            b = 20
+            c = a + b
+        )
+        return c
+    "#;
+    assert_eq!(eval(src), Value::Int(30));
+}
+
+#[test]
+fn test_var_group_no_init() {
+    // var 分组内可以无初始值
+    let src = r#"
+        var (
+            a = 5
+            b
+        )
+        b = a * 2
+        return b
+    "#;
+    assert_eq!(eval(src), Value::Int(10));
+}
+
+#[test]
+fn test_var_group_semicolons() {
+    // 用分号分隔
+    let src = r#"
+        var ( a = 1; b = 2; c = a + b )
+        return c
+    "#;
+    assert_eq!(eval(src), Value::Int(3));
+}
+
+#[test]
+fn test_const_group_basic() {
+    // const 分组声明
+    let src = r#"
+        const (
+            RED = 0
+            GREEN = 1
+            BLUE = 2
+        )
+        return RED + GREEN + BLUE
+    "#;
+    assert_eq!(eval(src), Value::Int(3));
+}
+
+#[test]
+fn test_const_group_iota() {
+    // iota 基本用法
+    let src = r#"
+        const (
+            RED = iota
+            GREEN = iota
+            BLUE = iota
+        )
+        return RED * 100 + GREEN * 10 + BLUE
+    "#;
+    assert_eq!(eval(src), Value::Int(12));
+}
+
+#[test]
+fn test_const_group_iota_omit_expr() {
+    // const 分组内省略 = expr：沿用上一个表达式（Go 风格）
+    // 注意：iota 在省略时不会重新递增（parser 层面替换的限制）
+    let src = r#"
+        const (
+            A = 10
+            B
+            C
+        )
+        return A + B + C
+    "#;
+    // 10 + 10 + 10 = 30（沿用 A 的表达式）
+    assert_eq!(eval(src), Value::Int(30));
+}
+
+#[test]
+fn test_const_group_iota_arithmetic() {
+    // iota 在表达式中参与运算
+    let src = r#"
+        const (
+            A = iota * 2
+            B = iota * 2
+            C = iota * 2
+        )
+        return A + B + C
+    "#;
+    // 0 + 2 + 4 = 6
+    assert_eq!(eval(src), Value::Int(6));
+}
+
+#[test]
+fn test_const_group_iota_bitwise() {
+    // iota 位运算（常见用法：位标志）
+    let src = r#"
+        const (
+            FlagA = 1 << iota
+            FlagB = 1 << iota
+            FlagC = 1 << iota
+            FlagD = 1 << iota
+        )
+        return FlagA + FlagB + FlagC + FlagD
+    "#;
+    // 1 + 2 + 4 + 8 = 15
+    assert_eq!(eval(src), Value::Int(15));
+}
+
+#[test]
+fn test_iota_outside_const_group() {
+    // iota 在 const 分组外当作普通标识符（值为 undefined）
+    let src = "var x = iota; return x";
+    let r = eval(src);
+    assert_eq!(r, Value::Undefined);
+}
 
 #[test]
 fn test_function_call() {
