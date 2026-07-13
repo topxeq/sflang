@@ -918,10 +918,10 @@ pub fn http_post(url: &str, body: &[u8], content_type: &str, headers: &[String],
     http_request("POST", url, body, content_type, headers, timeout_secs, 0)
 }
 
-/// http_request 发送 HTTP 请求（内部通用函数，支持重定向跟踪）。
+/// http_request 发送 HTTP 请求（支持任意方法，用于 S3 等需要 PUT/DELETE/HEAD 的场景）。
 ///
 /// `redirect_count` 用于递归跟踪重定向次数。
-fn http_request(
+pub fn http_request(
     method: &str,
     url: &str,
     body: &[u8],

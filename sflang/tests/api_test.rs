@@ -3837,3 +3837,221 @@ fn test_show_table_no_header() {
         other => panic!("期望 string，得到 {:?}", other),
     }
 }
+
+// ---- S3 客户端 ----
+
+#[test]
+fn test_s3_connect_invalid_endpoint() {
+    // 缺少 http:// 前缀应返回错误
+    let r = eval(r#"
+        var c = s3Connect("minio.local:9000", "us-east-1", "ak", "sk")
+        return isErr(c)
+    "#);
+    assert_eq!(r, Value::Bool(true));
+}
+
+#[test]
+fn test_s3_connect_minio() {
+    // MinIO 风格 endpoint 应成功创建客户端
+    let r = eval(r#"
+        var c = s3Connect("http://localhost:9000", "us-east-1", "ak", "sk")
+        return typeName(c)
+    "#);
+    match r {
+        Value::Str(s) => assert_eq!(s.as_ref(), "s3Client", "MinIO 客户端类型应为 s3Client"),
+        other => panic!("期望 string，得到 {:?}", other),
+    }
+}
+
+#[test]
+fn test_s3_connect_aws() {
+    // AWS S3 endpoint 应成功创建客户端
+    let r = eval(r#"
+        var c = s3Connect("https://s3.us-east-1.amazonaws.com", "us-east-1", "ak", "sk")
+        return typeName(c)
+    "#);
+    match r {
+        Value::Str(s) => assert_eq!(s.as_ref(), "s3Client"),
+        other => panic!("期望 string，得到 {:?}", other),
+    }
+}
+
+#[test]
+fn test_s3_connect_path_style_auto_infer() {
+    // MinIO 端口非 80/443 应推断为 path-style
+    let r = eval(r#"
+        var c = s3Connect("http://192.168.1.100:9000", "us-east-1", "ak", "sk")
+        return typeName(c)
+    "#);
+    match r {
+        Value::Str(s) => assert_eq!(s.as_ref(), "s3Client"),
+        _ => panic!("应成功创建客户端"),
+    }
+}
+
+#[test]
+fn test_s3_connect_explicit_path_style() {
+    // 显式指定 path-style 参数
+    let r = eval(r#"
+        var c = s3Connect("https://s3.us-east-1.amazonaws.com", "us-east-1", "ak", "sk", true)
+        return typeName(c)
+    "#);
+    match r {
+        Value::Str(s) => assert_eq!(s.as_ref(), "s3Client"),
+        _ => panic!("应成功创建客户端"),
+    }
+}
+
+#[test]
+fn test_s3_close_returns_undefined() {
+    // s3Close 无实际资源，仅返回 undefined
+    let r = eval(r#"
+        var c = s3Connect("http://localhost:9000", "us-east-1", "ak", "sk")
+        if isErr(c) { return c }
+        return s3Close(c)
+    "#);
+    assert_eq!(r, Value::Undefined);
+}
+
+#[test]
+fn test_s3_function_arg_count_error() {
+    // 参数不足应抛出错误（内置函数参数校验返回 Err）
+    let r = run(r#"
+        var c = s3Connect("http://localhost:9000", "us-east-1", "ak")
+        return isErr(c)
+    "#);
+    assert!(r.is_err(), "参数不足应导致脚本运行失败");
+}
+
+#[test]
+fn test_s3_wrong_client_type() {
+    // 传入非 S3 客户端应抛出错误
+    let r = run(r#"
+        var notClient = 42
+        var r = s3ListBuckets(notClient)
+        return isErr(r)
+    "#);
+    assert!(r.is_err(), "传入非 S3 客户端应抛出错误");
+}
+
+#[test]
+fn test_s3_wrong_client_type_undefined() {
+    // 传入 undefined 应抛出错误
+    let r = run(r#"
+        var r = s3ListBuckets(undefined)
+        return isErr(r)
+    "#);
+    assert!(r.is_err(), "传入 undefined 应抛出错误");
+}
+
+#[test]
+fn test_s3_list_objects_arg_check() {
+    // 缺少 bucket 参数应抛出错误
+    let r = run(r#"
+        var c = s3Connect("http://localhost:9000", "us-east-1", "ak", "sk")
+        if isErr(c) { return false }
+        var r = s3ListObjects(c)
+        return isErr(r)
+    "#);
+    assert!(r.is_err(), "缺少 bucket 参数应抛出错误");
+}
+
+#[test]
+fn test_s3_put_object_wrong_body_type() {
+    // body 类型不匹配应抛出错误
+    let r = run(r#"
+        var c = s3Connect("http://localhost:9000", "us-east-1", "ak", "sk")
+        if isErr(c) { return false }
+        var r = s3PutObject(c, "bucket", "key", 42)
+        return isErr(r)
+    "#);
+    assert!(r.is_err(), "body 类型不匹配应抛出错误");
+}
+
+// ---- S3 Multipart Upload ----
+
+#[test]
+fn test_s3_multipart_create_arg_check() {
+    // 缺少 key 参数应抛出错误
+    let r = run(r#"
+        var c = s3Connect("http://localhost:9000", "us-east-1", "ak", "sk")
+        if isErr(c) { return false }
+        var r = s3MultipartCreate(c, "bucket")
+        return isErr(r)
+    "#);
+    assert!(r.is_err(), "缺少 key 参数应抛出错误");
+}
+
+#[test]
+fn test_s3_multipart_upload_part_invalid_part_no() {
+    // partNo 越界应返回错误对象（不抛异常，业务错误）
+    let r = eval(r#"
+        var c = s3Connect("http://localhost:9000", "us-east-1", "ak", "sk")
+        if isErr(c) { return false }
+        var r = s3MultipartUploadPart(c, "bucket", "key", "uploadId", 0, "data")
+        return isErr(r)
+    "#);
+    assert_eq!(r, Value::Bool(true));
+}
+
+#[test]
+fn test_s3_multipart_upload_part_part_no_too_large() {
+    // partNo > 10000 应返回错误对象
+    let r = eval(r#"
+        var c = s3Connect("http://localhost:9000", "us-east-1", "ak", "sk")
+        if isErr(c) { return false }
+        var r = s3MultipartUploadPart(c, "bucket", "key", "uploadId", 10001, "data")
+        return isErr(r)
+    "#);
+    assert_eq!(r, Value::Bool(true));
+}
+
+#[test]
+fn test_s3_upload_big_file_part_size_too_small() {
+    // partSize < 5MB 应返回错误对象
+    let r = eval(r#"
+        var c = s3Connect("http://localhost:9000", "us-east-1", "ak", "sk")
+        if isErr(c) { return false }
+        var r = s3UploadBigFile(c, "bucket", "key", "/tmp/test.dat", 1024)
+        return isErr(r)
+    "#);
+    assert_eq!(r, Value::Bool(true));
+}
+
+#[test]
+fn test_s3_upload_big_file_part_size_too_large() {
+    // partSize > 5GB 应返回错误对象
+    let r = eval(r#"
+        var c = s3Connect("http://localhost:9000", "us-east-1", "ak", "sk")
+        if isErr(c) { return false }
+        var r = s3UploadBigFile(c, "bucket", "key", "/tmp/test.dat", 6 * 1024 * 1024 * 1024)
+        return isErr(r)
+    "#);
+    // 6GB 超过 usize 正数表示范围不会有问题，应返回 error
+    assert_eq!(r, Value::Bool(true));
+}
+
+#[test]
+fn test_s3_upload_big_file_not_exist() {
+    // 文件不存在应返回错误对象
+    let r = eval(r#"
+        var c = s3Connect("http://localhost:9000", "us-east-1", "ak", "sk")
+        if isErr(c) { return false }
+        var r = s3UploadBigFile(c, "bucket", "key", "/tmp/not_exist_file_xxx_12345.dat")
+        return isErr(r)
+    "#);
+    assert_eq!(r, Value::Bool(true));
+}
+
+#[test]
+fn test_s3_multipart_complete_wrong_parts_type() {
+    // parts 数组中含非 object 元素应返回错误对象
+    let r = eval(r#"
+        var c = s3Connect("http://localhost:9000", "us-east-1", "ak", "sk")
+        if isErr(c) { return false }
+        var r = s3MultipartComplete(c, "bucket", "key", "uploadId", [42])
+        return isErr(r)
+    "#);
+    assert_eq!(r, Value::Bool(true));
+}
+

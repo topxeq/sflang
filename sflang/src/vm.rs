@@ -176,6 +176,7 @@ impl VM {
         crate::builtins_image::register(&mut vm);
         crate::builtins_image_gen::register(&mut vm);
         crate::builtins_seq::register(&mut vm);
+        crate::builtins_s3::register(&mut vm);
         // 预定义数学常量全局变量
         vm.set_global("piG", Value::Float(std::f64::consts::PI));
         vm.set_global("eG", Value::Float(std::f64::consts::E));
