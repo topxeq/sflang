@@ -90,6 +90,145 @@ fn test_break_continue() {
     assert_eq!(eval("var s = 0; for i in range(1, 6) { if i == 3 { continue }; s = s + i }; return s"), Value::Int(12));
 }
 
+#[test]
+fn test_break_outer_label_for_in() {
+    // 双层 for-in，break label 跳出外层
+    let src = r#"
+        var cnt = 0
+        outer: for i in range(0, 3) {
+            for j in range(0, 3) {
+                if i == 1 && j == 1 { break outer }
+                cnt = cnt + 1
+            }
+        }
+        return cnt
+    "#;
+    // i=0: j=0,1,2 -> cnt+=3; i=1: j=0 -> cnt+=1, j=1 触发 break outer
+    assert_eq!(eval(src), Value::Int(4));
+}
+
+#[test]
+fn test_continue_outer_label_for_in() {
+    // continue label 跳到外层下次迭代
+    let src = r#"
+        var cnt = 0
+        outer: for i in range(0, 3) {
+            for j in range(0, 3) {
+                if j == 1 { continue outer }
+                cnt = cnt + 1
+            }
+        }
+        return cnt
+    "#;
+    // i=0: j=0 cnt++, j=1 continue outer; i=1: j=0 cnt++, j=1 continue; i=2: j=0 cnt++, j=1 continue
+    assert_eq!(eval(src), Value::Int(3));
+}
+
+#[test]
+fn test_break_label_while() {
+    let src = r#"
+        var i = 0
+        var cnt = 0
+        outer: while i < 3 {
+            var j = 0
+            while j < 3 {
+                if i == 1 && j == 1 { break outer }
+                cnt = cnt + 1
+                j = j + 1
+            }
+            i = i + 1
+        }
+        return cnt
+    "#;
+    // i=0: j=0,1,2 cnt+=3; i=1: j=0 cnt+=1, j=1 break outer
+    assert_eq!(eval(src), Value::Int(4));
+}
+
+#[test]
+fn test_break_label_c_style_for() {
+    let src = r#"
+        var cnt = 0
+        outer: for i := 0; i < 3; i = i + 1 {
+            for j := 0; j < 3; j = j + 1 {
+                if i == 1 && j == 1 { break outer }
+                cnt = cnt + 1
+            }
+        }
+        return cnt
+    "#;
+    assert_eq!(eval(src), Value::Int(4));
+}
+
+#[test]
+fn test_continue_label_inner_skipped() {
+    // 验证 continue label 时内层循环剩余部分被跳过
+    let src = r#"
+        var log = []
+        outer: for i in range(0, 2) {
+            for j in range(0, 3) {
+                if j == 1 { continue outer }
+                push(log, i * 10 + j)
+            }
+        }
+        return log
+    "#;
+    let r = eval(src);
+    match r {
+        Value::Array(a) => {
+            let g = a.lock().unwrap();
+            assert_eq!(g.len(), 2);
+            assert_eq!(g[0], Value::Int(0));
+            assert_eq!(g[1], Value::Int(10));
+        }
+        _ => panic!("expected array"),
+    }
+}
+
+#[test]
+fn test_break_without_label_unchanged() {
+    // 无标签 break 仍只跳出最内层
+    let src = r#"
+        var cnt = 0
+        for i in range(0, 3) {
+            for j in range(0, 3) {
+                if j == 1 { break }
+                cnt = cnt + 1
+            }
+        }
+        return cnt
+    "#;
+    // 每次外层迭代：j=0 cnt++, j=1 break 内层; 共 3 次
+    assert_eq!(eval(src), Value::Int(3));
+}
+
+#[test]
+fn test_break_undefined_label_error() {
+    // 未定义的标签应编译报错
+    let r = run("for i in range(0, 3) { break nonexistent }");
+    assert!(r.is_err(), "break with undefined label should error");
+}
+
+#[test]
+fn test_nested_three_levels_break_label() {
+    // 三层嵌套，break 跳到中间层
+    let src = r#"
+        var cnt = 0
+        for i in range(0, 2) {
+            mid: for j in range(0, 2) {
+                for k in range(0, 2) {
+                    if k == 1 { break mid }
+                    cnt = cnt + 1
+                }
+            }
+        }
+        return cnt
+    "#;
+    // break mid 跳出 j 循环（mid），回到 i 循环下次迭代
+    // i=0: j=0 k=0 cnt++ k=1 break mid; j 循环结束
+    // i=1: j=0 k=0 cnt++ k=1 break mid; j 循环结束
+    assert_eq!(eval(src), Value::Int(2));
+}
+
 // ---- 函数 ----
 
 #[test]

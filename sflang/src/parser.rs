@@ -92,10 +92,30 @@ impl Parser {
                 }
             }
             TokenKind::If => self.parse_if(),
-            TokenKind::While => self.parse_while(),
-            TokenKind::For => self.parse_for(),
-            TokenKind::Break => { let t = self.advance(); self.consume_semicolon(); Ok(Stmt::BreakStmt { tok: t }) }
-            TokenKind::Continue => { let t = self.advance(); self.consume_semicolon(); Ok(Stmt::ContinueStmt { tok: t }) }
+            TokenKind::While => self.parse_while(None),
+            TokenKind::For => self.parse_for(None),
+            TokenKind::Break => {
+                let t = self.advance();
+                // 支持 break label 形式
+                let label = if self.check(TokenKind::Ident) {
+                    Some(self.advance().value)
+                } else {
+                    None
+                };
+                self.consume_semicolon();
+                Ok(Stmt::BreakStmt { tok: t, label })
+            }
+            TokenKind::Continue => {
+                let t = self.advance();
+                // 支持 continue label 形式
+                let label = if self.check(TokenKind::Ident) {
+                    Some(self.advance().value)
+                } else {
+                    None
+                };
+                self.consume_semicolon();
+                Ok(Stmt::ContinueStmt { tok: t, label })
+            }
             TokenKind::Return => self.parse_return(),
             TokenKind::Try => self.parse_try(),
             TokenKind::Defer => self.parse_defer(),
@@ -105,6 +125,19 @@ impl Parser {
             TokenKind::LBrace => {
                 let b = self.parse_block()?;
                 Ok(Stmt::Block { tok: b.tok.clone(), stmts: b.stmts })
+            }
+            // label: for/while { ... } — 带标签的循环
+            TokenKind::Ident if self.peek_at(1).kind == TokenKind::Colon
+                && matches!(self.peek_at(2).kind, TokenKind::For | TokenKind::While) =>
+            {
+                let label = self.advance().value;
+                self.advance(); // 消费 ':'
+                let kind = self.peek().kind;
+                match kind {
+                    TokenKind::While => self.parse_while(Some(label)),
+                    TokenKind::For => self.parse_for(Some(label)),
+                    _ => unreachable!(),
+                }
             }
             _ => {
                 let expr = self.parse_expr()?;
@@ -197,14 +230,14 @@ impl Parser {
         Ok(Stmt::IfStmt { tok, cond, then, elif_conds, elif_bodies, else_block })
     }
 
-    fn parse_while(&mut self) -> Result<Stmt, ParseError> {
+    fn parse_while(&mut self, label: Option<String>) -> Result<Stmt, ParseError> {
         let tok = self.advance();
         let cond = self.parse_expr()?;
         let body = self.parse_block()?;
-        Ok(Stmt::WhileStmt { tok, cond, body })
+        Ok(Stmt::WhileStmt { tok, label, cond, body })
     }
 
-    fn parse_for(&mut self) -> Result<Stmt, ParseError> {
+    fn parse_for(&mut self, label: Option<String>) -> Result<Stmt, ParseError> {
         let tok = self.advance();
         // for-in: for v in iter / for i, v in iter
         if self.check(TokenKind::Ident) && self.peek_at(1).kind == TokenKind::In {
@@ -212,7 +245,7 @@ impl Parser {
             self.advance();
             let iter = self.parse_expr()?;
             let body = self.parse_block()?;
-            return Ok(Stmt::ForInStmt { tok, index_var: None, var, iter, body });
+            return Ok(Stmt::ForInStmt { tok, label, index_var: None, var, iter, body });
         }
         if self.check(TokenKind::Ident) && self.peek_at(1).kind == TokenKind::Comma
             && self.peek_at(2).kind == TokenKind::Ident && self.peek_at(3).kind == TokenKind::In
@@ -223,7 +256,7 @@ impl Parser {
             self.advance();
             let iter = self.parse_expr()?;
             let body = self.parse_block()?;
-            return Ok(Stmt::ForInStmt { tok, index_var: Some(idx), var, iter, body });
+            return Ok(Stmt::ForInStmt { tok, label, index_var: Some(idx), var, iter, body });
         }
         // C 风格 for (init; cond; post) 或 Go 风格 for cond { / for {
         let has_paren = self.match_token(TokenKind::LParen);
@@ -231,7 +264,7 @@ impl Parser {
         // Go 风格：for { ... }（无限循环，无括号且直接是 {）
         if !has_paren && self.check(TokenKind::LBrace) {
             let body = self.parse_block()?;
-            return Ok(Stmt::ForStmt { tok, init: None, cond: None, post: None, body });
+            return Ok(Stmt::ForStmt { tok, label, init: None, cond: None, post: None, body });
         }
 
         // 判断是 Go 风格 for cond { 还是 C 风格 for init; cond; post
@@ -257,7 +290,7 @@ impl Parser {
                 // Go 风格 for cond {
                 let cond = self.parse_expr()?;
                 let body = self.parse_block()?;
-                return Ok(Stmt::ForStmt { tok, init: None, cond: Some(cond), post: None, body });
+                return Ok(Stmt::ForStmt { tok, label, init: None, cond: Some(cond), post: None, body });
             }
             // 有分号：当作 C 风格 for init; cond; post（无括号形式）
         }
@@ -278,7 +311,7 @@ impl Parser {
         } else { None };
         if has_paren { self.expect(TokenKind::RParen, "')'")?; }
         let body = self.parse_block()?;
-        Ok(Stmt::ForStmt { tok, init, cond, post, body })
+        Ok(Stmt::ForStmt { tok, label, init, cond, post, body })
     }
 
     fn parse_simple_stmt(&mut self) -> Result<Stmt, ParseError> {

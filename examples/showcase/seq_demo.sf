@@ -1,0 +1,121 @@
+// Seq 序号生成器示例
+// 用法：sf examples/showcase/seq_demo.sf
+//
+// 演示：
+//   1. 新建独立序号生成器
+//   2. 全局共享 Seq
+//   3. getSeq 快捷函数
+//   4. 重置与指定初值
+//   5. 并发安全
+
+print("=== Seq 序号生成器示例 ===")
+print("")
+
+// ============ 1. 新建独立序号生成器 ============
+print("--- 1. 新建独立序号生成器 ---")
+
+seq1 := seqNew()
+print("seqNew() => " + typeName(seq1))
+
+// 自增并返回新值
+v1 := seqGet(seq1)
+print("seqGet(seq1) => " + toStr(v1) + " (第 1 次，应为 1)")
+
+v2 := seqGet(seq1)
+print("seqGet(seq1) => " + toStr(v2) + " (第 2 次，应为 2)")
+
+v3 := seqGet(seq1)
+print("seqGet(seq1) => " + toStr(v3) + " (第 3 次，应为 3)")
+
+// 查看当前值，不自增
+cur := seqGetCurrent(seq1)
+print("seqGetCurrent(seq1) => " + toStr(cur) + " (不自增，应为 3)")
+print("")
+
+// ============ 2. 全局共享 Seq ============
+print("--- 2. 全局共享 Seq ---")
+
+// seqNew("global") 返回全局共享 Seq 实例
+// 与 getSeq() 共享同一计数器
+g1 := seqNew("global")
+g2 := seqNew("global")
+print("seqNew(\"global\") => " + typeName(g1) + " (两个实例共享计数器)")
+
+a := seqGet(g1)
+b := getSeq()
+print("seqGet(g1)=" + toStr(a) + "，getSeq()=" + toStr(b) + " (两者递增共享)")
+
+// 验证 g1 和 g2 共享同一计数器
+c := seqGetCurrent(g2)
+print("seqGetCurrent(g2) => " + toStr(c) + " (g2 能看到 g1 的递增)")
+print("")
+
+// ============ 3. 重置与指定初值 ============
+print("--- 3. 重置与指定初值 ---")
+
+s := seqNew()
+seqGet(s)
+seqGet(s)
+seqGet(s)
+print("连续 3 次 seqGet 后: seqGetCurrent=" + toStr(seqGetCurrent(s)))
+
+seqReset(s)
+print("seqReset(s) 重置为 0: seqGetCurrent=" + toStr(seqGetCurrent(s)))
+
+seqReset(s, 100)
+print("seqReset(s, 100) 重置为 100: seqGetCurrent=" + toStr(seqGetCurrent(s)))
+
+next := seqGet(s)
+print("seqGet(s) => " + toStr(next) + " (从 100 递增到 101)")
+
+// 指定初值创建
+s2 := seqNew(50)
+print("seqNew(50) => seqGetCurrent=" + toStr(seqGetCurrent(s2)) + " (初值 50)")
+print("seqGet(s2) => " + toStr(seqGet(s2)) + " (递增到 51)")
+print("")
+
+// ============ 4. 独立实例互不影响 ============
+print("--- 4. 独立实例互不影响 ---")
+
+sa := seqNew()
+sb := seqNew()
+seqGet(sa)
+seqGet(sa)
+print("sa 调用 2 次 seqGet，sb 调用 0 次")
+print("seqGetCurrent(sa) = " + toStr(seqGetCurrent(sa)))
+print("seqGetCurrent(sb) = " + toStr(seqGetCurrent(sb)) + " (不受 sa 影响)")
+print("")
+
+// ============ 5. 类型识别 ============
+print("--- 5. 类型识别 ---")
+
+s3 := seqNew()
+print("typeName(seqNew()) => " + typeName(s3) + " (应为 seq)")
+print("")
+
+// ============ 6. 错误处理演示 ============
+print("--- 6. 错误处理演示 ---")
+
+try {
+    seqGet("not a seq")
+} catch (e) {
+    print("seqGet(\"not a seq\") 抛出: " + getErrStr(e))
+}
+
+try {
+    seqGet(undefined)
+} catch (e) {
+    print("seqGet(undefined) 抛出: " + getErrStr(e))
+}
+print("")
+
+// ============ 7. 简单使用场景 ============
+print("--- 7. 简单使用场景: 生成唯一 ID ---")
+
+idSeq := seqNew(1000)
+for i in range(0, 3) {
+    print("生成 ID: " + toStr(seqGet(idSeq)))
+}
+print("")
+
+print("=== Seq 示例完成 ===")

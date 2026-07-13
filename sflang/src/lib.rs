@@ -77,6 +77,7 @@ pub mod des;
 pub mod builtins_xxci;
 pub mod builtins_image;
 pub mod builtins_image_gen;
+pub mod builtins_seq;
 pub mod pinyin_data;
 pub mod api;
 

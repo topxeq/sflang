@@ -180,27 +180,32 @@ pub enum Stmt {
         else_block: Option<Block>,
     },
     /// WhileStmt while 循环。
-    WhileStmt { tok: Token, cond: Expr, body: Block },
+    /// label 为可选的循环标签（用于 break label/continue label）。
+    WhileStmt { tok: Token, label: Option<String>, cond: Expr, body: Block },
     /// ForStmt C 风格 for 循环。
+    /// label 为可选的循环标签。
     ForStmt {
         tok: Token,
+        label: Option<String>,
         init: Option<Box<Stmt>>,
         cond: Option<Expr>,
         post: Option<Box<Stmt>>,
         body: Block,
     },
     /// ForInStmt for-in 循环。
+    /// label 为可选的循环标签。
     ForInStmt {
         tok: Token,
+        label: Option<String>,
         index_var: Option<String>,
         var: String,
         iter: Expr,
         body: Block,
     },
-    /// BreakStmt break。
-    BreakStmt { tok: Token },
-    /// ContinueStmt continue。
-    ContinueStmt { tok: Token },
+    /// BreakStmt break。label 为可选的目标循环标签。
+    BreakStmt { tok: Token, label: Option<String> },
+    /// ContinueStmt continue。label 为可选的目标循环标签。
+    ContinueStmt { tok: Token, label: Option<String> },
     /// ReturnStmt return。
     ReturnStmt { tok: Token, value: Option<Expr> },
     /// TryStmt try/catch/finally。
@@ -234,8 +239,8 @@ impl Stmt {
             Stmt::WhileStmt { tok, .. } => tok,
             Stmt::ForStmt { tok, .. } => tok,
             Stmt::ForInStmt { tok, .. } => tok,
-            Stmt::BreakStmt { tok } => tok,
-            Stmt::ContinueStmt { tok } => tok,
+            Stmt::BreakStmt { tok, .. } => tok,
+            Stmt::ContinueStmt { tok, .. } => tok,
             Stmt::ReturnStmt { tok, .. } => tok,
             Stmt::TryStmt { tok, .. } => tok,
             Stmt::DeferStmt { tok, .. } => tok,

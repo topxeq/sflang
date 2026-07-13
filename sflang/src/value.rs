@@ -322,6 +322,9 @@ impl Value {
                 if n.downcast_ref::<std::sync::Arc<crate::builtins_image::FontState>>().is_some() {
                     return "font".to_string();
                 }
+                if n.downcast_ref::<std::sync::Arc<crate::builtins_seq::SeqState>>().is_some() {
+                    return "seq".to_string();
+                }
                 "native".to_string()
             }
             other => other.type_code().name().to_string(),

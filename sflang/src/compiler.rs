@@ -56,6 +56,8 @@ struct LoopCtx {
     break_jumps: Vec<usize>,
     /// continue_jumps 待回填的 continue 跳转偏移列表。
     continue_jumps: Vec<usize>,
+    /// label 循环标签（用于 break label/continue label）。
+    label: Option<String>,
 }
 
 /// Scope 一层作用域（函数作用域或块作用域）。
@@ -345,10 +347,10 @@ impl Compiler {
                     self.code.patch_u16(j, end);
                 }
             }
-            Stmt::WhileStmt { cond, body, tok } => {
+            Stmt::WhileStmt { cond, body, tok, label } => {
                 self.set_line(tok.line);
                 let start = self.code.insts.len();
-                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![] });
+                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone() });
                 self.compile_expr(cond)?;
                 let j_end = self.code.emit_u16(Opcode::JumpIfFalse, 0);
                 self.compile_block(body)?;
@@ -359,7 +361,7 @@ impl Compiler {
                 for j in lc.break_jumps { self.code.patch_u16(j, end as u16); }
                 for j in lc.continue_jumps { self.code.patch_u16(j, start as u16); }
             }
-            Stmt::ForStmt { init, cond, post, body, tok } => {
+            Stmt::ForStmt { init, cond, post, body, tok, label } => {
                 self.set_line(tok.line);
                 // for (init; cond; post) body
                 // 等价于：{ init; while cond { body; post } }
@@ -367,7 +369,7 @@ impl Compiler {
                     self.compile_stmt(s)?;
                 }
                 let start = self.code.insts.len();
-                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![] });
+                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone() });
                 if let Some(c) = cond {
                     self.compile_expr(c)?;
                     let j_end = self.code.emit_u16(Opcode::JumpIfFalse, 0);
@@ -400,7 +402,7 @@ impl Compiler {
                     for j in lc.continue_jumps { self.code.patch_u16(j, continue_target as u16); }
                 }
             }
-            Stmt::ForInStmt { index_var, var, iter, body, tok } => {
+            Stmt::ForInStmt { index_var, var, iter, body, tok, label } => {
                 self.set_line(tok.line);
                 // for-in 编译为（在块作用域内，所有变量都是 local）：
                 //   eval iter -> __iter
@@ -445,7 +447,7 @@ impl Compiler {
                 self.code.emit_u16(Opcode::StoreLocal, idx_slot as u16);
 
                 let start = self.code.insts.len();
-                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![] });
+                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone() });
 
                 // 压入 __idx（LT 的左操作数先压）
                 self.code.emit_u16(Opcode::LoadLocal, idx_slot as u16);
@@ -498,22 +500,58 @@ impl Compiler {
                 for j in lc.continue_jumps { self.code.patch_u16(j, continue_target as u16); }
                 self.pop_scope();
             }
-            Stmt::BreakStmt { tok } => {
+            Stmt::BreakStmt { tok, label } => {
                 self.set_line(tok.line);
-                if let Some(lc) = self.loops.last_mut() {
-                    let j = self.code.emit_u16(Opcode::Jump, 0);
-                    lc.break_jumps.push(j);
+                if let Some(lbl) = label {
+                    // break label：从内到外查找匹配标签的循环
+                    let mut found_idx = None;
+                    for (i, lc) in self.loops.iter().enumerate().rev() {
+                        if lc.label.as_deref() == Some(lbl.as_str()) {
+                            found_idx = Some(i);
+                            break;
+                        }
+                    }
+                    if let Some(idx) = found_idx {
+                        let j = self.code.emit_u16(Opcode::Jump, 0);
+                        self.loops[idx].break_jumps.push(j);
+                    } else {
+                        return Err(self.err(tok.line, &format!("break {} 找不到对应的标签循环", lbl)));
+                    }
                 } else {
-                    return Err(self.err(tok.line, "break 不在循环内"));
+                    // 普通 break：跳到最内层循环
+                    if let Some(lc) = self.loops.last_mut() {
+                        let j = self.code.emit_u16(Opcode::Jump, 0);
+                        lc.break_jumps.push(j);
+                    } else {
+                        return Err(self.err(tok.line, "break 不在循环内"));
+                    }
                 }
             }
-            Stmt::ContinueStmt { tok } => {
+            Stmt::ContinueStmt { tok, label } => {
                 self.set_line(tok.line);
-                if let Some(lc) = self.loops.last_mut() {
-                    let j = self.code.emit_u16(Opcode::Jump, 0);
-                    lc.continue_jumps.push(j);
+                if let Some(lbl) = label {
+                    // continue label：从内到外查找匹配标签的循环
+                    let mut found_idx = None;
+                    for (i, lc) in self.loops.iter().enumerate().rev() {
+                        if lc.label.as_deref() == Some(lbl.as_str()) {
+                            found_idx = Some(i);
+                            break;
+                        }
+                    }
+                    if let Some(idx) = found_idx {
+                        let j = self.code.emit_u16(Opcode::Jump, 0);
+                        self.loops[idx].continue_jumps.push(j);
+                    } else {
+                        return Err(self.err(tok.line, &format!("continue {} 找不到对应的标签循环", lbl)));
+                    }
                 } else {
-                    return Err(self.err(tok.line, "continue 不在循环内"));
+                    // 普通 continue：跳到最内层循环
+                    if let Some(lc) = self.loops.last_mut() {
+                        let j = self.code.emit_u16(Opcode::Jump, 0);
+                        lc.continue_jumps.push(j);
+                    } else {
+                        return Err(self.err(tok.line, "continue 不在循环内"));
+                    }
                 }
             }
             Stmt::ReturnStmt { value, tok } => {

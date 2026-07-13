@@ -1,0 +1,101 @@
+// 标签跳转 break label / continue label 示例
+// 用法：sf examples/showcase/label_break_demo.sf
+//
+// 演示：
+//   1. break label 跳出外层循环
+//   2. continue label 跳到外层循环下次迭代
+//   3. 三层嵌套中跳到中间层
+//   4. while 循环的标签跳转
+//   5. C 风格 for 的标签跳转
+//   6. 未定义标签会报错
+
+print("=== 标签跳转 break label / continue label 示例 ===")
+print("")
+
+// ============ 1. break label 跳出外层 ============
+print("--- 1. break label 跳出外层循环 ---")
+
+cnt := 0
+outer: for i in range(0, 5) {
+    for j in range(0, 5) {
+        if i == 2 && j == 2 { break outer }
+        cnt = cnt + 1
+    }
+}
+print("找到 (2,2) 时停止，cnt = " + toStr(cnt))
+print("")
+
+// ============ 2. continue label 跳到外层下次迭代 ============
+print("--- 2. continue label 跳到外层循环下次迭代 ---")
+
+log := []
+outer: for i in range(0, 3) {
+    for j in range(0, 3) {
+        if j == 1 { continue outer }
+        push(log, i * 10 + j)
+    }
+}
+print("j==1 时跳到外层下次迭代，log = " + toStr(log))
+print("")
+
+// ============ 3. 三层嵌套跳到中间层 ============
+print("--- 3. 三层嵌套 break 到中间层 ---")
+
+cnt := 0
+for i in range(0, 2) {
+    mid: for j in range(0, 3) {
+        for k in range(0, 3) {
+            if k == 1 { break mid }
+            cnt = cnt + 1
+        }
+    }
+}
+print("k==1 时跳出 j 循环（mid），cnt = " + toStr(cnt))
+print("")
+
+// ============ 4. while 循环标签 ============
+print("--- 4. while 循环标签跳转 ---")
+
+i := 0
+found := -1
+outer: while i < 10 {
+    j := 0
+    while j < 10 {
+        if i * j == 12 {
+            found = i * 10 + j
+            break outer
+        }
+        j = j + 1
+    }
+    i = i + 1
+}
+print("找到 i*j==12 的第一个点 found = " + toStr(found))
+print("")
+
+// ============ 5. C 风格 for 标签 ============
+print("--- 5. C 风格 for 标签跳转 ---")
+
+cnt := 0
+outer: for x := 0; x < 3; x = x + 1 {
+    for y := 0; y < 3; y = y + 1 {
+        if x == 1 && y == 1 { break outer }
+        cnt = cnt + 1
+    }
+}
+print("x==1&&y==1 时跳出外层，cnt = " + toStr(cnt))
+print("")
+
+// ============ 6. 无标签 break 仍只跳内层 ============
+print("--- 6. 无标签 break 仍只跳最内层 ---")
+
+cnt := 0
+for i in range(0, 3) {
+    for j in range(0, 3) {
+        if j == 1 { break }
+        cnt = cnt + 1
+    }
+}
+print("无标签 break 每次 j==1 跳出内层，cnt = " + toStr(cnt))
+print("")
+
+print("=== 示例结束 ===")
