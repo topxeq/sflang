@@ -10,7 +10,10 @@
 //!   - keep-alive 连接复用
 //!
 //! 不实现（后续增强）：
-//!   - HTTP/2、TLS、WebSocket、压缩、管道化
+//!   - HTTP/2、压缩、管道化
+//!
+//! 注：TLS/HTTPS 与 WebSocket 已在上层 builtins_http.rs 中通过 rustls / tungstenite 实现，
+//! 本模块仅负责纯文本 HTTP/1.1 解析与响应写入（供 HTTP 服务器与上层 TLS 封装复用）。
 
 use std::io::{self, BufRead, BufReader};
 use std::net::{TcpListener, TcpStream};

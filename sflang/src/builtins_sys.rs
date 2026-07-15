@@ -27,37 +27,376 @@
 use std::sync::Arc;
 
 use crate::builtins_helpers as bh;
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 use crate::vm::VM;
 
+// ---- 系统/环境/路径函数文档 ----
+
+static DOC_GET_ENV: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "getEnv(name) -> string|undefined",
+    summary: "读取环境变量。不存在（或未设置）返回 undefined。",
+    params: &[("name", "环境变量名（区分大小写）")],
+    returns: "string 变量值；未设置返回 undefined",
+    examples: &[
+        "getEnv(\"PATH\")        → \"/usr/bin:...\"",
+        "var home = getEnv(\"HOME\") ?? \"/tmp\"",
+    ],
+    errors: &[
+        "环境变量名在 Unix 区分大小写；未设置返回 undefined（非 error）",
+    ],
+};
+
+static DOC_SET_ENV: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "setEnv(name, val) -> undefined",
+    summary: "设置环境变量（仅当前进程及其子进程可见，不持久化到系统）。",
+    params: &[
+        ("name", "环境变量名"),
+        ("val", "变量值（string）"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "setEnv(\"MY_VAR\", \"hello\")",
+        "systemCmd(\"echo $MY_VAR\")  // 子进程可见",
+    ],
+    errors: &[
+        "参数顺序：name 在前，val 在后",
+        "仅影响当前进程；退出后不保留（不写入注册表/shell 配置）",
+    ],
+};
+
+static DOC_OS_NAME: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "osName() -> string",
+    summary: "返回操作系统名：windows / linux / macos（未知为 unknown）。",
+    params: &[],
+    returns: "string 编译期确定的 OS 名称",
+    examples: &[
+        "osName()   → \"linux\"",
+        "if (osName() == \"windows\") { ... }",
+    ],
+    errors: &[],
+};
+
+static DOC_OS_ARCH: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "osArch() -> string",
+    summary: "返回 CPU 架构名：amd64 / arm64 / 386（其他回退到 std::env::consts::ARCH）。",
+    params: &[],
+    returns: "string 编译期确定的架构名称",
+    examples: &[
+        "osArch()   → \"amd64\"",
+    ],
+    errors: &[],
+};
+
+static DOC_GET_CUR_DIR: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "getCurDir() -> string",
+    summary: "返回当前工作目录的绝对路径。",
+    params: &[],
+    returns: "string 当前工作目录",
+    examples: &[
+        "getCurDir()   → \"/home/user/project\"",
+        "println(getCurDir())",
+    ],
+    errors: &[
+        "目录被删除或权限不足返回 error",
+    ],
+};
+
+static DOC_CHANGE_DIR: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "changeDir(path) -> undefined",
+    summary: "改变当前工作目录（影响后续相对路径解析）。等同于 shell 的 cd。",
+    params: &[("path", "目标目录路径")],
+    returns: "undefined",
+    examples: &[
+        "changeDir(\"/tmp\")",
+        "changeDir(\"..\")",
+    ],
+    errors: &[
+        "目录不存在或权限不足返回 error",
+        "影响整个进程的相对路径基准；子线程也会受影响",
+    ],
+};
+
+static DOC_JOIN_PATH: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "joinPath(seg1, seg2, ...) -> string",
+    summary: "用平台路径分隔符拼接多个路径段，自动处理冗余分隔符。",
+    params: &[("segN", "路径段（可变参数，每段为 string）")],
+    returns: "string 拼接后的路径",
+    examples: &[
+        "joinPath(\"a\", \"b\", \"c.txt\")   → \"a/b/c.txt\"",
+        "joinPath(\"/usr\", \"local/bin\")  → \"/usr/local/bin\"",
+    ],
+    errors: &[
+        "所有参数须为 string，非 string 会报错",
+    ],
+};
+
+static DOC_MAKE_DIR: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "makeDir(path) -> undefined",
+    summary: "创建单层目录（父目录须存在；目录已存在则报错）。递归建目录请用 makeDirAll。",
+    params: &[("path", "要创建的目录路径")],
+    returns: "undefined",
+    examples: &[
+        "makeDir(\"newdir\")",
+        "makeDir(\"a/b/c\")  // a/b 须已存在，否则报错",
+    ],
+    errors: &[
+        "目录已存在、父目录缺失、权限不足均返回 error",
+        "递归创建多层请用 makeDirAll",
+    ],
+};
+
+static DOC_LIST_DIR: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "listDir(path) -> array<string>",
+    summary: "列出目录下的条目名（不递归，仅返回文件名不含路径前缀）。",
+    params: &[("path", "目录路径")],
+    returns: "array<string> 条目名数组；目录不存在或非目录返回 error",
+    examples: &[
+        "listDir(\".\")   → [\"a.txt\", \"sub\", \"b.rs\"]",
+        "for (name in listDir(dir)) { ... }",
+    ],
+    errors: &[
+        "路径不存在或不是目录返回 error",
+        "返回的是名称（不含父路径），需完整路径请用 joinPath 拼接",
+    ],
+};
+
+static DOC_SYSTEM_CMD: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "systemCmd(cmd[, arg1, arg2, ...]) -> string",
+    summary: "执行 shell 命令（Windows 用 cmd /C，Unix 用 sh -c），返回 stdout 字符串。",
+    params: &[
+        ("cmd", "命令字符串（如 \"ls\" 或 \"dir\"）"),
+        ("argN", "可选追加参数（string，附加到命令后）"),
+    ],
+    returns: "string 命令的 stdout 输出；命令失败（含 stderr）返回 error",
+    examples: &[
+        "systemCmd(\"echo hello\")   → \"hello\\n\"",
+        "systemCmd(\"ping\", \"127.0.0.1\")",
+        "var out = systemCmd(\"git status\")",
+    ],
+    errors: &[
+        "命令不存在或权限不足返回 error",
+        "退出码非 0 且有 stderr 时合并拼成 error 信息",
+        "存在命令注入风险，切勿将不可信输入直接拼接为 cmd",
+    ],
+};
+
+static DOC_GET_INPUT: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "getInput([prompt]) -> string|undefined",
+    summary: "从标准输入读一行（去掉末尾换行）。可选 prompt 作为提示先打印到 stdout。",
+    params: &[("prompt", "可选提示字符串，先打印（不换行）")],
+    returns: "string 读到的行；EOF（Ctrl+D / Ctrl+Z）返回 undefined",
+    examples: &[
+        "name := getInput(\"请输入姓名: \")",
+        "line := getInput()",
+    ],
+    errors: &[
+        "stdin 被关闭或重定向导致读取失败返回 error",
+        "EOF 返回 undefined（须判空），不会报错",
+    ],
+};
+
+static DOC_EXIT: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "exit([code]) -> !",
+    summary: "立即退出进程。可选 code 为退出码（int，默认 0）。",
+    params: &[("code", "可选退出码（int，默认 0）")],
+    returns: "不返回（进程直接终止）",
+    examples: &[
+        "exit(1)",
+        "exit()   // 等同 exit(0)",
+    ],
+    errors: &[
+        "不会触发 defer；调用后进程立即终止",
+    ],
+};
+
+static DOC_LOOK_PATH: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "lookPath(name) -> string|undefined",
+    summary: "在 PATH 环境变量中查找可执行文件路径（Windows 自动尝试 PATHEXT 中的扩展名）。",
+    params: &[("name", "可执行文件名（如 \"go\"、\"python\"）或含分隔符的路径")],
+    returns: "string 找到的完整路径；未找到返回 undefined",
+    examples: &[
+        "lookPath(\"go\")      → \"/usr/local/go/bin/go\"",
+        "lookPath(\"python\") → undefined（未安装时）",
+        "var p = lookPath(\"git\")",
+    ],
+    errors: &[
+        "未找到返回 undefined（非 error）",
+        "name 含 / 或 \\ 时直接检查该路径是否为文件",
+    ],
+};
+
+static DOC_GETTEMPDIR: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "getTempDir() -> string",
+    summary: "返回系统临时目录。",
+    params: &[],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_GETHOMEDIR: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "getHomeDir() -> string",
+    summary: "返回用户主目录。",
+    params: &[],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_DIRNAME: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "dirName(path) -> string",
+    summary: "返回路径的目录部分。",
+    params: &[("path", "文件路径")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_BASENAME: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "baseName(path) -> string",
+    summary: "返回路径的文件名部分。",
+    params: &[("path", "文件路径")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_FILEEXT: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "fileExt(path) -> string",
+    summary: "返回文件扩展名（含点）。",
+    params: &[("path", "文件路径")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_ABSPATH: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "absPath(path) -> string",
+    summary: "返回绝对路径。",
+    params: &[("path", "相对或绝对路径")],
+    returns: "string 绝对路径",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_MAKEDIRALL: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "makeDirAll(path) -> error|undefined",
+    summary: "递归创建目录。",
+    params: &[("path", "目录路径")],
+    returns: "undefined；失败返回 error",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_REMOVEDIR: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "removeDir(path) -> error|undefined",
+    summary: "删除目录。",
+    params: &[("path", "目录路径")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_RENAME: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "rename(old, new) -> error|undefined",
+    summary: "重命名/移动文件或目录。",
+    params: &[("old", "旧路径"), ("new", "新路径")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_GETOSARGS: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "getOsArgs() -> array<string>",
+    summary: "返回命令行参数（含程序名）。",
+    params: &[],
+    returns: "array<string>",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_GETCHAR: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "getChar() -> string",
+    summary: "读取单个按键（无需回车）。",
+    params: &[],
+    returns: "string 单字符",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_GETINPUTPASSWORD: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "getInputPassword([prompt]) -> string",
+    summary: "读取密码输入（不回显）。",
+    params: &[("prompt", "可选。提示信息")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_SYSTEMCMDDETACHED: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "systemCmdDetached(cmd) -> undefined",
+    summary: "后台执行命令（不等待）。",
+    params: &[("cmd", "命令字符串")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
 /// register 注册系统/路径内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("getEnv", bi_get_env);
-    vm.register_builtin("setEnv", bi_set_env);
-    vm.register_builtin("osName", bi_os_name);
-    vm.register_builtin("osArch", bi_os_arch);
-    vm.register_builtin("getCurDir", bi_get_cur_dir);
-    vm.register_builtin("getTempDir", bi_get_temp_dir);
-    vm.register_builtin("getHomeDir", bi_get_home_dir);
-    vm.register_builtin("joinPath", bi_join_path);
-    vm.register_builtin("dirName", bi_dir_name);
-    vm.register_builtin("baseName", bi_base_name);
-    vm.register_builtin("fileExt", bi_file_ext);
-    vm.register_builtin("absPath", bi_abs_path);
-    vm.register_builtin("makeDir", bi_make_dir);
-    vm.register_builtin("makeDirAll", bi_make_dir_all);
-    vm.register_builtin("listDir", bi_list_dir);
-    vm.register_builtin("removeDir", bi_remove_dir);
-    vm.register_builtin("rename", bi_rename);
-    vm.register_builtin("systemCmd", bi_system_cmd);
-    vm.register_builtin("exit", bi_exit);
-    vm.register_builtin("getOsArgs", bi_get_os_args);
-    vm.register_builtin("getInput", bi_get_input);
-    vm.register_builtin("getChar", bi_get_char);
-    vm.register_builtin("changeDir", bi_change_dir);
-    vm.register_builtin("lookPath", bi_look_path);
-    vm.register_builtin("getInputPassword", bi_get_input_password);
-    vm.register_builtin("systemCmdDetached", bi_system_cmd_detached);
+    vm.register_builtin_doc("getEnv", bi_get_env, &DOC_GET_ENV);
+    vm.register_builtin_doc("setEnv", bi_set_env, &DOC_SET_ENV);
+    vm.register_builtin_doc("osName", bi_os_name, &DOC_OS_NAME);
+    vm.register_builtin_doc("osArch", bi_os_arch, &DOC_OS_ARCH);
+    vm.register_builtin_doc("getCurDir", bi_get_cur_dir, &DOC_GET_CUR_DIR);
+    vm.register_builtin_doc("getTempDir", bi_get_temp_dir, &DOC_GETTEMPDIR);
+    vm.register_builtin_doc("getHomeDir", bi_get_home_dir, &DOC_GETHOMEDIR);
+    vm.register_builtin_doc("joinPath", bi_join_path, &DOC_JOIN_PATH);
+    vm.register_builtin_doc("dirName", bi_dir_name, &DOC_DIRNAME);
+    vm.register_builtin_doc("baseName", bi_base_name, &DOC_BASENAME);
+    vm.register_builtin_doc("fileExt", bi_file_ext, &DOC_FILEEXT);
+    vm.register_builtin_doc("absPath", bi_abs_path, &DOC_ABSPATH);
+    vm.register_builtin_doc("makeDir", bi_make_dir, &DOC_MAKE_DIR);
+    vm.register_builtin_doc("makeDirAll", bi_make_dir_all, &DOC_MAKEDIRALL);
+    vm.register_builtin_doc("listDir", bi_list_dir, &DOC_LIST_DIR);
+    vm.register_builtin_doc("removeDir", bi_remove_dir, &DOC_REMOVEDIR);
+    vm.register_builtin_doc("rename", bi_rename, &DOC_RENAME);
+    vm.register_builtin_doc("systemCmd", bi_system_cmd, &DOC_SYSTEM_CMD);
+    vm.register_builtin_doc("exit", bi_exit, &DOC_EXIT);
+    vm.register_builtin_doc("getOsArgs", bi_get_os_args, &DOC_GETOSARGS);
+    vm.register_builtin_doc("getInput", bi_get_input, &DOC_GET_INPUT);
+    vm.register_builtin_doc("getChar", bi_get_char, &DOC_GETCHAR);
+    vm.register_builtin_doc("changeDir", bi_change_dir, &DOC_CHANGE_DIR);
+    vm.register_builtin_doc("lookPath", bi_look_path, &DOC_LOOK_PATH);
+    vm.register_builtin_doc("getInputPassword", bi_get_input_password, &DOC_GETINPUTPASSWORD);
+    vm.register_builtin_doc("systemCmdDetached", bi_system_cmd_detached, &DOC_SYSTEMCMDDETACHED);
 }
 
 /// bi_get_env 读取环境变量，无则返回 undefined。

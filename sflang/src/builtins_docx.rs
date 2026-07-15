@@ -12,13 +12,80 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use crate::builtins_helpers as bh;
+use crate::function::BuiltinDoc;
 use crate::value::Value;
+
+// ---- docx 函数文档 ----
+
+static DOC_DOCX_TO_STRS: BuiltinDoc = BuiltinDoc {
+    category: "docx",
+    signature: "docxToStrs(path_or_bytes) -> array<string>",
+    summary: "提取 docx 文档的段落文本为字符串数组（每个 <w:p> 段落一项）。",
+    params: &[
+        ("path_or_bytes", "docx 文件路径（string）或文件字节（bytes）"),
+    ],
+    returns: "array<string>：段落文本数组（按文档顺序，空段落为空串）；失败返回 error",
+    examples: &[
+        "var paras = docxToStrs(\"./report.docx\")           // → [\"标题\", \"第一段内容\", \"\"]",
+        "var paras = docxToStrs(fileReadBytes(\"./report.docx\"))  // 从字节读取",
+        "for (var p in paras) { if (p != \"\") println(p) }",
+    ],
+    errors: &[
+        "读取文件失败：路径不存在（仅 path 模式）",
+        "docx 解压失败：不是有效的 docx 文件（docx 本质是 ZIP）",
+        "未找到 word/document.xml：不是标准的 .docx 文件",
+        "XML 实体（&amp; &lt; 等）自动解码为原始字符",
+    ],
+};
+
+static DOC_DOCX_REPLACE: BuiltinDoc = BuiltinDoc {
+    category: "docx",
+    signature: "docxReplace(bytes, [old1, new1, old2, new2, ...]) -> bytes",
+    summary: "批量替换 docx 中的文本（模板填充），返回新的 docx bytes。",
+    params: &[
+        ("bytes", "原始 docx 文件字节（bytes）"),
+        ("pairs", "扁平数组：[旧值1, 新值1, 旧值2, 新值2, ...]（两两配对）"),
+    ],
+    returns: "bytes：替换后的新 docx 字节；失败返回 error",
+    examples: &[
+        "var tpl = fileReadBytes(\"./template.docx\")",
+        "var out = docxReplace(tpl, [\"{name}\", \"张三\", \"{date}\", \"2024-01-01\"])",
+        "fileWriteBytes(\"./filled.docx\", out)",
+    ],
+    errors: &[
+        "第一个参数必须为 bytes（不是路径）",
+        "第二个参数为数组，两两配对（奇数个时最后一个被忽略）",
+        "替换在 <w:t> 文本节点内进行，自动处理 XML 实体编码",
+        "docx 解压 / 压缩失败返回 error",
+    ],
+};
+
+static DOC_DOCX_GET_PLACEHOLDERS: BuiltinDoc = BuiltinDoc {
+    category: "docx",
+    signature: "docxGetPlaceholders(path_or_bytes) -> array<string>",
+    summary: "提取 docx 中花括号包裹的占位符（如 {name}、{{name}}，去重）。",
+    params: &[
+        ("path_or_bytes", "docx 文件路径（string）或文件字节（bytes）"),
+    ],
+    returns: "array<string>：占位符列表（去重，保留 {name} 形式）；失败返回 error",
+    examples: &[
+        "var phs = docxGetPlaceholders(\"./template.docx\")  // → [\"{name}\", \"{date}\", \"{company}\"]",
+        "var phs = docxGetPlaceholders(fileReadBytes(\"./tpl.docx\"))",
+        "for (var ph in phs) { println(ph) }  // 遍历所有占位符",
+    ],
+    errors: &[
+        "占位符格式：花括号 {xxx} 包裹的文本（含 {{xxx}}）",
+        "自动去重；过滤含 < > 的花括号文本（避免 XML 残留误判）",
+        "读取文件 / docx 解压失败返回 error",
+        "常与 docxReplace 配合：先提取占位符，再批量替换填充",
+    ],
+};
 
 /// register 注册所有 docx 内置函数。
 pub fn register(vm: &mut crate::vm::VM) {
-    vm.register_builtin("docxToStrs", bi_docx_to_strs);
-    vm.register_builtin("docxReplace", bi_docx_replace);
-    vm.register_builtin("docxGetPlaceholders", bi_docx_get_placeholders);
+    vm.register_builtin_doc("docxToStrs", bi_docx_to_strs, &DOC_DOCX_TO_STRS);
+    vm.register_builtin_doc("docxReplace", bi_docx_replace, &DOC_DOCX_REPLACE);
+    vm.register_builtin_doc("docxGetPlaceholders", bi_docx_get_placeholders, &DOC_DOCX_GET_PLACEHOLDERS);
 }
 
 // ---- 辅助函数 ----

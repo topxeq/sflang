@@ -18,13 +18,54 @@ use crate::builtins_helpers as bh;
 use crate::object_map::new_map;
 use crate::value::{Value, error_value};
 use crate::vm::VM;
+use crate::function::BuiltinDoc;
+
+static DOC_GETCFGSTR: BuiltinDoc = BuiltinDoc {
+    category: "config",
+    signature: "getCfgStr(key[, default]) -> string",
+    summary: "读取配置项（持久化键值存储）。",
+    params: &[("key", "配置键"), ("default", "可选。默认值")],
+    returns: "string 配置值；不存在返回 default 或 undefined",
+    examples: &["var v = getCfgStr(\"theme\")"],
+    errors: &[],
+};
+
+static DOC_SETCFGSTR: BuiltinDoc = BuiltinDoc {
+    category: "config",
+    signature: "setCfgStr(key, val) -> undefined",
+    summary: "写入配置项。",
+    params: &[("key", "配置键"), ("val", "配置值")],
+    returns: "undefined",
+    examples: &["setCfgStr(\"theme\", \"dark\")"],
+    errors: &[],
+};
+
+static DOC_REMOVECFGSTR: BuiltinDoc = BuiltinDoc {
+    category: "config",
+    signature: "removeCfgStr(key) -> undefined",
+    summary: "删除配置项。",
+    params: &[("key", "配置键")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_GETCFGSTRALL: BuiltinDoc = BuiltinDoc {
+    category: "config",
+    signature: "getCfgStrAll() -> object",
+    summary: "读取所有配置项。",
+    params: &[],
+    returns: "object 键值映射",
+    examples: &[],
+    errors: &[],
+};
 
 /// register 注册配置内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("getCfgStr", bi_get_cfg_str);
-    vm.register_builtin("setCfgStr", bi_set_cfg_str);
-    vm.register_builtin("removeCfgStr", bi_remove_cfg_str);
-    vm.register_builtin("getCfgStrAll", bi_get_cfg_all);
+    vm.register_builtin_doc("getCfgStr", bi_get_cfg_str, &DOC_GETCFGSTR);
+    vm.register_builtin_doc("setCfgStr", bi_set_cfg_str, &DOC_SETCFGSTR);
+    vm.register_builtin_doc("removeCfgStr", bi_remove_cfg_str, &DOC_REMOVECFGSTR);
+    vm.register_builtin_doc("getCfgStrAll", bi_get_cfg_all, &DOC_GETCFGSTRALL);
 }
 
 /// CONFIG 全局配置缓存（首次访问时从磁盘加载）。

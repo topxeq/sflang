@@ -23,24 +23,200 @@
 use std::sync::{Arc, Mutex};
 
 use crate::builtins_helpers as bh;
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 use crate::vm::VM;
 
+// ---- 字节序列函数文档 ----
+
+static DOC_BYTE_ARRAY: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "byteArray(n, fill?) -> byteArray",
+    summary: "创建 n 字节的可变 byteArray，默认全填 0 或指定填充值。",
+    params: &[
+        ("n", "字节数（int，非负）"),
+        ("fill", "可选 int 0-255：填充值，默认 0"),
+    ],
+    returns: "byteArray：长度为 n 的可变字节序列",
+    examples: &[
+        "byteArray(4)         → [0x00, 0x00, 0x00, 0x00]",
+        "byteArray(3, 255)    → [0xFF, 0xFF, 0xFF]",
+    ],
+    errors: &["n 不能为负；fill 须在 0-255 范围内"],
+};
+
+static DOC_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "bytes(v) -> bytes",
+    summary: "转为不可变 bytes：string→UTF-8 字节、byteArray→只读快照、array<int>→字节。",
+    params: &[("v", "string（UTF-8 字节）/ byteArray（拷贝快照）/ array<int>（每个元素 0-255）")],
+    returns: "bytes：不可变字节序列",
+    examples: &[
+        "bytes(\"AB\")           → [0x41, 0x42]",
+        "bytes([65, 66])       → [0x41, 0x42]",
+    ],
+    errors: &[
+        "array<int> 模式下每个元素须为 0-255 的 int",
+        "参数应为 string/byteArray/array<int>，其他类型报错",
+    ],
+};
+
+static DOC_BYTE_ARRAY_FROM_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "byteArrayFromBytes(v) -> byteArray",
+    summary: "从 bytes 创建可变 byteArray（拷贝）；也接受 byteArray/string。",
+    params: &[("v", "bytes / byteArray / string（UTF-8 字节）")],
+    returns: "byteArray：内容相同的可变副本",
+    examples: &[
+        "byteArrayFromBytes(bytes(\"AB\"))   → [0x41, 0x42]",
+        "byteArrayFromBytes(\"AB\")          → [0x41, 0x42]",
+    ],
+    errors: &["参数应为 bytes/byteArray/string"],
+};
+
+static DOC_BYTE_ARRAY_FROM_ARRAY: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "byteArrayFromArray(arr) -> byteArray",
+    summary: "从 array<int> 创建可变 byteArray（每个元素作为一字节）。",
+    params: &[("arr", "array<int>：每个元素须为 0-255 的 int")],
+    returns: "byteArray：元素值组成的可变字节序列",
+    examples: &[
+        "byteArrayFromArray([65, 66, 67])  → [0x41, 0x42, 0x43]",
+    ],
+    errors: &["数组元素须为 0-255 的 int，越界报错并附元素索引"],
+};
+
+static DOC_ARRAY_FROM_BYTE_ARRAY: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "arrayFromByteArray(b) -> array<int>",
+    summary: "将 byteArray/bytes 转为 array<int>（每字节一个 int 0-255）。",
+    params: &[("b", "byteArray 或 bytes")],
+    returns: "array<int>：每字节一个 int（0-255）",
+    examples: &[
+        "arrayFromByteArray(bytes(\"AB\"))  → [65, 66]",
+    ],
+    errors: &["参数应为 byteArray 或 bytes"],
+};
+
+static DOC_STR_FROM_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "strFromBytes(b, encoding?) -> string",
+    summary: "将字节序列按指定编码解码为字符串（默认 utf8）。",
+    params: &[
+        ("b", "bytes 或 byteArray"),
+        ("encoding", "可选 \"utf8\"(默认) / \"latin1\" / \"hex\""),
+    ],
+    returns: "string：解码后的字符串",
+    examples: &[
+        "strFromBytes(bytes(\"你好\"))          → \"你好\"",
+        "strFromBytes(bytes([0x41,0x42]), \"latin1\") → \"AB\"",
+        "strFromBytes(bytes([0x41]), \"hex\")   → \"41\"",
+    ],
+    errors: &[
+        "utf8 非法字节会被替换为 U+FFFD（不报错）",
+        "encoding 仅支持 utf8/latin1/hex",
+    ],
+};
+
+static DOC_COPY: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "copy(dst, src, dstStart?) -> int",
+    summary: "批量复制字节到 byteArray（类似 Go copy），返回实际复制字节数。",
+    params: &[
+        ("dst", "目标 byteArray（可变，原地修改）"),
+        ("src", "源 bytes/byteArray/string"),
+        ("dstStart", "可选 int：dst 写入起始位置，默认 0"),
+    ],
+    returns: "int：实际复制字节数 = min(len(src), len(dst) - dstStart)",
+    examples: &[
+        "dst := byteArray(4); copy(dst, bytes(\"AB\"))   → 2（dst=[0x41,0x42,0,0]）",
+        "dst := byteArray(4); copy(dst, bytes(\"AB\"), 2) → 2（dst=[0,0,0x41,0x42]）",
+    ],
+    errors: &[
+        "dst 必须是 byteArray（参数顺序：dst 在前、src 在后）",
+        "dstStart 不能为负，且不能超过 dst 长度",
+    ],
+};
+
+static DOC_BYTES_HEX: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "bytesHex(b) -> string",
+    summary: "将 bytes/byteArray 转为小写十六进制字符串。",
+    params: &[("b", "bytes 或 byteArray")],
+    returns: "string：每字节两位小写十六进制",
+    examples: &[
+        "bytesHex(bytes(\"AB\"))  → \"4142\"",
+        "bytesHex(bytes([255]))  → \"ff\"",
+    ],
+    errors: &["参数应为 bytes 或 byteArray"],
+};
+
+static DOC_BYTES_FROM_HEX: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "bytesFromHex(hex) -> bytes",
+    summary: "将十六进制字符串转为 bytes（自动忽略空格/冒号/横线等分隔符）。",
+    params: &[("hex", "十六进制字符串；有效字符需成对（偶数个）")],
+    returns: "bytes：解码后的字节序列",
+    examples: &[
+        "bytesFromHex(\"4142\")       → bytes([0x41, 0x42])",
+        "bytesFromHex(\"41:42\")      → bytes([0x41, 0x42])（忽略冒号）",
+    ],
+    errors: &["有效十六进制字符数必须为偶数"],
+};
+
+static DOC_HEX_ENCODE: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "hexEncode(v) -> string",
+    summary: "将 string/bytes/byteArray 编码为小写十六进制字符串。",
+    params: &[("v", "string（UTF-8 字节）/ bytes / byteArray")],
+    returns: "string：每字节两位小写十六进制",
+    examples: &[
+        "hexEncode(\"AB\")   → \"4142\"",
+        "hexEncode([0xFF])  → \"ff\"",
+    ],
+    errors: &["参数应为 string/bytes/byteArray"],
+};
+
+static DOC_HEX_DECODE: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "hexDecode(hex) -> bytes",
+    summary: "十六进制字符串解码为 bytes（hexDecode 是 bytesFromHex 的语义化别名）。",
+    params: &[("hex", "十六进制字符串；有效字符需成对（偶数个）")],
+    returns: "bytes：解码后的字节序列",
+    examples: &[
+        "hexDecode(\"4142\")  → bytes([0x41, 0x42])",
+    ],
+    errors: &["有效十六进制字符数必须为偶数"],
+};
+
+static DOC_HEX_TO_STR: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "hexToStr(hex) -> string",
+    summary: "将十六进制字符串解码为 UTF-8 字符串（先解码字节再按 UTF-8 解释）。",
+    params: &[("hex", "十六进制字符串，前后空白会被忽略")],
+    returns: "string：解码后的字符串（非法 UTF-8 字节替换为 U+FFFD）",
+    examples: &[
+        "hexToStr(\"4142\")      → \"AB\"",
+        "hexToStr(\"e4bda0e5a5bd\") → \"你好\"",
+    ],
+    errors: &["hex 字符串长度必须为偶数；非法 hex 字符报错"],
+};
+
 /// register 注册所有字节序列内置函数到 VM。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("byteArray", bi_byte_array);
-    vm.register_builtin("bytes", bi_bytes);
-    vm.register_builtin("byteArrayFromBytes", bi_byte_array_from_bytes);
-    vm.register_builtin("byteArrayFromArray", bi_byte_array_from_array);
-    vm.register_builtin("arrayFromByteArray", bi_array_from_byte_array);
-    vm.register_builtin("strFromBytes", bi_str_from_bytes);
-    vm.register_builtin("copy", bi_copy);
-    vm.register_builtin("bytesHex", bi_bytes_hex);
-    vm.register_builtin("bytesFromHex", bi_bytes_from_hex);
+    vm.register_builtin_doc("byteArray", bi_byte_array, &DOC_BYTE_ARRAY);
+    vm.register_builtin_doc("bytes", bi_bytes, &DOC_BYTES);
+    vm.register_builtin_doc("byteArrayFromBytes", bi_byte_array_from_bytes, &DOC_BYTE_ARRAY_FROM_BYTES);
+    vm.register_builtin_doc("byteArrayFromArray", bi_byte_array_from_array, &DOC_BYTE_ARRAY_FROM_ARRAY);
+    vm.register_builtin_doc("arrayFromByteArray", bi_array_from_byte_array, &DOC_ARRAY_FROM_BYTE_ARRAY);
+    vm.register_builtin_doc("strFromBytes", bi_str_from_bytes, &DOC_STR_FROM_BYTES);
+    vm.register_builtin_doc("copy", bi_copy, &DOC_COPY);
+    vm.register_builtin_doc("bytesHex", bi_bytes_hex, &DOC_BYTES_HEX);
+    vm.register_builtin_doc("bytesFromHex", bi_bytes_from_hex, &DOC_BYTES_FROM_HEX);
     // hex 别名（对标 Charlang，接受 string/bytes/byteArray）
-    vm.register_builtin("hexEncode", bi_hex_encode);
-    vm.register_builtin("hexDecode", bi_bytes_from_hex);
-    vm.register_builtin("hexToStr", bi_hex_to_str);
+    vm.register_builtin_doc("hexEncode", bi_hex_encode, &DOC_HEX_ENCODE);
+    vm.register_builtin_doc("hexDecode", bi_bytes_from_hex, &DOC_HEX_DECODE);
+    vm.register_builtin_doc("hexToStr", bi_hex_to_str, &DOC_HEX_TO_STR);
 }
 
 /// byte_val 将 Int 值转为 u8，越界或非整数返回错误。

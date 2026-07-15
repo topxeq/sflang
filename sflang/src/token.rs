@@ -9,8 +9,11 @@ pub enum TokenKind {
     Int,
     Float,
     String,
+    /// InterpString 含 ${expr} 插值的字符串。
+    /// value 用 NUL(\x00) 分隔的段编码：text\x00expr_src\x00text\x00expr_src\x00text
+    /// 段交替：偶数索引为纯文本，奇数索引为表达式源码。
+    InterpString,
     RawString,
-    Bytes,
     Ident,
 
     // 关键字
@@ -33,6 +36,9 @@ pub enum TokenKind {
     Run,
     Throw,
     Import,
+    Switch,
+    Case,
+    Default,
     True,
     False,
     Undefined,
@@ -117,6 +123,9 @@ impl TokenKind {
                 | TokenKind::Run
                 | TokenKind::Throw
                 | TokenKind::Import
+                | TokenKind::Switch
+                | TokenKind::Case
+                | TokenKind::Default
                 | TokenKind::True
                 | TokenKind::False
                 | TokenKind::Undefined
@@ -165,6 +174,9 @@ pub fn lookup_keyword(s: &str) -> Option<TokenKind> {
         "run" => Some(TokenKind::Run),
         "throw" => Some(TokenKind::Throw),
         "import" => Some(TokenKind::Import),
+        "switch" => Some(TokenKind::Switch),
+        "case" => Some(TokenKind::Case),
+        "default" => Some(TokenKind::Default),
         "true" => Some(TokenKind::True),
         "false" => Some(TokenKind::False),
         "undefined" => Some(TokenKind::Undefined),

@@ -8,20 +8,131 @@ use std::sync::{Arc, Mutex};
 use crate::builtins_helpers as bh;
 use crate::ring::{ring_downcast, ring_value, Ring};
 use crate::value::Value;
+use crate::function::BuiltinDoc;
+
+static DOC_NEWRING: BuiltinDoc = BuiltinDoc {
+    category: "ring",
+    signature: "newRing(size) -> ring",
+    summary: "创建固定容量的环形缓冲区。",
+    params: &[("size", "容量（int）")],
+    returns: "ring 对象",
+    examples: &["var r = newRing(100)"],
+    errors: &[],
+};
+
+static DOC_RINGPUSH: BuiltinDoc = BuiltinDoc {
+    category: "ring",
+    signature: "ringPush(r, val) -> undefined",
+    summary: "向环形缓冲写入值（满时覆盖最旧）。",
+    params: &[("r", "ring 对象"), ("val", "值")],
+    returns: "undefined",
+    examples: &["ringPush(r, 42)"],
+    errors: &[],
+};
+
+static DOC_RINGPOP: BuiltinDoc = BuiltinDoc {
+    category: "ring",
+    signature: "ringPop(r) -> value",
+    summary: "弹出最新写入的值。",
+    params: &[("r", "ring 对象")],
+    returns: "值",
+    examples: &["var v = ringPop(r)"],
+    errors: &[],
+};
+
+static DOC_RINGPICK: BuiltinDoc = BuiltinDoc {
+    category: "ring",
+    signature: "ringPick(r) -> value",
+    summary: "查看最新值（不弹出）。",
+    params: &[("r", "ring 对象")],
+    returns: "最新值",
+    examples: &["ringPick(r)"],
+    errors: &[],
+};
+
+static DOC_RINGGET: BuiltinDoc = BuiltinDoc {
+    category: "ring",
+    signature: "ringGet(r, idx) -> value",
+    summary: "按索引读取元素。",
+    params: &[("r", "ring 对象"), ("idx", "索引（int）")],
+    returns: "值",
+    examples: &["ringGet(r, 0)"],
+    errors: &[],
+};
+
+static DOC_RINGSET: BuiltinDoc = BuiltinDoc {
+    category: "ring",
+    signature: "ringSet(r, idx, val) -> undefined",
+    summary: "按索引设置元素。",
+    params: &[("r", "ring 对象"), ("idx", "索引"), ("val", "值")],
+    returns: "undefined",
+    examples: &["ringSet(r, 0, 99)"],
+    errors: &[],
+};
+
+static DOC_RINGINSERT: BuiltinDoc = BuiltinDoc {
+    category: "ring",
+    signature: "ringInsert(r, idx, val) -> undefined",
+    summary: "在指定位置插入元素。",
+    params: &[("r", "ring 对象"), ("idx", "索引"), ("val", "值")],
+    returns: "undefined",
+    examples: &["ringInsert(r, 0, 1)"],
+    errors: &[],
+};
+
+static DOC_RINGREMOVE: BuiltinDoc = BuiltinDoc {
+    category: "ring",
+    signature: "ringRemove(r, idx) -> value",
+    summary: "删除指定位置元素并返回。",
+    params: &[("r", "ring 对象"), ("idx", "索引")],
+    returns: "被删除的值",
+    examples: &["ringRemove(r, 0)"],
+    errors: &[],
+};
+
+static DOC_RINGSIZE: BuiltinDoc = BuiltinDoc {
+    category: "ring",
+    signature: "ringSize(r) -> int",
+    summary: "返回当前元素数。",
+    params: &[("r", "ring 对象")],
+    returns: "int",
+    examples: &["ringSize(r)"],
+    errors: &[],
+};
+
+static DOC_RINGCLEAR: BuiltinDoc = BuiltinDoc {
+    category: "ring",
+    signature: "ringClear(r) -> undefined",
+    summary: "清空环形缓冲。",
+    params: &[("r", "ring 对象")],
+    returns: "undefined",
+    examples: &["ringClear(r)"],
+    errors: &[],
+};
+
+static DOC_RINGTOLIST: BuiltinDoc = BuiltinDoc {
+    category: "ring",
+    signature: "ringToList(r) -> array",
+    summary: "将环形缓冲转为数组。",
+    params: &[("r", "ring 对象")],
+    returns: "array",
+    examples: &["var a = ringToList(r)"],
+    errors: &[],
+};
 
 /// register 注册所有 Ring 相关内置函数。
 pub fn register(vm: &mut crate::vm::VM) {
-    vm.register_builtin("newRing", bi_new_ring);
-    vm.register_builtin("ringPush", bi_ring_push);
-    vm.register_builtin("ringPop", bi_ring_pop);
-    vm.register_builtin("ringPick", bi_ring_pick);
-    vm.register_builtin("ringGet", bi_ring_get);
-    vm.register_builtin("ringSet", bi_ring_set);
-    vm.register_builtin("ringInsert", bi_ring_insert);
-    vm.register_builtin("ringRemove", bi_ring_remove);
-    vm.register_builtin("ringSize", bi_ring_size);
-    vm.register_builtin("ringClear", bi_ring_clear);
-    vm.register_builtin("ringToList", bi_ring_to_list);
+    vm.register_builtin_doc("newRing", bi_new_ring, &DOC_NEWRING);
+    vm.register_builtin_doc("ringPush", bi_ring_push, &DOC_RINGPUSH);
+    vm.register_builtin_doc("ringPop", bi_ring_pop, &DOC_RINGPOP);
+    vm.register_builtin_doc("ringPick", bi_ring_pick, &DOC_RINGPICK);
+    vm.register_builtin_doc("ringGet", bi_ring_get, &DOC_RINGGET);
+    vm.register_builtin_doc("ringSet", bi_ring_set, &DOC_RINGSET);
+    vm.register_builtin_doc("ringInsert", bi_ring_insert, &DOC_RINGINSERT);
+    vm.register_builtin_doc("ringRemove", bi_ring_remove, &DOC_RINGREMOVE);
+    vm.register_builtin_doc("ringSize", bi_ring_size, &DOC_RINGSIZE);
+    vm.register_builtin_doc("ringClear", bi_ring_clear, &DOC_RINGCLEAR);
+    vm.register_builtin_doc("ringToList", bi_ring_to_list, &DOC_RINGTOLIST);
 }
 
 /// bi_new_ring 创建环形缓冲区。

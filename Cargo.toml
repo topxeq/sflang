@@ -90,6 +90,12 @@ image = "0.25"
 # rusttype：TrueType 字体渲染库（MIT OR Apache-2.0），纯 Rust 实现。
 # 用于 Canvas 画布的 drawText 文字渲染。
 rusttype = "0.9"
+# rsa：纯 Rust RSA 加密库（MIT OR Apache-2.0），已是 SSH 的传递依赖。
+# 用于 JWT RS256 签名/验签。
+rsa = "0.9"
+# pkcs8：PKCS#8 私钥/公钥格式解析（MIT OR Apache-2.0），rsa 配套，已是传递依赖。
+# 用于解析 PEM 格式的 RSA 密钥。
+pkcs8 = { version = "0.10", features = ["alloc"] }
 
 # 编译优化配置：release 模式启用 LTO 与单代码生成单元，最大化优化
 [profile.release]

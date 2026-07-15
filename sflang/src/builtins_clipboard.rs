@@ -13,11 +13,32 @@
 use crate::builtins_helpers as bh;
 use crate::value::Value;
 use crate::vm::VM;
+use crate::function::BuiltinDoc;
+
+static DOC_GETCLIPTEXT: BuiltinDoc = BuiltinDoc {
+    category: "clipboard",
+    signature: "getClipText() -> string",
+    summary: "读取系统剪贴板文本。",
+    params: &[],
+    returns: "string 剪贴板内容",
+    examples: &["var t = getClipText()"],
+    errors: &["Linux 下需要 xclip/xsel"],
+};
+
+static DOC_SETCLIPTEXT: BuiltinDoc = BuiltinDoc {
+    category: "clipboard",
+    signature: "setClipText(s) -> undefined",
+    summary: "设置系统剪贴板文本。",
+    params: &[("s", "要设置的文本")],
+    returns: "undefined",
+    examples: &["setClipText(\"hello\")"],
+    errors: &[],
+};
 
 /// register 注册剪贴板内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("getClipText", bi_get_clip_text);
-    vm.register_builtin("setClipText", bi_set_clip_text);
+    vm.register_builtin_doc("getClipText", bi_get_clip_text, &DOC_GETCLIPTEXT);
+    vm.register_builtin_doc("setClipText", bi_set_clip_text, &DOC_SETCLIPTEXT);
 }
 
 // ===========================================================================

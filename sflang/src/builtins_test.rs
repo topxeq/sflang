@@ -17,12 +17,43 @@
 use crate::builtins_helpers as bh;
 use crate::value::{Value, error_value};
 use crate::vm::VM;
+use crate::function::BuiltinDoc;
+
+static DOC_TESTBYTEXT: BuiltinDoc = BuiltinDoc {
+    category: "test",
+    signature: "testByText(actual, expected) -> bool",
+    summary: "断言两个值的文本表示相等。",
+    params: &[("actual", "实际值"), ("expected", "期望值")],
+    returns: "bool 是否相等",
+    examples: &["testByText(1+1, \"2\")"],
+    errors: &[],
+};
+
+static DOC_TESTBYCONTAINS: BuiltinDoc = BuiltinDoc {
+    category: "test",
+    signature: "testByContains(actual, substr) -> bool",
+    summary: "断言 actual 包含 substr。",
+    params: &[("actual", "实际值"), ("substr", "期望包含的子串")],
+    returns: "bool",
+    examples: &["testByContains(\"hello world\", \"world\")"],
+    errors: &[],
+};
+
+static DOC_TESTBYREG: BuiltinDoc = BuiltinDoc {
+    category: "test",
+    signature: "testByReg(actual, pattern) -> bool",
+    summary: "断言 actual 匹配正则 pattern。",
+    params: &[("actual", "实际值"), ("pattern", "正则表达式")],
+    returns: "bool",
+    examples: &["testByReg(str, pattern)"],
+    errors: &[],
+};
 
 /// register 注册测试内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("testByText", bi_test_by_text);
-    vm.register_builtin("testByContains", bi_test_by_contains);
-    vm.register_builtin("testByReg", bi_test_by_reg);
+    vm.register_builtin_doc("testByText", bi_test_by_text, &DOC_TESTBYTEXT);
+    vm.register_builtin_doc("testByContains", bi_test_by_contains, &DOC_TESTBYCONTAINS);
+    vm.register_builtin_doc("testByReg", bi_test_by_reg, &DOC_TESTBYREG);
 }
 
 /// extract_message 从可选第三参数提取失败说明。

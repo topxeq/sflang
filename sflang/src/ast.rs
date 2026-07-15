@@ -17,6 +17,8 @@ pub enum Expr {
     FloatLit { tok: Token, value: f64 },
     /// StringLit 字符串字面量。
     StringLit { tok: Token, value: String },
+    /// InterpStringLit 插值字符串 "Hello, ${name}!"，编译为逐段 to_str + 拼接。
+    InterpStringLit { tok: Token, parts: Vec<InterpPart> },
     /// BoolLit 布尔字面量。
     BoolLit { tok: Token, value: bool },
     /// UndefinedLit undefined 字面量（关键字 `undefined`，兼容旧脚本的 `nil` 别名）。
@@ -62,6 +64,15 @@ pub enum Expr {
     Deref { tok: Token, expr: Box<Expr> },
 }
 
+/// InterpPart 插值字符串的段（纯文本或表达式）。
+#[derive(Debug, Clone)]
+pub enum InterpPart {
+    /// Text 纯文本片段。
+    Text(String),
+    /// Expr ${expr} 中的表达式。
+    Expr(Expr),
+}
+
 impl Expr {
     /// token 返回节点的代表 Token。
     pub fn token(&self) -> &Token {
@@ -69,6 +80,7 @@ impl Expr {
             Expr::IntLit { tok, .. } => tok,
             Expr::FloatLit { tok, .. } => tok,
             Expr::StringLit { tok, .. } => tok,
+            Expr::InterpStringLit { tok, .. } => tok,
             Expr::BoolLit { tok, .. } => tok,
             Expr::UndefinedLit { tok } => tok,
             Expr::Ident { tok, .. } => tok,
@@ -224,8 +236,23 @@ pub enum Stmt {
     ThrowStmt { tok: Token, expr: Expr },
     /// ImportStmt import（加载并执行另一脚本，合并其顶层定义到当前全局环境）。
     ImportStmt { tok: Token, path: String },
-    /// Block 块语句。
+    /// SwitchStmt switch 语句（等值匹配，默认不贯穿）。
+    ///
+    /// 语义：对 value 求值，依次与各 case 的值用 == 比较；命中第一个匹配的 case 后
+    /// 执行其块并跳出（不贯穿到下一个 case）。case 块内可用 break 提前跳出。
+    /// 全部不匹配时执行 default（若有）。无 default 且无匹配则什么都不做。
+    SwitchStmt {
+        tok: Token,
+        value: Expr,
+        /// cases 每个 case 的 (匹配值, 块)，保持源码顺序。
+        cases: Vec<(Expr, Block)>,
+        /// default 默认块（可选）。
+        default: Option<Block>,
+    },
+    /// Block 块语句（有独立块作用域，变量块外不可见）。
     Block { tok: Token, stmts: Vec<Stmt> },
+    /// DeclGroup 声明组（var/const 分组，无独立作用域，变量在当前作用域声明）。
+    DeclGroup { tok: Token, stmts: Vec<Stmt> },
 }
 
 impl Stmt {
@@ -247,7 +274,9 @@ impl Stmt {
             Stmt::RunStmt { tok, .. } => tok,
             Stmt::ThrowStmt { tok, .. } => tok,
             Stmt::ImportStmt { tok, .. } => tok,
+            Stmt::SwitchStmt { tok, .. } => tok,
             Stmt::Block { tok, .. } => tok,
+            Stmt::DeclGroup { tok, .. } => tok,
         }
     }
 }

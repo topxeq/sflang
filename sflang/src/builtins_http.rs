@@ -32,8 +32,847 @@ use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}};
 
 use crate::http_lite::{self, HttpRequest as LiteReq, HttpResponse as LiteResp, HttpHandler,
     SfHttpRequest, SfHttpResponse, SfWebSocket};
+use crate::function::BuiltinDoc;
 use crate::value::{Value, SfError, error_value};
 use crate::vm::VM;
+
+// ===========================================================================
+// 内置函数文档（help 系统）
+// ===========================================================================
+
+static DOC_HTTP_SERVER: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "httpServer(\"--port=N\", \"--host=H\", \"--verbose\", \"--certDir=D\", \"--adminToken=T\") -> server",
+    summary: "创建 HTTP/HTTPS 服务器实例（尚未监听，需配合 serverSetHandler + serverStart）。",
+    params: &[
+        ("--port", "监听端口，默认 8080"),
+        ("--host", "监听地址，默认 0.0.0.0"),
+        ("--verbose", "可选开关，打印请求日志"),
+        ("--certDir", "可选 TLS 证书目录（含 server.crt + server.key），设置则启用 HTTPS"),
+        ("--adminToken", "管理端点令牌，默认 sflang"),
+    ],
+    returns: "SfHttpServer 对象",
+    examples: &[
+        "srv := httpServer(\"--port=8080\")  // 默认 0.0.0.0:8080",
+        "srv := httpServer(\"--port=443\", \"--certDir=./certs\", \"--verbose\")  // HTTPS",
+    ],
+    errors: &[
+        "serverStart() 加载 TLS 证书失败（可能原因：certDir 下缺少 server.crt 或 server.key；文件格式非 PEM）",
+    ],
+};
+
+static DOC_SERVER_SET_HANDLER: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "serverSetHandler(server, path, handler) -> undefined",
+    summary: "注册路由处理器，路径可含 :param 参数（如 /api/users/:id），自动注入 routeParamsG。",
+    params: &[
+        ("server", "httpServer 返回的对象"),
+        ("path", "路径模式，以 / 结尾为前缀匹配，否则精确匹配；支持 :param"),
+        ("handler", "func(req, resp) 处理函数"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "serverSetHandler(srv, \"/hello\", func(req, resp) { return \"Hello!\" })  // 精确匹配",
+        "serverSetHandler(srv, \"/api/users/:id\", func(req, resp) { return getGlobal(\"routeParamsG\")[\"id\"] })  // 参数路由",
+    ],
+    errors: &[
+        "serverSetHandler() 第 2 个参数应为 string (路径)",
+        "serverSetHandler() 第 3 个参数应为 function（可能原因：未传入 func 或函数名拼写错误）",
+    ],
+};
+
+static DOC_SERVER_SET_STATIC: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "serverSetStatic(server, dirPath) -> undefined",
+    summary: "设置静态文件根目录，未命中路由的请求会从该目录读取文件。",
+    params: &[
+        ("server", "httpServer 返回的对象"),
+        ("dirPath", "静态文件根目录路径"),
+    ],
+    returns: "undefined",
+    examples: &["serverSetStatic(srv, \"./public\")  // ./public 下文件可被直接访问"],
+    errors: &["serverSetStatic() 第 2 个参数应为 string (目录路径)"],
+};
+
+static DOC_SERVER_START: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "serverStart(server [, \"--thread\"]) -> undefined",
+    summary: "启动服务器，默认阻塞当前线程，加 --thread/--go 在后台线程运行。",
+    params: &[
+        ("server", "httpServer 返回的对象"),
+        ("--thread/--go", "可选开关，后台线程运行而非阻塞"),
+    ],
+    returns: "undefined（阻塞模式下服务器停止后返回）",
+    examples: &[
+        "serverStart(srv)  // 阻塞当前线程",
+        "serverStart(srv, \"--thread\")  // 后台运行，主线程可继续",
+    ],
+    errors: &[
+        "serverStart() 服务器已在运行",
+        "serverStart() 加载 TLS 证书失败（可能原因：certDir 下缺少 server.crt 或 server.key；文件格式非 PEM）",
+    ],
+};
+
+static DOC_SERVER_STOP: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "serverStop(server) -> undefined",
+    summary: "停止服务器，设置停止信号使 accept 循环退出。",
+    params: &[("server", "httpServer 返回的对象")],
+    returns: "undefined",
+    examples: &["serverStop(srv)  // 停止监听"],
+    errors: &["serverStop() 参数不是 HTTP 服务器对象（可能原因：传入了错误类型）"],
+};
+
+static DOC_SERVER_ADDR: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "serverAddr(server) -> string",
+    summary: "返回服务器的监听地址（host:port）。",
+    params: &[("server", "httpServer 返回的对象")],
+    returns: "string，如 \"0.0.0.0:8080\"",
+    examples: &["addr := serverAddr(srv)  // \"0.0.0.0:8080\""],
+    errors: &["serverAddr() 参数不是 HTTP 服务器对象"],
+};
+
+static DOC_GET_REQ_METHOD: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getReqMethod(req) -> string",
+    summary: "返回请求方法（GET/POST/PUT/DELETE 等）。",
+    params: &[("req", "handler 中的请求对象")],
+    returns: "string 方法名（大写）",
+    examples: &["m := getReqMethod(req)  // 如 \"GET\""],
+    errors: &[
+        "getReqMethod() 需要至少 1 个参数",
+        "getReqMethod() 参数不是请求对象",
+    ],
+};
+
+static DOC_GET_REQ_PATH: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getReqPath(req) -> string",
+    summary: "返回请求路径（不含 query）。",
+    params: &[("req", "handler 中的请求对象")],
+    returns: "string 路径，如 \"/api/users\"",
+    examples: &["p := getReqPath(req)  // \"/api/users\""],
+    errors: &["getReqPath() 参数不是请求对象"],
+};
+
+static DOC_GET_REQ_URI: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getReqUri(req) -> string",
+    summary: "返回完整 URI（含路径和 query）。",
+    params: &[("req", "handler 中的请求对象")],
+    returns: "string 完整 URI",
+    examples: &["u := getReqUri(req)  // \"/api/list?page=1\""],
+    errors: &["getReqUri() 参数不是请求对象"],
+};
+
+static DOC_GET_REQ_QUERY: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getReqQuery(req) -> string",
+    summary: "返回查询串（不含前导 ?）。",
+    params: &[("req", "handler 中的请求对象")],
+    returns: "string query 串",
+    examples: &["q := getReqQuery(req)  // \"page=1&size=10\""],
+    errors: &["getReqQuery() 参数不是请求对象"],
+};
+
+static DOC_GET_REQ_HEADER: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getReqHeader(req, name) -> string|undefined",
+    summary: "返回指定请求头的值，不存在时返回 undefined。",
+    params: &[
+        ("req", "handler 中的请求对象"),
+        ("name", "header 名（大小写不敏感）"),
+    ],
+    returns: "string 值，不存在时 undefined",
+    examples: &["ct := getReqHeader(req, \"Content-Type\")  // \"application/json\" 或 undefined"],
+    errors: &[
+        "getReqHeader() 第 2 个参数应为 string (header 名称)",
+        "getReqHeader() 参数不是请求对象",
+    ],
+};
+
+static DOC_GET_REQ_HEADERS: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getReqHeaders(req) -> map",
+    summary: "返回所有请求头（Map 对象，键为 header 名）。",
+    params: &[("req", "handler 中的请求对象")],
+    returns: "Map{headerName: value}",
+    examples: &["hs := getReqHeaders(req)  // {\"Content-Type\": \"application/json\", ...}"],
+    errors: &["getReqHeaders() 参数不是请求对象"],
+};
+
+static DOC_GET_REQ_BODY: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getReqBody(req) -> string",
+    summary: "返回请求体（UTF-8 lossy 转字符串）。",
+    params: &[("req", "handler 中的请求对象")],
+    returns: "string 请求体",
+    examples: &["body := getReqBody(req)  // 表单或 JSON 文本"],
+    errors: &["getReqBody() 参数不是请求对象"],
+};
+
+static DOC_GET_REQ_BODY_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getReqBodyBytes(req) -> bytes",
+    summary: "返回请求体（原始字节，适合二进制内容）。",
+    params: &[("req", "handler 中的请求对象")],
+    returns: "bytes 请求体",
+    examples: &["raw := getReqBodyBytes(req)  // 二进制数据"],
+    errors: &["getReqBodyBytes() 参数不是请求对象"],
+};
+
+static DOC_GET_REQ_PARAM: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getReqParam(req, key) -> string|undefined",
+    summary: "返回指定查询参数的值，不存在时返回 undefined。",
+    params: &[
+        ("req", "handler 中的请求对象"),
+        ("key", "查询参数名"),
+    ],
+    returns: "string 值，不存在时 undefined",
+    examples: &["page := getReqParam(req, \"page\")  // \"1\" 或 undefined"],
+    errors: &[
+        "getReqParam() 第 2 个参数应为 string (参数名)",
+        "getReqParam() 参数不是请求对象",
+    ],
+};
+
+static DOC_GET_REQ_PARAMS: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getReqParams(req) -> map",
+    summary: "返回所有查询参数（Map 对象）。",
+    params: &[("req", "handler 中的请求对象")],
+    returns: "Map{key: value}",
+    examples: &["ps := getReqParams(req)  // {\"page\": \"1\", \"size\": \"10\"}"],
+    errors: &["getReqParams() 参数不是请求对象"],
+};
+
+static DOC_WRITE_RESP: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "writeResp(resp, content) -> undefined",
+    summary: "写入响应体（string 或任意会转字符串的值），自动设为响应内容。",
+    params: &[
+        ("resp", "handler 中的响应对象"),
+        ("content", "响应内容（string 或其他会转字符串的类型）"),
+    ],
+    returns: "undefined",
+    examples: &["writeResp(resp, \"<h1>Hi</h1>\")"],
+    errors: &["writeResp() 参数不是响应对象"],
+};
+
+static DOC_WRITE_RESP_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "writeRespBytes(resp, data) -> undefined",
+    summary: "写入二进制响应体（bytes/byteArray/string）。",
+    params: &[
+        ("resp", "handler 中的响应对象"),
+        ("data", "bytes / byteArray / string"),
+    ],
+    returns: "undefined",
+    examples: &["writeRespBytes(resp, fileBytes)"],
+    errors: &["writeRespBytes() 第 2 个参数应为 bytes/byteArray/string"],
+};
+
+static DOC_WRITE_RESP_HEADER: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "writeRespHeader(resp, status) -> undefined",
+    summary: "设置响应状态码（兼容 Charlang 函数名，等价于 setRespStatus）。",
+    params: &[
+        ("resp", "handler 中的响应对象"),
+        ("status", "HTTP 状态码（int/float）"),
+    ],
+    returns: "undefined",
+    examples: &["writeRespHeader(resp, 200)"],
+    errors: &["writeRespHeader() 第 2 个参数应为 int (状态码)"],
+};
+
+static DOC_SET_RESP_HEADER: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "setRespHeader(resp, key, value) -> undefined",
+    summary: "设置响应头。",
+    params: &[
+        ("resp", "handler 中的响应对象"),
+        ("key", "header 名"),
+        ("value", "header 值（string 或可转字符串的值）"),
+    ],
+    returns: "undefined",
+    examples: &["setRespHeader(resp, \"Content-Type\", \"application/json\")"],
+    errors: &["setRespHeader() 第 2 个参数应为 string (header 名)"],
+};
+
+static DOC_SET_RESP_STATUS: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "setRespStatus(resp, status) -> undefined",
+    summary: "设置响应状态码。",
+    params: &[
+        ("resp", "handler 中的响应对象"),
+        ("status", "HTTP 状态码（int/float）"),
+    ],
+    returns: "undefined",
+    examples: &["setRespStatus(resp, 404)"],
+    errors: &["setRespStatus() 第 2 个参数应为 int (状态码)"],
+};
+
+static DOC_SET_RESP_CONTENT_TYPE: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "setRespContentType(resp, contentType) -> undefined",
+    summary: "设置 Content-Type 响应头（setRespHeader 的便捷封装）。",
+    params: &[
+        ("resp", "handler 中的响应对象"),
+        ("contentType", "MIME 类型，如 application/json"),
+    ],
+    returns: "undefined",
+    examples: &["setRespContentType(resp, \"application/json; charset=utf-8\")"],
+    errors: &["setRespContentType() 第 2 个参数应为 string"],
+};
+
+static DOC_SERVE_FILE: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "serveFile(resp, filePath) -> undefined",
+    summary: "将本地文件作为响应输出，自动按扩展名设置 Content-Type（未设置时）。",
+    params: &[
+        ("resp", "handler 中的响应对象"),
+        ("filePath", "本地文件路径"),
+    ],
+    returns: "undefined（失败时返回 error 对象）",
+    examples: &["serveFile(resp, \"/var/www/logo.png\")  // 自动设 Content-Type 为 image/png"],
+    errors: &[
+        "serveFile() 读取文件 'xxx' 失败（可能原因：文件不存在或权限不足）",
+        "serveFile() 第 2 个参数应为 string (文件路径)",
+    ],
+};
+
+static DOC_REDIRECT_RESP: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "redirectResp(resp, url [, code]) -> undefined",
+    summary: "设置重定向响应，默认状态码 302。",
+    params: &[
+        ("resp", "handler 中的响应对象"),
+        ("url", "目标 URL"),
+        ("code", "可选状态码，默认 302（int/float）"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "redirectResp(resp, \"https://example.com\")  // 302 跳转",
+        "redirectResp(resp, \"/login\", 301)  // 永久重定向",
+    ],
+    errors: &["redirectResp() 第 2 个参数应为 string (URL)"],
+};
+
+static DOC_GEN_JSON_RESP: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "genJsonResp(resp, status, msg) -> undefined",
+    summary: "生成标准 JSON 响应 {\"status\":..., \"msg\":...}，自动设 Content-Type 为 application/json。",
+    params: &[
+        ("resp", "handler 中的响应对象"),
+        ("status", "状态字段值（string/int/bool，undefined 时为 null）"),
+        ("msg", "消息字段（undefined 时为 null）"),
+    ],
+    returns: "undefined",
+    examples: &["genJsonResp(resp, \"ok\", \"created\")  // {\"status\": \"ok\", \"msg\": \"created\"}"],
+    errors: &[],
+};
+
+static DOC_GET_REQ_COOKIE: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getReqCookie(req, name) -> string|undefined",
+    summary: "从请求 Cookie 头中取指定名称的值，不存在返回 undefined。",
+    params: &[
+        ("req", "handler 中的请求对象"),
+        ("name", "cookie 名称"),
+    ],
+    returns: "string 值，不存在时 undefined",
+    examples: &["sid := getReqCookie(req, \"sessionId\")"],
+    errors: &[
+        "getReqCookie() 需要 2 个参数 (req, name)",
+        "getReqCookie() 第 2 个参数应为 string (cookie 名)",
+    ],
+};
+
+static DOC_GET_REQ_COOKIES: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getReqCookies(req) -> map",
+    summary: "返回所有 Cookie（Map 对象）。",
+    params: &[("req", "handler 中的请求对象")],
+    returns: "Map{cookieName: value}",
+    examples: &["cks := getReqCookies(req)  // {\"sessionId\": \"abc\", \"theme\": \"dark\"}"],
+    errors: &["getReqCookies() 需要 1 个参数 (req)"],
+};
+
+static DOC_SET_RESP_COOKIE: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "setRespCookie(resp, name, value [, --path=, --domain=, --maxAge=, --expires=, --httpOnly, --secure, --sameSite=]) -> undefined",
+    summary: "设置响应的 Set-Cookie 头，支持 Path/Domain/MaxAge/Expires/HttpOnly/Secure/SameSite 属性。",
+    params: &[
+        ("resp", "handler 中的响应对象"),
+        ("name", "cookie 名称"),
+        ("value", "cookie 值"),
+        ("--path", "可选 Path 属性"),
+        ("--domain", "可选 Domain 属性"),
+        ("--maxAge", "可选 Max-Age 秒数"),
+        ("--expires", "可选 Expires（RFC1123 日期）"),
+        ("--httpOnly", "可选开关，加 HttpOnly 标志"),
+        ("--secure", "可选开关，加 Secure 标志"),
+        ("--sameSite", "可选 Strict/Lax/None"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "setRespCookie(resp, \"token\", \"abc\", \"--path=/\", \"--maxAge=3600\", \"--httpOnly\", \"--secure\", \"--sameSite=strict\")",
+    ],
+    errors: &[
+        "setRespCookie() 至少需要 3 个参数 (resp, name, value)",
+        "setRespCookie() 第 2 个参数应为 string (cookie 名)",
+    ],
+};
+
+static DOC_SET_CORS_HEADERS: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "setCorsHeaders(resp, origin) -> undefined",
+    summary: "设置全套 CORS 响应头（Allow-Origin/Methods/Headers/Credentials/Max-Age）。",
+    params: &[
+        ("resp", "handler 中的响应对象"),
+        ("origin", "允许的来源，\"*\" 表示所有"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "setCorsHeaders(resp, \"https://example.com\")  // 单一来源",
+        "setCorsHeaders(resp, \"*\")  // 允许所有来源",
+    ],
+    errors: &[
+        "setCorsHeaders() 需要 2 个参数 (resp, origin)",
+        "setCorsHeaders() 第 2 个参数应为 string (origin)",
+    ],
+};
+
+static DOC_WEB_SOCKET: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "webSocket(url) -> ws",
+    summary: "以客户端模式连接到远程 WebSocket 服务器（ws://host:port/path）。",
+    params: &[("url", "ws:// 协议的 URL")],
+    returns: "WebSocket 对象（服务端模式暂不支持在 handler 内升级）",
+    examples: &["ws := webSocket(\"ws://echo.example.com:9001/ws\")  // 连接 echo 服务器"],
+    errors: &[
+        "webSocket() URL 解析失败（可能原因：URL 格式应为 ws://host:port/path）",
+        "webSocket() TCP 连接失败（可能原因：服务器未启动、网络不通、防火墙拦截）",
+        "webSocket() 握手失败（可能原因：服务器不支持 WebSocket、路径错误）",
+    ],
+};
+
+static DOC_WS_READ_MSG: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "wsReadMsg(ws) -> [type, data]",
+    summary: "读取一条 WebSocket 消息，返回 [type, data]，type 为 1=文本/2=二进制/0=关闭。",
+    params: &[("ws", "webSocket 返回的对象")],
+    returns: "array [type(int), data(string|bytes)]，关闭帧返回 [0, \"closed\"]",
+    examples: &["msg := wsReadMsg(ws)  // [1, \"hello\"] 或 [2, bytes]"],
+    errors: &[
+        "wsReadMsg() 读取失败（可能原因：连接已关闭、网络中断）",
+        "参数应为 webSocket 对象（可能原因：未先调用 webSocket() 建立连接）",
+    ],
+};
+
+static DOC_WS_READ_TEXT: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "wsReadText(ws) -> string|undefined",
+    summary: "读取下一条文本消息（跳过 Ping/Pong/Binary），连接关闭返回 undefined。",
+    params: &[("ws", "webSocket 返回的对象")],
+    returns: "string 文本消息，关闭时 undefined",
+    examples: &["t := wsReadText(ws)  // 读取一行文本"],
+    errors: &[
+        "wsReadText() 读取失败（可能原因：连接已关闭）",
+        "参数应为 webSocket 对象",
+    ],
+};
+
+static DOC_WS_READ_BIN: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "wsReadBin(ws) -> bytes|undefined",
+    summary: "读取下一条二进制消息（跳过 Ping/Pong/Text），连接关闭返回 undefined。",
+    params: &[("ws", "webSocket 返回的对象")],
+    returns: "bytes 二进制消息，关闭时 undefined",
+    examples: &["b := wsReadBin(ws)"],
+    errors: &[
+        "wsReadBin() 读取失败（可能原因：连接已关闭）",
+        "参数应为 webSocket 对象",
+    ],
+};
+
+static DOC_WS_WRITE_TEXT: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "wsWriteText(ws, text) -> undefined",
+    summary: "发送一条文本消息。",
+    params: &[
+        ("ws", "webSocket 返回的对象"),
+        ("text", "要发送的文本（string 或可转字符串的值）"),
+    ],
+    returns: "undefined",
+    examples: &["wsWriteText(ws, \"hello\")"],
+    errors: &[
+        "wsWriteText() 发送失败（可能原因：连接已关闭）",
+        "参数应为 webSocket 对象",
+    ],
+};
+
+static DOC_WS_WRITE_BIN: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "wsWriteBin(ws, data) -> undefined",
+    summary: "发送一条二进制消息。",
+    params: &[
+        ("ws", "webSocket 返回的对象"),
+        ("data", "bytes / byteArray / string"),
+    ],
+    returns: "undefined",
+    examples: &["wsWriteBin(ws, fileBytes)"],
+    errors: &[
+        "wsWriteBin() 第 2 个参数应为 bytes/byteArray/string",
+        "wsWriteBin() 发送失败（可能原因：连接已关闭）",
+    ],
+};
+
+static DOC_WS_WRITE_MSG: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "wsWriteMsg(ws, type, data) -> undefined",
+    summary: "发送一条消息（手动指定类型），type=1 文本、2 二进制。",
+    params: &[
+        ("ws", "webSocket 返回的对象"),
+        ("type", "1=文本，2=二进制"),
+        ("data", "文本或二进制数据"),
+    ],
+    returns: "undefined",
+    examples: &["wsWriteMsg(ws, 1, \"ping\")  // 发文本"],
+    errors: &[
+        "wsWriteMsg() 第 2 个参数应为 int (类型: 1=文本, 2=二进制)",
+        "wsWriteMsg() 类型码 N 无效 (1=文本, 2=二进制)",
+        "wsWriteMsg() 二进制消息需要 bytes/string",
+    ],
+};
+
+static DOC_WS_CLOSE: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "wsClose(ws) -> undefined",
+    summary: "关闭 WebSocket 连接（发送 Close 帧并关闭底层流）。",
+    params: &[("ws", "webSocket 返回的对象")],
+    returns: "undefined",
+    examples: &["wsClose(ws)"],
+    errors: &["参数应为 webSocket 对象"],
+};
+
+static DOC_WS_LOCAL_ADDR: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "wsLocalAddr(ws) -> undefined",
+    summary: "返回本地地址（当前实现固定返回 undefined，仅做接口兼容）。",
+    params: &[("ws", "webSocket 返回的对象")],
+    returns: "undefined",
+    examples: &["addr := wsLocalAddr(ws)  // 当前恒为 undefined"],
+    errors: &["参数应为 webSocket 对象"],
+};
+
+static DOC_PARSE_REQ_FORM: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "parseReqForm(req) -> map",
+    summary: "解析表单请求体（application/x-www-form-urlencoded 或 multipart/form-data）。",
+    params: &[("req", "handler 中的请求对象")],
+    returns: "Map{字段名: value}，文件字段为 object {fileName, size, content(bytes)}",
+    examples: &[
+        "form := parseReqForm(req)  // 普通字段为 string，文件字段为 {fileName, size, content}",
+    ],
+    errors: &[
+        "parseReqForm() 参数不是请求对象",
+        "parseReqForm() multipart 表单缺少 boundary",
+    ],
+};
+
+static DOC_SAVE_FILE_UPLOADS: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "saveFileUploads(req, destDir [, \"--fieldName=name\"]) -> map",
+    summary: "将 multipart 表单中的文件字段保存到磁盘，返回字段名 -> {fileName, savedPath, size}。",
+    params: &[
+        ("req", "handler 中的请求对象，必须为 multipart/form-data"),
+        ("destDir", "目标目录（不存在则自动创建）"),
+        ("--fieldName", "可选只保存指定字段名"),
+    ],
+    returns: "Map{字段名: {fileName, savedPath, size}}（非文件字段和空文件名被跳过）",
+    examples: &["saved := saveFileUploads(req, \"/tmp/uploads\", \"--fieldName=avatar\")  // 只保存 avatar 字段"],
+    errors: &[
+        "saveFileUploads() 要求 multipart/form-data 请求（可能原因：未设置 enctype 或未使用 multipart 表单）",
+        "saveFileUploads() multipart 表单缺少 boundary",
+        "saveFileUploads() 创建目录失败",
+        "saveFileUploads() 写入文件失败（可能原因：磁盘空间不足或权限不足）",
+    ],
+};
+
+static DOC_GET_WEB: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getWeb(url [, \"--timeout=N\", \"Header: value\"]) -> string",
+    summary: "发送 HTTP GET，返回响应体字符串。",
+    params: &[
+        ("url", "目标 URL"),
+        ("--timeout", "可选超时秒数，默认 30"),
+        ("header", "可选附加 header，如 \"Content-Type: json\"；支持多行或多参数"),
+    ],
+    returns: "string 响应体（失败时返回 error 对象）",
+    examples: &[
+        "body := getWeb(\"https://example.com\")  // 简单 GET",
+        "body := getWeb(\"https://api.x.com\", \"--timeout=10\", \"Authorization: Bearer xxx\")  // 带超时和 header",
+    ],
+    errors: &[
+        "getWeb() 第 1 个参数应为 string (URL)",
+        "getWeb() 请求失败（可能原因：URL 格式错误、网络不通、DNS 解析失败、服务器超时）",
+    ],
+};
+
+static DOC_GET_WEB_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getWebBytes(url [, \"--timeout=N\", \"Header: value\"]) -> bytes",
+    summary: "发送 HTTP GET，返回响应体原始字节（适合二进制内容如图片、压缩包）。",
+    params: &[
+        ("url", "目标 URL"),
+        ("--timeout", "可选超时秒数，默认 30"),
+        ("header", "可选附加 header"),
+    ],
+    returns: "bytes 响应体（失败时返回 error 对象）",
+    examples: &["img := getWebBytes(\"https://example.com/logo.png\")"],
+    errors: &[
+        "getWebBytes() 第 1 个参数应为 string (URL)",
+        "getWebBytes() 请求失败（可能原因：URL 格式错误、网络不通、服务器超时）",
+    ],
+};
+
+static DOC_GET_WEB_BYTES_WITH_HEADERS: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getWebBytesWithHeaders(url, headers [, \"--timeout=N\"]) -> bytes",
+    summary: "带 header 字典的 HTTP GET，返回响应体字节（用于需要鉴权等场景）。",
+    params: &[
+        ("url", "目标 URL"),
+        ("headers", "Map/Object{key: value}，如 {\"Authorization\": \"Bearer xxx\"}"),
+        ("--timeout", "可选超时秒数，默认 30"),
+    ],
+    returns: "bytes 响应体（失败时返回 error 对象）",
+    examples: &[
+        "data := getWebBytesWithHeaders(\"https://api.x.com/data\", {\"Authorization\": \"Bearer xxx\", \"Accept\": \"application/json\"})",
+    ],
+    errors: &[
+        "getWebBytesWithHeaders() 第 1 个参数应为 string (URL)（可能原因：参数顺序错误）",
+        "headers 参数应为 map/object（可能原因：参数类型错误或顺序错误）",
+        "getWebBytesWithHeaders() 请求失败（可能原因：URL 格式错误、网络不通、header 格式错误）",
+    ],
+};
+
+static DOC_POST_WEB: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "postWeb(url, body, contentType [, \"--timeout=N\", \"Header: value\"]) -> string",
+    summary: "发送 HTTP POST，返回响应体字符串。",
+    params: &[
+        ("url", "目标 URL"),
+        ("body", "请求体（string/bytes/byteArray 或可转字符串的值）"),
+        ("contentType", "Content-Type，如 application/json"),
+        ("--timeout", "可选超时秒数，默认 30"),
+        ("header", "可选附加 header"),
+    ],
+    returns: "string 响应体（失败时返回 error 对象）",
+    examples: &[
+        "resp := postWeb(\"https://api.x.com\", jsonEncode({a:1}), \"application/json\")",
+    ],
+    errors: &[
+        "postWeb() 需要至少 3 个参数 (URL, body, contentType)",
+        "postWeb() 第 3 个参数应为 string (Content-Type)",
+        "postWeb() 请求失败（可能原因：URL 格式错误、网络不通、服务器拒绝、Content-Type 不匹配）",
+    ],
+};
+
+static DOC_DOWNLOAD_FILE: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "downloadFile(url, savePath [, \"--timeout=N\", \"Header: value\"]) -> int",
+    summary: "下载远程文件到本地路径，成功返回写入的字节数。",
+    params: &[
+        ("url", "目标 URL"),
+        ("savePath", "本地保存路径"),
+        ("--timeout", "可选超时秒数，默认 30"),
+        ("header", "可选附加 header"),
+    ],
+    returns: "int 写入字节数（失败时返回 error 对象）",
+    examples: &["size := downloadFile(\"https://example.com/big.zip\", \"/tmp/big.zip\", \"--timeout=120\")"],
+    errors: &[
+        "downloadFile() 需要至少 2 个参数 (URL, savePath)",
+        "downloadFile() 服务器返回错误状态（可能原因：文件不存在、权限不足）",
+        "downloadFile() 写入文件 'xxx' 失败（可能原因：目录不存在、权限不足）",
+        "downloadFile() 下载失败（可能原因：URL 格式错误、网络不通、服务器超时）",
+    ],
+};
+
+static DOC_URL_EXISTS: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "urlExists(url) -> bool",
+    summary: "检查 URL 是否可访问（状态码 < 400 视为存在，超时 10 秒）。",
+    params: &[("url", "目标 URL")],
+    returns: "bool：true 表示状态码 < 400，请求失败返回 false",
+    examples: &["if urlExists(\"https://example.com\") { ... }"],
+    errors: &["urlExists() 第 1 个参数应为 string (URL)"],
+};
+
+static DOC_PARSE_URL: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "parseUrl(url) -> object",
+    summary: "解析 URL，返回 {scheme, host, port, path, query, fragment} 对象。",
+    params: &[("url", "URL 字符串")],
+    returns: "object{scheme, host, port(int), path, query, fragment}（缺失部分为空串，端口为 0）",
+    examples: &[
+        "p := parseUrl(\"https://a.com:8443/api/x?q=1#top\")  // {scheme:\"https\", host:\"a.com\", port:8443, path:\"/api/x\", query:\"q=1\", fragment:\"top\"}",
+    ],
+    errors: &["parseUrl() 第 1 个参数应为 string (URL)"],
+};
+
+static DOC_GET_MIME_TYPE: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getMimeType(filenameOrExt) -> string",
+    summary: "按文件扩展名返回 MIME 类型，未知扩展名返回 application/octet-stream。",
+    params: &[("filenameOrExt", "文件名或扩展名（自动取最后一个 . 之后并转小写）")],
+    returns: "string MIME 类型",
+    examples: &[
+        "getMimeType(\"a.png\")  // \"image/png\"",
+        "getMimeType(\".JSON\")  // \"application/json\"",
+    ],
+    errors: &["getMimeType() 第 1 个参数应为 string (文件名)"],
+};
+
+static DOC_PARSE_QUERY: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "parseQuery(query) -> map",
+    summary: "解析 query string（如 a=1&b=2&c=hello%20world）为 Map，支持 + 和 %XX 解码。",
+    params: &[("query", "query string（不含前导 ?）")],
+    returns: "Map{key: value}",
+    examples: &["m := parseQuery(\"a=1&b=2&c=hello%20world\")  // {a:\"1\", b:\"2\", c:\"hello world\"}"],
+    errors: &["parseQuery() 第 1 个参数应为 string (query string)（可能原因：参数顺序错误）"],
+};
+
+static DOC_JOIN_URL_PATH: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "joinUrlPath(base, path) -> string",
+    summary: "拼接 URL 路径，自动避免重复或缺失斜杠。",
+    params: &[
+        ("base", "基础 URL/路径"),
+        ("path", "要追加的路径"),
+    ],
+    returns: "string 拼接后的路径",
+    examples: &[
+        "joinUrlPath(\"http://example.com/\", \"/api/v1\")  // \"http://example.com/api/v1\"",
+        "joinUrlPath(\"http://example.com\", \"api/v1\")  // \"http://example.com/api/v1\"",
+        "joinUrlPath(\"base/\", \"sub/\")  // \"base/sub/\"",
+    ],
+    errors: &[
+        "joinUrlPath() 需要 2 个参数 (base, path)",
+        "joinUrlPath() 第 1/2 个参数应为 string",
+    ],
+};
+
+static DOC_PREPARE_MULTIPART_FIELD_FROM_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "prepareMultiPartFieldFromBytes(fieldName, fileName, data, contentType) -> bytes",
+    summary: "构建 multipart/form-data 的一个字段字节块（使用固定 boundary）。调用方需用相同 boundary 拼接多字段并设置 Content-Type。",
+    params: &[
+        ("fieldName", "表单字段名"),
+        ("fileName", "上传文件名"),
+        ("data", "字段内容 bytes/byteArray/string"),
+        ("contentType", "该字段的 Content-Type"),
+    ],
+    returns: "bytes 该字段的完整 multipart 字节（含分隔符和头）",
+    examples: &[
+        "b := prepareMultiPartFieldFromBytes(\"file\", \"a.txt\", fileBytes, \"text/plain\")",
+    ],
+    errors: &[
+        "prepareMultiPartFieldFromBytes() 需要 4 个参数 (fieldName, fileName, bytes, contentType)",
+        "prepareMultiPartFieldFromBytes() 第 1 个参数应为 string (字段名)（可能原因：参数顺序错误）",
+        "prepareMultiPartFieldFromBytes() 第 3 个参数应为 bytes/byteArray/string",
+    ],
+};
+
+static DOC_FLUSH_RESP: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "flushResp(resp) -> undefined",
+    summary: "刷新 HTTP 响应缓冲区（当前实现为 no-op，因响应在 handler 返回后才写出；保留用于 API 兼容）。",
+    params: &[("resp", "handler 中的响应对象")],
+    returns: "undefined",
+    examples: &["flushResp(resp)  // 当前为空操作"],
+    errors: &[],
+};
+
+/// register 注册所有 HTTP 相关内置函数。
+pub fn register(vm: &mut VM) {
+    // 服务器管理
+    vm.register_builtin_doc("httpServer", bi_http_server, &DOC_HTTP_SERVER);
+    vm.register_builtin_doc("serverSetHandler", bi_server_set_handler, &DOC_SERVER_SET_HANDLER);
+    vm.register_builtin_doc("serverSetStatic", bi_server_set_static, &DOC_SERVER_SET_STATIC);
+    vm.register_builtin_doc("serverStart", bi_server_start, &DOC_SERVER_START);
+    vm.register_builtin_doc("serverStop", bi_server_stop, &DOC_SERVER_STOP);
+    vm.register_builtin_doc("serverAddr", bi_server_addr, &DOC_SERVER_ADDR);
+
+    // 请求操作
+    vm.register_builtin_doc("getReqMethod", bi_get_req_method, &DOC_GET_REQ_METHOD);
+    vm.register_builtin_doc("getReqPath", bi_get_req_path, &DOC_GET_REQ_PATH);
+    vm.register_builtin_doc("getReqUri", bi_get_req_uri, &DOC_GET_REQ_URI);
+    vm.register_builtin_doc("getReqQuery", bi_get_req_query, &DOC_GET_REQ_QUERY);
+    vm.register_builtin_doc("getReqHeader", bi_get_req_header, &DOC_GET_REQ_HEADER);
+    vm.register_builtin_doc("getReqHeaders", bi_get_req_headers, &DOC_GET_REQ_HEADERS);
+    vm.register_builtin_doc("getReqBody", bi_get_req_body, &DOC_GET_REQ_BODY);
+    vm.register_builtin_doc("getReqBodyBytes", bi_get_req_body_bytes, &DOC_GET_REQ_BODY_BYTES);
+    vm.register_builtin_doc("getReqParam", bi_get_req_param, &DOC_GET_REQ_PARAM);
+    vm.register_builtin_doc("getReqParams", bi_get_req_params, &DOC_GET_REQ_PARAMS);
+
+    // 响应操作
+    vm.register_builtin_doc("writeResp", bi_write_resp, &DOC_WRITE_RESP);
+    vm.register_builtin_doc("writeRespBytes", bi_write_resp_bytes, &DOC_WRITE_RESP_BYTES);
+    vm.register_builtin_doc("writeRespHeader", bi_write_resp_header, &DOC_WRITE_RESP_HEADER);
+    vm.register_builtin_doc("setRespHeader", bi_set_resp_header, &DOC_SET_RESP_HEADER);
+    vm.register_builtin_doc("setRespStatus", bi_set_resp_status, &DOC_SET_RESP_STATUS);
+    vm.register_builtin_doc("setRespContentType", bi_set_resp_content_type, &DOC_SET_RESP_CONTENT_TYPE);
+    vm.register_builtin_doc("serveFile", bi_serve_file, &DOC_SERVE_FILE);
+    vm.register_builtin_doc("redirectResp", bi_redirect_resp, &DOC_REDIRECT_RESP);
+    vm.register_builtin_doc("genJsonResp", bi_gen_json_resp, &DOC_GEN_JSON_RESP);
+
+    // 表单解析
+    vm.register_builtin_doc("parseReqForm", bi_parse_req_form, &DOC_PARSE_REQ_FORM);
+    vm.register_builtin_doc("saveFileUploads", bi_save_file_uploads, &DOC_SAVE_FILE_UPLOADS);
+
+    // Cookie
+    vm.register_builtin_doc("getReqCookie", bi_get_req_cookie, &DOC_GET_REQ_COOKIE);
+    vm.register_builtin_doc("getReqCookies", bi_get_req_cookies, &DOC_GET_REQ_COOKIES);
+    vm.register_builtin_doc("setRespCookie", bi_set_resp_cookie, &DOC_SET_RESP_COOKIE);
+
+    // CORS
+    vm.register_builtin_doc("setCorsHeaders", bi_set_cors_headers, &DOC_SET_CORS_HEADERS);
+
+    // WebSocket
+    vm.register_builtin_doc("webSocket", bi_web_socket, &DOC_WEB_SOCKET);
+    vm.register_builtin_doc("wsReadMsg", bi_ws_read_msg, &DOC_WS_READ_MSG);
+    vm.register_builtin_doc("wsReadText", bi_ws_read_text, &DOC_WS_READ_TEXT);
+    vm.register_builtin_doc("wsReadBin", bi_ws_read_bin, &DOC_WS_READ_BIN);
+    vm.register_builtin_doc("wsWriteText", bi_ws_write_text, &DOC_WS_WRITE_TEXT);
+    vm.register_builtin_doc("wsWriteBin", bi_ws_write_bin, &DOC_WS_WRITE_BIN);
+    vm.register_builtin_doc("wsWriteMsg", bi_ws_write_msg, &DOC_WS_WRITE_MSG);
+    vm.register_builtin_doc("wsClose", bi_ws_close, &DOC_WS_CLOSE);
+    vm.register_builtin_doc("wsLocalAddr", bi_ws_local_addr, &DOC_WS_LOCAL_ADDR);
+
+    // HTTP 客户端
+    vm.register_builtin_doc("getWeb", bi_get_web, &DOC_GET_WEB);
+    vm.register_builtin_doc("getWebBytes", bi_get_web_bytes, &DOC_GET_WEB_BYTES);
+    vm.register_builtin_doc("getWebBytesWithHeaders", bi_get_web_bytes_with_headers, &DOC_GET_WEB_BYTES_WITH_HEADERS);
+    vm.register_builtin_doc("postWeb", bi_post_web, &DOC_POST_WEB);
+    vm.register_builtin_doc("downloadFile", bi_download_file, &DOC_DOWNLOAD_FILE);
+    vm.register_builtin_doc("urlExists", bi_url_exists, &DOC_URL_EXISTS);
+
+    // URL 与 MIME 工具
+    vm.register_builtin_doc("parseUrl", bi_parse_url, &DOC_PARSE_URL);
+    vm.register_builtin_doc("getMimeType", bi_get_mime_type, &DOC_GET_MIME_TYPE);
+    vm.register_builtin_doc("parseQuery", bi_parse_query, &DOC_PARSE_QUERY);
+    vm.register_builtin_doc("joinUrlPath", bi_join_url_path, &DOC_JOIN_URL_PATH);
+
+    // Multipart 构建
+    vm.register_builtin_doc("prepareMultiPartFieldFromBytes", bi_prepare_multipart_field_from_bytes, &DOC_PREPARE_MULTIPART_FIELD_FROM_BYTES);
+
+    // 响应刷新
+    vm.register_builtin_doc("flushResp", bi_flush_resp, &DOC_FLUSH_RESP);
+}
 
 // ===========================================================================
 // Native 包装类型
@@ -123,87 +962,6 @@ fn active_vms() -> &'static Mutex<HashMap<u64, VmInfo>> {
 
 /// 全局 VM ID 计数器。
 static VM_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-// ===========================================================================
-// 注册内置函数
-// ===========================================================================
-
-/// register 注册所有 HTTP 相关内置函数。
-pub fn register(vm: &mut VM) {
-    // 服务器管理
-    vm.register_builtin("httpServer", bi_http_server);
-    vm.register_builtin("serverSetHandler", bi_server_set_handler);
-    vm.register_builtin("serverSetStatic", bi_server_set_static);
-    vm.register_builtin("serverStart", bi_server_start);
-    vm.register_builtin("serverStop", bi_server_stop);
-    vm.register_builtin("serverAddr", bi_server_addr);
-
-    // 请求操作
-    vm.register_builtin("getReqMethod", bi_get_req_method);
-    vm.register_builtin("getReqPath", bi_get_req_path);
-    vm.register_builtin("getReqUri", bi_get_req_uri);
-    vm.register_builtin("getReqQuery", bi_get_req_query);
-    vm.register_builtin("getReqHeader", bi_get_req_header);
-    vm.register_builtin("getReqHeaders", bi_get_req_headers);
-    vm.register_builtin("getReqBody", bi_get_req_body);
-    vm.register_builtin("getReqBodyBytes", bi_get_req_body_bytes);
-    vm.register_builtin("getReqParam", bi_get_req_param);
-    vm.register_builtin("getReqParams", bi_get_req_params);
-
-    // 响应操作
-    vm.register_builtin("writeResp", bi_write_resp);
-    vm.register_builtin("writeRespBytes", bi_write_resp_bytes);
-    vm.register_builtin("writeRespHeader", bi_write_resp_header);
-    vm.register_builtin("setRespHeader", bi_set_resp_header);
-    vm.register_builtin("setRespStatus", bi_set_resp_status);
-    vm.register_builtin("setRespContentType", bi_set_resp_content_type);
-    vm.register_builtin("serveFile", bi_serve_file);
-    vm.register_builtin("redirectResp", bi_redirect_resp);
-    vm.register_builtin("genJsonResp", bi_gen_json_resp);
-
-    // 表单解析
-    vm.register_builtin("parseReqForm", bi_parse_req_form);
-    vm.register_builtin("saveFileUploads", bi_save_file_uploads);
-
-    // Cookie
-    vm.register_builtin("getReqCookie", bi_get_req_cookie);
-    vm.register_builtin("getReqCookies", bi_get_req_cookies);
-    vm.register_builtin("setRespCookie", bi_set_resp_cookie);
-
-    // CORS
-    vm.register_builtin("setCorsHeaders", bi_set_cors_headers);
-
-    // WebSocket
-    vm.register_builtin("webSocket", bi_web_socket);
-    vm.register_builtin("wsReadMsg", bi_ws_read_msg);
-    vm.register_builtin("wsReadText", bi_ws_read_text);
-    vm.register_builtin("wsReadBin", bi_ws_read_bin);
-    vm.register_builtin("wsWriteText", bi_ws_write_text);
-    vm.register_builtin("wsWriteBin", bi_ws_write_bin);
-    vm.register_builtin("wsWriteMsg", bi_ws_write_msg);
-    vm.register_builtin("wsClose", bi_ws_close);
-    vm.register_builtin("wsLocalAddr", bi_ws_local_addr);
-
-    // HTTP 客户端
-    vm.register_builtin("getWeb", bi_get_web);
-    vm.register_builtin("getWebBytes", bi_get_web_bytes);
-    vm.register_builtin("getWebBytesWithHeaders", bi_get_web_bytes_with_headers);
-    vm.register_builtin("postWeb", bi_post_web);
-    vm.register_builtin("downloadFile", bi_download_file);
-    vm.register_builtin("urlExists", bi_url_exists);
-
-    // URL 与 MIME 工具
-    vm.register_builtin("parseUrl", bi_parse_url);
-    vm.register_builtin("getMimeType", bi_get_mime_type);
-    vm.register_builtin("parseQuery", bi_parse_query);
-    vm.register_builtin("joinUrlPath", bi_join_url_path);
-
-    // Multipart 构建
-    vm.register_builtin("prepareMultiPartFieldFromBytes", bi_prepare_multipart_field_from_bytes);
-
-    // 响应刷新
-    vm.register_builtin("flushResp", bi_flush_resp);
-}
 
 // ===========================================================================
 // 开关式参数解析工具

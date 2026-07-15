@@ -129,7 +129,11 @@ impl VM {
             globals: Arc::new(Mutex::new(std::collections::HashMap::new())),
             builtins: std::collections::HashMap::new(),
             out: Arc::new(Mutex::new(std::io::sink())),
-            max_call_depth: 1000,
+            // max_call_depth 限制递归深度。
+            // 注意：VM 的函数调用通过 Rust 递归实现（run_frame → do_call → run_frame），
+            // 每层消耗一个 OS 栈帧。主程序在 32MB 栈线程中运行，可安全容纳约 500 层。
+            // run 启动的并发子线程用默认 8MB 栈，递归上限更低（但逻辑检查一致）。
+            max_call_depth: 500,
             depth: 0,
             import_stack: Vec::new(),
             imported_modules: Vec::new(),
@@ -211,6 +215,62 @@ impl VM {
     /// register_builtin 注册内置函数。
     pub fn register_builtin(&mut self, name: &'static str, func: crate::function::BuiltinFn) {
         self.builtins.insert(name.to_string(), Builtin::new(name, func));
+    }
+
+    /// register_builtin_doc 注册带文档的内置函数（用于 help 系统）。
+    pub fn register_builtin_doc(
+        &mut self,
+        name: &'static str,
+        func: crate::function::BuiltinFn,
+        doc: &'static crate::function::BuiltinDoc,
+    ) {
+        self.builtins
+            .insert(name.to_string(), Builtin::new_with_doc(name, func, doc));
+    }
+
+    /// builtin_names 返回所有内置函数名（按字母序）。
+    /// 用于 help() 无参调用时列出全部函数。
+    pub fn builtin_names(&self) -> Vec<&'static str> {
+        let mut names: Vec<&'static str> = self
+            .builtins
+            .values()
+            .map(|b| b.name)
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// builtin_exists 判断内置函数是否存在（按名字）。
+    pub fn builtin_exists(&self, name: &str) -> bool {
+        self.builtins.contains_key(name)
+    }
+
+    /// builtin_doc 查询某内置函数的文档元数据。
+    /// 返回 None 表示函数不存在或暂无文档。
+    pub fn builtin_doc(&self, name: &str) -> Option<&'static crate::function::BuiltinDoc> {
+        self.builtins.get(name).and_then(|b| b.doc)
+    }
+
+    /// builtin_categories 按分类聚合内置函数名。
+    /// 返回 (分类, [函数名]) 列表，分类按字母序，函数名按字母序。
+    /// 无文档的函数归入 "(uncategorized)" 分类。
+    pub fn builtin_categories(&self) -> Vec<(&'static str, Vec<&'static str>)> {
+        use std::collections::BTreeMap;
+        // 用 BTreeMap 自动按分类名排序
+        let mut by_cat: BTreeMap<&'static str, Vec<&'static str>> = BTreeMap::new();
+        for b in self.builtins.values() {
+            let cat = b.doc.map(|d| d.category).unwrap_or("(uncategorized)");
+            by_cat.entry(cat).or_default().push(b.name);
+        }
+        // 每个分类内函数名去重并排序
+        let mut result: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
+        for (cat, mut names) in by_cat {
+            names.sort();
+            names.dedup();
+            result.push((cat, names));
+        }
+        result
     }
 
     /// globals_handle 获取全局变量的共享句柄（Arc<Mutex<HashMap>>）。
@@ -1174,23 +1234,26 @@ impl VM {
     fn spawn_thread(&self, callee: Value, args: Vec<Value>) {
         let globals = self.globals.clone();
         let out = self.out.clone();
-        std::thread::spawn(move || {
-            let mut vm = VM::new();
-            vm.set_globals_handle(globals);
-            vm.set_output_handle(out);
-            vm.push(callee);
-            for a in &args {
-                vm.push(a.clone());
-            }
-            let mut tmp_frame = Frame::new(Arc::new(Code::new("<run>", "<run>")), Vec::new());
-            let res = vm.do_call(&mut tmp_frame, args.len());
-            // 子线程内异常：打印提示，不传播（避免 panic）
-            if res.kind == FlowKind::Throw {
-                if let Value::Error(e) = &res.value {
-                    let _ = writeln!(vm.output_handle().lock().unwrap(), "[run 线程异常] {}", e.message);
+        // 并发子线程用默认 8MB 栈（避免高并发时地址空间膨胀；run 任务通常不做深递归）。
+        let _ = std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                let mut vm = VM::new();
+                vm.set_globals_handle(globals);
+                vm.set_output_handle(out);
+                vm.push(callee);
+                for a in &args {
+                    vm.push(a.clone());
                 }
-            }
-        });
+                let mut tmp_frame = Frame::new(Arc::new(Code::new("<run>", "<run>")), Vec::new());
+                let res = vm.do_call(&mut tmp_frame, args.len());
+                // 子线程内异常：打印提示，不传播（避免 panic）
+                if res.kind == FlowKind::Throw {
+                    if let Value::Error(e) = &res.value {
+                        let _ = writeln!(vm.output_handle().lock().unwrap(), "[run 线程异常] {}", e.message);
+                    }
+                }
+            });
     }
 }
 
@@ -1228,6 +1291,13 @@ fn arith_op(op: Opcode, a: Value, b: Value) -> Result<Value, String> {
             s.push_str(s1);
             s.push_str(s2);
             return Ok(Value::Str(Arc::from(s.as_str())));
+        }
+        // 一侧是字符串、另一侧非字符串 → 自动 to_str 拼接
+        // （int+int 等纯数值运算不匹配此处，仍走下面的数值分支）
+        if matches!(&a, Value::Str(_)) || matches!(&b, Value::Str(_)) {
+            let sa = a.to_str();
+            let sb = b.to_str();
+            return Ok(Value::Str(Arc::from((sa + &sb).as_str())));
         }
     }
     // 位运算：仅整数参与（Float 报错，类型不兼容）

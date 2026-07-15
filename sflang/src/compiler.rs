@@ -51,6 +51,9 @@ pub struct Compiler {
 }
 
 /// LoopCtx 循环上下文（break/continue 跳转回填）。
+///
+/// 既用于真正的循环（while/for），也用于 switch（switch 内的 break 跳出 switch）。
+/// 通过 is_switch 区分：continue 会跳过 switch 帧继续向外找循环（C 语义）。
 struct LoopCtx {
     /// break_jumps 待回填的 break 跳转偏移列表。
     break_jumps: Vec<usize>,
@@ -58,6 +61,8 @@ struct LoopCtx {
     continue_jumps: Vec<usize>,
     /// label 循环标签（用于 break label/continue label）。
     label: Option<String>,
+    /// is_switch 是否为 switch 帧。switch 帧接受 break，但 continue 会穿透到外层循环。
+    is_switch: bool,
 }
 
 /// Scope 一层作用域（函数作用域或块作用域）。
@@ -191,34 +196,46 @@ impl Compiler {
         if let Some(i) = existing {
             return Some(i);
         }
-        // 沿外层函数作用域查找
-        let mut func_iter_idx = cur_func_idx;
-        while func_iter_idx > 0 {
-            func_iter_idx = self.find_outer_function_scope(func_iter_idx)?;
-            // 在该外层函数的所有块作用域中查找（从内到外）
-            // 简化：直接在该函数作用域查
-            if let Some(&slot) = self.scopes[func_iter_idx].slots.get(name) {
-                self.scopes[func_iter_idx].captured.insert(name.to_string());
-                // 给所有中间函数层（func_iter_idx+1..=cur_func_idx）补 free_var
-                let mut last_is_local = true;
-                let mut last_index = slot;
-                let mut mid = func_iter_idx + 1;
-                while mid <= cur_func_idx {
-                    // 跳过非函数块作用域（块作用域共享父函数的 free_vars）
-                    if self.scopes[mid].is_function || mid == cur_func_idx {
-                        let fv_idx = self.scopes[mid].free_vars.len();
-                        self.scopes[mid].free_vars.push(FreeVarEntry {
-                            name: name.to_string(),
-                            is_local: last_is_local,
-                            index: last_index,
-                        });
-                        last_is_local = false;
-                        last_index = fv_idx;
-                    }
-                    mid += 1;
-                }
-                return Some(last_index);
+        // 在当前函数作用域之外查找变量（从内到外遍历所有作用域，含块作用域）。
+        // 找到后，给从声明点到当前函数作用域之间的每一层补 free_var。
+        //
+        // 作用域链结构示例（cur_func_idx = 3）：
+        //   [0: 外层函数] [1: 外层块] [2: 本函数] [3: 本函数内的块]
+        // 若变量在 scope[1] 声明，需给 scope[2] 补 free_var（is_local=false, index=外层的 free_var idx）。
+        // 若变量在 scope[0] 声明，需给 scope[1]、scope[2] 补 free_var。
+        let mut found_at = None;
+        let mut found_slot = 0;
+        let mut search_idx = cur_func_idx;
+        while search_idx > 0 {
+            search_idx -= 1;
+            if let Some(&slot) = self.scopes[search_idx].slots.get(name) {
+                found_at = Some(search_idx);
+                found_slot = slot;
+                break;
             }
+        }
+        if let Some(decl_idx) = found_at {
+            self.scopes[decl_idx].captured.insert(name.to_string());
+            // 从声明点的下一层到当前函数作用域，逐层补 free_var。
+            // 块作用域也参与 free_var 传播（块作用域的 free_vars 会被父函数的 compile_func_lit 使用）。
+            let mut last_is_local = true;
+            let mut last_index = found_slot;
+            let mut mid = decl_idx + 1;
+            while mid <= cur_func_idx {
+                // 只给函数作用域和当前作用域补 free_var（块作用域的 free_var 不被 OpClosure 使用）
+                if self.scopes[mid].is_function || mid == cur_func_idx {
+                    let fv_idx = self.scopes[mid].free_vars.len();
+                    self.scopes[mid].free_vars.push(FreeVarEntry {
+                        name: name.to_string(),
+                        is_local: last_is_local,
+                        index: last_index,
+                    });
+                    last_is_local = false;
+                    last_index = fv_idx;
+                }
+                mid += 1;
+            }
+            return Some(last_index);
         }
         None
     }
@@ -227,19 +244,6 @@ impl Compiler {
     fn find_cur_function_scope(&self) -> Option<usize> {
         for (i, s) in self.scopes.iter().enumerate().rev() {
             if s.is_function {
-                return Some(i);
-            }
-        }
-        None
-    }
-
-    /// find_outer_function_scope 找到指定函数作用域之外最近的函数作用域。
-    fn find_outer_function_scope(&self, start: usize) -> Option<usize> {
-        if start == 0 {
-            return None;
-        }
-        for i in (0..start).rev() {
-            if self.scopes[i].is_function {
                 return Some(i);
             }
         }
@@ -329,18 +333,18 @@ impl Compiler {
                 self.set_line(tok.line);
                 self.compile_expr(cond)?;
                 let jump_to_next = self.code.emit_u16(Opcode::JumpIfFalse, 0);
-                self.compile_block(then)?;
+                self.compile_scoped_block(then)?;
                 let mut end_jumps = vec![self.code.emit_u16(Opcode::Jump, 0)];
                 self.code.patch_u16(jump_to_next, self.code.insts.len() as u16);
                 for (ec, eb) in elif_conds.iter().zip(elif_bodies.iter()) {
                     self.compile_expr(ec)?;
                     let jf = self.code.emit_u16(Opcode::JumpIfFalse, 0);
-                    self.compile_block(eb)?;
+                    self.compile_scoped_block(eb)?;
                     end_jumps.push(self.code.emit_u16(Opcode::Jump, 0));
                     self.code.patch_u16(jf, self.code.insts.len() as u16);
                 }
                 if let Some(eb) = else_block {
-                    self.compile_block(eb)?;
+                    self.compile_scoped_block(eb)?;
                 }
                 let end = self.code.insts.len() as u16;
                 for j in end_jumps {
@@ -350,10 +354,10 @@ impl Compiler {
             Stmt::WhileStmt { cond, body, tok, label } => {
                 self.set_line(tok.line);
                 let start = self.code.insts.len();
-                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone() });
+                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone(), is_switch: false });
                 self.compile_expr(cond)?;
                 let j_end = self.code.emit_u16(Opcode::JumpIfFalse, 0);
-                self.compile_block(body)?;
+                self.compile_scoped_block(body)?;
                 self.code.emit_u16(Opcode::Jump, start as u16);
                 let end = self.code.insts.len();
                 self.code.patch_u16(j_end, end as u16);
@@ -364,17 +368,19 @@ impl Compiler {
             Stmt::ForStmt { init, cond, post, body, tok, label } => {
                 self.set_line(tok.line);
                 // for (init; cond; post) body
-                // 等价于：{ init; while cond { body; post } }
+                // 整体包一层块作用域，使 init 声明的循环变量（如 i）限于 for 内可见。
+                // body 再嵌套一层块作用域（body 内变量不泄漏到 cond/post）。
+                self.push_scope(false);
                 if let Some(s) = init {
                     self.compile_stmt(s)?;
                 }
                 let start = self.code.insts.len();
-                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone() });
+                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone(), is_switch: false });
                 if let Some(c) = cond {
                     self.compile_expr(c)?;
                     let j_end = self.code.emit_u16(Opcode::JumpIfFalse, 0);
                     // 注：j_end 在循环结束 patch
-                    self.compile_block(body)?;
+                    self.compile_scoped_block(body)?;
                     // continue 跳到 post
                     let continue_target = self.code.insts.len();
                     if let Some(p) = post {
@@ -388,7 +394,7 @@ impl Compiler {
                     for j in lc.continue_jumps { self.code.patch_u16(j, continue_target as u16); }
                 } else {
                     // 无 cond：无限循环
-                    self.compile_block(body)?;
+                    self.compile_scoped_block(body)?;
                     let continue_target = self.code.insts.len();
                     if let Some(p) = post {
                         self.compile_stmt(p)?;
@@ -401,6 +407,7 @@ impl Compiler {
                     for j in lc.break_jumps { self.code.patch_u16(j, end as u16); }
                     for j in lc.continue_jumps { self.code.patch_u16(j, continue_target as u16); }
                 }
+                self.pop_scope();
             }
             Stmt::ForInStmt { index_var, var, iter, body, tok, label } => {
                 self.set_line(tok.line);
@@ -447,7 +454,7 @@ impl Compiler {
                 self.code.emit_u16(Opcode::StoreLocal, idx_slot as u16);
 
                 let start = self.code.insts.len();
-                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone() });
+                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone(), is_switch: false });
 
                 // 压入 __idx（LT 的左操作数先压）
                 self.code.emit_u16(Opcode::LoadLocal, idx_slot as u16);
@@ -545,8 +552,10 @@ impl Compiler {
                         return Err(self.err(tok.line, &format!("continue {} 找不到对应的标签循环", lbl)));
                     }
                 } else {
-                    // 普通 continue：跳到最内层循环
-                    if let Some(lc) = self.loops.last_mut() {
+                    // 普通 continue：跳到最内层循环。
+                    // continue 会穿透 switch 帧（switch 不是循环，continue 应作用于外层循环）。
+                    let target = self.loops.iter_mut().rev().find(|lc| !lc.is_switch);
+                    if let Some(lc) = target {
                         let j = self.code.emit_u16(Opcode::Jump, 0);
                         lc.continue_jumps.push(j);
                     } else {
@@ -669,11 +678,110 @@ impl Compiler {
                 let idx = self.code.add_name(path);
                 self.code.emit_u16(Opcode::Import, idx as u16);
             }
+            Stmt::SwitchStmt { value, cases, default, tok } => {
+                self.set_line(tok.line);
+                // switch 编译为等值匹配链（默认不贯穿）。
+                //
+                // 将待匹配值存入临时局部变量 __sw（避免在栈上保留值，与 return 的
+                // 栈语义更简单安全）。每个 case 测试时从局部变量读取并比较。
+                //
+                //   <eval value>; StoreLocal __sw
+                //   case_i: LoadLocal __sw; <eval caseval_i>; Eq; JumpIfFalse case_{i+1}
+                //           <body_i>; Jump end
+                //   case_{n}: ... 最后一个 JumpIfFalse 跳到 default_label（若有）
+                //   default_label: <default body>   （若无 default 则 default_label == end）
+                //   end:
+                // 待匹配值的存储策略：
+                //   - 函数内（有 scope）：存入局部变量 __swN（StoreLocal/LoadLocal）
+                //   - 顶层（无 scope）：用栈保留（Dup 复制供每个 case 比较，最后 Pop 清除），
+                //     避免污染全局命名空间。
+                let is_local_scope = !self.scopes.is_empty();
+                let sw_slot = if is_local_scope {
+                    Some(self.declare_local(&format!("__sw{}", self.func_local_count)))
+                } else {
+                    None
+                };
+                self.compile_expr(value)?;
+                if let Some(slot) = sw_slot {
+                    self.code.emit_u16(Opcode::StoreLocal, slot as u16);
+                }
+                // 顶层：值留在栈上 [val]，供各 case 的 Dup 比较
+
+                // switch 入 loops 栈（is_switch=true）：case body 内的 break 跳出 switch。
+                self.loops.push(LoopCtx {
+                    break_jumps: vec![],
+                    continue_jumps: vec![],
+                    label: None,
+                    is_switch: true,
+                });
+
+                // 收集每个 case 测试的 JumpIfFalse 占位偏移，稍后回填到下一测试起点。
+                let mut test_fail_jumps: Vec<usize> = Vec::new();
+                // 每个 case body 末尾的 Jump end 占位偏移。
+                let mut body_end_jumps: Vec<usize> = Vec::new();
+
+                for (case_val, body) in cases.iter() {
+                    // 本 case 测试起点：回填上一个 case 的 JumpIfFalse 指向此处。
+                    if let Some(prev_jf) = test_fail_jumps.last() {
+                        let off = self.code.insts.len() as u16;
+                        self.code.patch_u16(*prev_jf, off);
+                    }
+                    if let Some(slot) = sw_slot {
+                        self.code.emit_u16(Opcode::LoadLocal, slot as u16);
+                    } else {
+                        // 顶层：Dup 复制栈上的待匹配值
+                        self.code.emit(Opcode::Dup);
+                    }
+                    self.compile_expr(case_val)?;
+                    self.code.emit(Opcode::Eq);                           // [bool]
+                    let jf = self.code.emit_u16(Opcode::JumpIfFalse, 0);
+                    test_fail_jumps.push(jf);
+                    // body 紧随（匹配时执行），块作用域使 case 内变量不泄漏
+                    self.compile_scoped_block(body)?;
+                    // body 结束：跳到 switch 末尾（不贯穿到下一个 case）
+                    body_end_jumps.push(self.code.emit_u16(Opcode::Jump, 0));
+                }
+
+                // 最后一个 case 的 JumpIfFalse 失败应跳到 default（若有）或 end。
+                let default_start = self.code.insts.len() as u16;
+                if let Some(jf) = test_fail_jumps.last() {
+                    self.code.patch_u16(*jf, default_start);
+                }
+
+                // 全部 case 不匹配：default 块（若有），块作用域
+                if let Some(db) = default {
+                    self.compile_scoped_block(db)?;
+                }
+
+                // end：回填所有 body 末尾的 Jump 与 break 跳转
+                let end = self.code.insts.len() as u16;
+                for j in body_end_jumps {
+                    self.code.patch_u16(j, end);
+                }
+                let lc = self.loops.pop().unwrap();
+                for j in lc.break_jumps {
+                    self.code.patch_u16(j, end);
+                }
+                // switch 帧不应有 continue（编译期 continue 已穿透到外层循环）；
+                // 若用户在无外层循环的 switch 里写 continue，编译期已报错。
+
+                // 顶层 switch：弹掉栈上保留的待匹配值
+                if sw_slot.is_none() {
+                    self.code.emit(Opcode::Pop);
+                }
+            }
             Stmt::Block { stmts, tok } => {
                 self.set_line(tok.line);
-                // 块作用域：push scope（非函数），编译语句，pop
-                // 注：当前简化实现不引入块作用域，所有变量在函数作用域
-                // 这样可避免变量遮蔽问题，且性能更好
+                // 块作用域：块内声明的变量不泄漏到外层，支持遮蔽。
+                self.push_scope(false);
+                self.compile_stmts(stmts)?;
+                self.pop_scope();
+            }
+            Stmt::DeclGroup { stmts, tok } => {
+                self.set_line(tok.line);
+                // 声明组（var/const 分组）：无独立作用域，变量在当前作用域声明。
+                // 这与 Block 的区别是必要的——分组内 c = a + b 需要看到同组的 a、b，
+                // 且分组声明的变量应在分组外可见（如 return c）。
                 self.compile_stmts(stmts)?;
             }
         }
@@ -682,6 +790,17 @@ impl Compiler {
 
     fn compile_block(&mut self, block: &Block) -> Result<(), CompileError> {
         self.compile_stmts(&block.stmts)
+    }
+
+    /// compile_scoped_block 编译块并引入独立的块作用域（变量块外不可见，支持遮蔽）。
+    ///
+    /// 用于 if/while/for/switch/裸{} 的 body，使块内声明的变量不泄漏到外层。
+    /// for-in 和 try/catch 已自行 push_scope，不调用本方法（避免双重作用域）。
+    fn compile_scoped_block(&mut self, block: &Block) -> Result<(), CompileError> {
+        self.push_scope(false);
+        self.compile_stmts(&block.stmts)?;
+        self.pop_scope();
+        Ok(())
     }
 
     // ---- 表达式编译 ----
@@ -702,6 +821,28 @@ impl Compiler {
                 self.set_line(tok.line);
                 let idx = self.code.add_const(Value::str(value));
                 self.code.emit_u16(Opcode::Const, idx as u16);
+            }
+            Expr::InterpStringLit { parts, tok } => {
+                self.set_line(tok.line);
+                // 编译为逐段求值 + Add 拼接（Add 已支持 string+任意类型 to_str）
+                // 策略：先压入空字符串常量作为基准，再逐段 Add，确保结果始终为 string。
+                let empty_idx = self.code.add_const(Value::str(""));
+                self.code.emit_u16(Opcode::Const, empty_idx as u16);
+                for part in parts {
+                    match part {
+                        InterpPart::Text(t) => {
+                            if t.is_empty() { continue; }
+                            let idx = self.code.add_const(Value::str(t));
+                            self.code.emit_u16(Opcode::Const, idx as u16);
+                            self.code.emit(Opcode::Add);
+                        }
+                        InterpPart::Expr(e) => {
+                            self.compile_expr(e)?;
+                            self.code.emit(Opcode::Add);
+                        }
+                    }
+                }
+                // 栈顶始终为 string（基准空字符串保证了类型）
             }
             Expr::BoolLit { value, tok } => {
                 self.set_line(tok.line);
@@ -1164,6 +1305,19 @@ impl Compiler {
         // 声明参数（占用 slot 0..n-1）
         for p in &func.params {
             sub.declare_local(p);
+        }
+        // 编译默认参数回填：对每个有默认值的参数，若调用时未传（undefined）则用默认值。
+        // 编译为：LoadLocal i; JumpIfNotUndefined skip; <eval default>; StoreLocal i; skip:
+        // 默认值表达式可引用前面的参数（已在作用域中声明）和闭包捕获的外层变量。
+        for (i, default_expr) in func.defaults.iter().enumerate() {
+            if let Some(def) = default_expr {
+                let slot = i; // 参数 slot 与 params 索引一致
+                sub.code.emit_u16(Opcode::LoadLocal, slot as u16);
+                let skip = sub.code.emit_u16(Opcode::JumpIfNotUndefined, 0);
+                sub.compile_expr(def)?;
+                sub.code.emit_u16(Opcode::StoreLocal, slot as u16);
+                sub.code.patch_u16(skip, sub.code.insts.len() as u16);
+            }
         }
         // 编译函数体
         sub.compile_block(&func.body)?;

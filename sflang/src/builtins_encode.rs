@@ -14,21 +14,186 @@
 use std::sync::Arc;
 
 use crate::builtins_helpers as bh;
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 use crate::vm::VM;
 
+// ---- 编解码函数文档 ----
+
+static DOC_BASE64_ENCODE: BuiltinDoc = BuiltinDoc {
+    category: "encode",
+    signature: "base64Encode(data) -> string",
+    summary: "将字节序列编码为标准 base64 字符串（含 + / = 与 = 填充）。",
+    params: &[
+        ("data", "待编码数据，可为 string/bytes/byteArray（string 取 UTF-8 字节）"),
+    ],
+    returns: "string base64 编码结果",
+    examples: &[
+        "base64Encode(\"abc\")          → \"YWJj\"",
+        "base64Encode(\"a\")             → \"YQ==\"",
+    ],
+    errors: &[
+        "参数须为 string/bytes/byteArray，其他类型报错",
+        "标准 base64 含 + 与 /，不能直接放 URL（用 base64UrlEncode）",
+    ],
+};
+
+static DOC_BASE64_DECODE: BuiltinDoc = BuiltinDoc {
+    category: "encode",
+    signature: "base64Decode(s) -> bytes",
+    summary: "将标准 base64 字符串解码为 bytes（自动忽略空白，长度须为 4 的倍数）。",
+    params: &[("s", "base64 字符串，空白字符（空格/换行/制表）自动过滤")],
+    returns: "bytes 解码后的字节；非法输入返回 error",
+    examples: &[
+        "base64Decode(\"YWJj\")          → bytes(b\"abc\")",
+        "base64Decode(base64Encode(x))  → 原始字节",
+    ],
+    errors: &[
+        "输入长度（去空白后）须为 4 的倍数，否则报错",
+        "含 + / 之外的非法字符会报错；URL-safe 变体请用 base64UrlDecode",
+    ],
+};
+
+static DOC_BASE64URL_ENCODE: BuiltinDoc = BuiltinDoc {
+    category: "encode",
+    signature: "base64UrlEncode(data) -> string",
+    summary: "编码为 URL-safe base64（用 - 和 _ 替代 + 和 /，无 = 填充）。",
+    params: &[
+        ("data", "待编码数据，可为 string/bytes/byteArray"),
+    ],
+    returns: "string URL-safe base64，无填充字符",
+    examples: &[
+        "base64UrlEncode(bytes(b\"\\xfb\\xff\")) → \"-_8\"",
+        "// 适合放进 URL / JWT / 文件名",
+    ],
+    errors: &[
+        "参数须为 string/bytes/byteArray，其他类型报错",
+        "本变体无 = 填充，与标准 base64 不互通",
+    ],
+};
+
+static DOC_BASE64URL_DECODE: BuiltinDoc = BuiltinDoc {
+    category: "encode",
+    signature: "base64UrlDecode(s) -> bytes",
+    summary: "解码 URL-safe base64 字符串（- _ 与标准变体等价，支持有无 = 填充）。",
+    params: &[("s", "URL-safe base64 字符串，= 与空白自动忽略")],
+    returns: "bytes 解码后的字节；非法字符返回 error",
+    examples: &[
+        "base64UrlDecode(\"-_8\")        → bytes(b\"\\xfb\\xff\")",
+        "base64UrlDecode(base64UrlEncode(x)) → 原始字节",
+    ],
+    errors: &[
+        "含 - _ 以外的非法字符会报错；标准 base64 含 + /，请用 base64Decode",
+    ],
+};
+
+static DOC_URL_ENCODE: BuiltinDoc = BuiltinDoc {
+    category: "encode",
+    signature: "urlEncode(s) -> string",
+    summary: "RFC 3986 百分号编码：空格→%20，+ 保留不编码，仅字母数字与 -_.~ 不编码。",
+    params: &[("s", "待编码字符串，按字节编码（含 UTF-8 多字节）")],
+    returns: "string 百分号编码结果",
+    examples: &[
+        "urlEncode(\"a b/c\")    → \"a%20b%2Fc\"",
+        "urlEncode(\"中文\")      → \"%E4%B8%AD%E6%96%87\"",
+    ],
+    errors: &[
+        "本函数把空格编为 %20（非 +）；HTML 表单请用 urlFormEncode",
+        "+ 不会被转义（与表单编码不同）",
+    ],
+};
+
+static DOC_URL_DECODE: BuiltinDoc = BuiltinDoc {
+    category: "encode",
+    signature: "urlDecode(s) -> string",
+    summary: "RFC 3986 百分号解码：%XX 解码为字节，+ 保持原样不转空格。",
+    params: &[("s", "待解码字符串")],
+    returns: "string 解码结果（按 UTF-8 容错解码）",
+    examples: &[
+        "urlDecode(\"a%20b%2Fc\") → \"a b/c\"",
+        "urlDecode(urlEncode(x)) → x（严格往返）",
+    ],
+    errors: &[
+        "+ 保持原样（不转空格）；表单编码请用 urlFormDecode",
+        "非法 %XX 序列保留原字符，不报错",
+    ],
+};
+
+static DOC_URL_FORM_ENCODE: BuiltinDoc = BuiltinDoc {
+    category: "encode",
+    signature: "urlFormEncode(s) -> string",
+    summary: "application/x-www-form-urlencoded 编码：空格→+，+→%2B，其余非保留字符外 %XX。",
+    params: &[("s", "待编码字符串")],
+    returns: "string 表单编码结果",
+    examples: &[
+        "urlFormEncode(\"a b+c\")  → \"a+b%2Bc\"",
+        "// 适合 HTML 表单提交 / query string 参数",
+    ],
+    errors: &[
+        "空格编为 +（非 %20），与 urlEncode 不同",
+        "+ 自身需编码为 %2B，否则解码时会误判",
+    ],
+};
+
+static DOC_URL_FORM_DECODE: BuiltinDoc = BuiltinDoc {
+    category: "encode",
+    signature: "urlFormDecode(s) -> string",
+    summary: "表单解码：+ 转空格，%XX 解码。与 urlFormEncode 严格往返。",
+    params: &[("s", "待解码字符串")],
+    returns: "string 解码结果",
+    examples: &[
+        "urlFormDecode(\"a+b%2Bc\") → \"a b+c\"",
+        "urlFormDecode(urlFormEncode(x)) → x",
+    ],
+    errors: &[
+        "+ 解码为空格（与 urlDecode 不同，后者保留 +）",
+    ],
+};
+
+static DOC_HTML_ENCODE: BuiltinDoc = BuiltinDoc {
+    category: "encode",
+    signature: "htmlEncode(s) -> string",
+    summary: "将 HTML 特殊字符转义为实体：& < > \" ' → &amp; &lt; &gt; &quot; &#39;。",
+    params: &[("s", "待转义的字符串")],
+    returns: "string 转义后的字符串，可安全嵌入 HTML 文本",
+    examples: &[
+        "htmlEncode(\"<a>\")        → \"&lt;a&gt;\"",
+        "htmlEncode(\"a & b\")       → \"a &amp; b\"",
+    ],
+    errors: &[
+        "仅转义 5 个 HTML 特殊字符，不做全量实体编码",
+        "用于防 XSS；属性值场景同样适用（' 转为 &#39;）",
+    ],
+};
+
+static DOC_HTML_DECODE: BuiltinDoc = BuiltinDoc {
+    category: "encode",
+    signature: "htmlDecode(s) -> string",
+    summary: "将 HTML 实体解码回原字符：支持命名实体（amp/lt/gt/quot/apos/nbsp）与数字实体。",
+    params: &[("s", "含 HTML 实体的字符串")],
+    returns: "string 解码后的字符串；无法识别的 & 序列原样保留",
+    examples: &[
+        "htmlDecode(\"&lt;a&gt;\")   → \"<a>\"",
+        "htmlDecode(\"&#65;\")       → \"A\"",
+        "htmlDecode(htmlEncode(x)) → x",
+    ],
+    errors: &[
+        "仅识别常见命名实体与数字实体 &#NN; / &#xNN;，其他原样保留",
+    ],
+};
+
 /// register 注册编解码内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("base64Encode", bi_base64_encode);
-    vm.register_builtin("base64Decode", bi_base64_decode);
-    vm.register_builtin("base64UrlEncode", bi_base64url_encode);
-    vm.register_builtin("base64UrlDecode", bi_base64url_decode);
-    vm.register_builtin("urlEncode", bi_url_encode);
-    vm.register_builtin("urlDecode", bi_url_decode);
-    vm.register_builtin("urlFormEncode", bi_url_form_encode);
-    vm.register_builtin("urlFormDecode", bi_url_form_decode);
-    vm.register_builtin("htmlEncode", bi_html_encode);
-    vm.register_builtin("htmlDecode", bi_html_decode);
+    vm.register_builtin_doc("base64Encode", bi_base64_encode, &DOC_BASE64_ENCODE);
+    vm.register_builtin_doc("base64Decode", bi_base64_decode, &DOC_BASE64_DECODE);
+    vm.register_builtin_doc("base64UrlEncode", bi_base64url_encode, &DOC_BASE64URL_ENCODE);
+    vm.register_builtin_doc("base64UrlDecode", bi_base64url_decode, &DOC_BASE64URL_DECODE);
+    vm.register_builtin_doc("urlEncode", bi_url_encode, &DOC_URL_ENCODE);
+    vm.register_builtin_doc("urlDecode", bi_url_decode, &DOC_URL_DECODE);
+    vm.register_builtin_doc("urlFormEncode", bi_url_form_encode, &DOC_URL_FORM_ENCODE);
+    vm.register_builtin_doc("urlFormDecode", bi_url_form_decode, &DOC_URL_FORM_DECODE);
+    vm.register_builtin_doc("htmlEncode", bi_html_encode, &DOC_HTML_ENCODE);
+    vm.register_builtin_doc("htmlDecode", bi_html_decode, &DOC_HTML_DECODE);
 }
 
 /// to_bytes 将参数转为字节 Vec（接受 string/bytes/byteArray）。

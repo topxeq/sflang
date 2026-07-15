@@ -123,6 +123,7 @@ impl Lexer {
             b'"' => "\"".to_string(),
             b'\'' => "'".to_string(),
             b'0' => "\0".to_string(),
+            b'$' => "$".to_string(), // \$ 用于转义 ${，输出字面 $
             b'x' | b'u' | b'U' => {
                 let n = match esc {
                     b'x' => 2,
@@ -369,7 +370,10 @@ impl Lexer {
         Ok(Token::new(kind, s, line, col))
     }
 
-    /// lex_string 读取双引号字符串（单行，支持转义）。
+    /// lex_string 读取双引号字符串（单行，支持转义和 ${expr} 插值）。
+    ///
+    /// 若字符串中含 ${expr}，产出 InterpString token（value 用 NUL 分隔段编码）。
+    /// 否则产出普通 String token（零开销）。
     fn lex_string(&mut self, line: u32, col: u32) -> Result<Token, LexError> {
         self.advance(); // 消费开头 "
 
@@ -378,7 +382,12 @@ impl Lexer {
             return self.lex_multiline_string(line, col);
         }
 
-        let mut s = String::new();
+        // 先用单行约束扫描（不支持跨行）
+        // 插值段收集：偶数索引=纯文本，奇数索引=表达式源码
+        let mut parts: Vec<String> = Vec::new();
+        let mut has_interp = false;
+        parts.push(String::new()); // 第一段是文本
+
         loop {
             match self.peek_byte() {
                 None => {
@@ -395,7 +404,43 @@ impl Lexer {
                 Some(b'\\') => {
                     self.advance(); // 消费 '\\'
                     let escaped = self.process_escape(line, col)?;
-                    s.push_str(&escaped);
+                    parts.last_mut().unwrap().push_str(&escaped);
+                }
+                Some(b'$') if self.peek_byte_at(1) == Some(b'{') => {
+                    // 插值开始：${expr}
+                    has_interp = true;
+                    self.advance(); // 消费 $
+                    self.advance(); // 消费 {
+                    // 用花括号计数找到匹配的 }
+                    let expr_start = self.pos;
+                    let mut depth = 1u32;
+                    let mut found = false;
+                    while let Some(b) = self.peek_byte() {
+                        if b == b'{' { depth += 1; self.advance(); }
+                        else if b == b'}' {
+                            depth -= 1;
+                            self.advance();
+                            if depth == 0 { found = true; break; }
+                        }
+                        else if b == b'\\' {
+                            // 插值表达式内的字符串中的转义，跳过下一字节
+                            self.advance();
+                            self.advance();
+                        }
+                        else { self.advance(); }
+                    }
+                    if !found {
+                        return Err(LexError {
+                            msg: "unterminated interpolation (插值 ${...} 未闭合；可能原因：忘记写 })".into(),
+                            line,
+                            col,
+                        });
+                    }
+                    let expr_src = std::str::from_utf8(&self.src[expr_start..self.pos - 1])
+                        .map_err(|_| LexError { msg: "invalid UTF-8 in interpolation".into(), line, col })?
+                        .to_string();
+                    parts.push(expr_src);   // 奇数索引=表达式
+                    parts.push(String::new()); // 新的文本段
                 }
                 Some(b'\n') => {
                     return Err(LexError {
@@ -405,26 +450,32 @@ impl Lexer {
                     });
                 }
                 Some(b) => {
-                    // 直接消费 UTF-8 字节
                     if b < 0x80 {
-                        s.push(b as char);
+                        parts.last_mut().unwrap().push(b as char);
                         self.advance();
                     } else {
-                        // 多字节 UTF-8：找到完整字符
                         let char_start = self.pos;
                         let n = utf8_char_len(b);
-                        for _ in 0..n {
-                            self.advance();
-                        }
-                        s.push_str(std::str::from_utf8(&self.src[char_start..self.pos]).unwrap_or("\u{FFFD}"));
+                        for _ in 0..n { self.advance(); }
+                        parts.last_mut().unwrap().push_str(
+                            std::str::from_utf8(&self.src[char_start..self.pos]).unwrap_or("\u{FFFD}"),
+                        );
                     }
                 }
             }
         }
-        Ok(Token::new(TokenKind::String, s, line, col))
+
+        if has_interp {
+            // 编码：用 NUL 分隔各段。parts[0]=text, parts[1]=expr, parts[2]=text, ...
+            let encoded = parts.join("\0");
+            Ok(Token::new(TokenKind::InterpString, encoded, line, col))
+        } else {
+            let s = parts.into_iter().next().unwrap();
+            Ok(Token::new(TokenKind::String, s, line, col))
+        }
     }
 
-    /// lex_multiline_string 读取三引号多行字符串。
+    /// lex_multiline_string 读取三引号多行字符串（支持 ${expr} 插值）。
     ///
     /// 注：调用方 lex_string 已消费开头的第 1 个 '"'，此处仅再消费剩余 2 个 '"'。
     fn lex_multiline_string(&mut self, line: u32, col: u32) -> Result<Token, LexError> {
@@ -432,7 +483,10 @@ impl Lexer {
         self.advance();
         self.advance();
 
-        let mut s = String::new();
+        let mut parts: Vec<String> = Vec::new();
+        let mut has_interp = false;
+        parts.push(String::new()); // 第一段文本
+
         loop {
             if self.pos >= self.src.len() {
                 return Err(LexError {
@@ -451,27 +505,68 @@ impl Lexer {
                 self.advance();
                 break;
             }
-            // 转义处理（与单行字符串一致，复用 process_escape）
+            // 插值 ${expr}
+            if self.peek_byte() == Some(b'$') && self.peek_byte_at(1) == Some(b'{') {
+                has_interp = true;
+                self.advance(); // $
+                self.advance(); // {
+                let expr_start = self.pos;
+                let mut depth = 1u32;
+                let mut found = false;
+                while self.pos < self.src.len() {
+                    let b = self.peek_byte().unwrap();
+                    if b == b'"' && self.peek_byte_at(1) == Some(b'"') && self.peek_byte_at(2) == Some(b'"') {
+                        // 多行字符串中的插值遇到结束符
+                        break;
+                    }
+                    if b == b'{' { depth += 1; self.advance(); }
+                    else if b == b'}' {
+                        depth -= 1;
+                        self.advance();
+                        if depth == 0 { found = true; break; }
+                    }
+                    else if b == b'\\' { self.advance(); self.advance(); }
+                    else { self.advance(); }
+                }
+                if !found {
+                    return Err(LexError {
+                        msg: "unterminated interpolation in multiline string (插值 ${...} 未闭合)".into(),
+                        line, col,
+                    });
+                }
+                let expr_src = std::str::from_utf8(&self.src[expr_start..self.pos - 1])
+                    .map_err(|_| LexError { msg: "invalid UTF-8 in interpolation".into(), line, col })?
+                    .to_string();
+                parts.push(expr_src);
+                parts.push(String::new());
+                continue;
+            }
+            // 转义处理（与单行字符串一致）
             if self.peek_byte() == Some(b'\\') {
-                self.advance(); // 消费 '\\'
+                self.advance();
                 let escaped = self.process_escape(line, col)?;
-                s.push_str(&escaped);
+                parts.last_mut().unwrap().push_str(&escaped);
             } else {
                 let b = self.peek_byte().unwrap();
                 if b < 0x80 {
-                    s.push(b as char);
+                    parts.last_mut().unwrap().push(b as char);
                     self.advance();
                 } else {
                     let char_start = self.pos;
                     let n = utf8_char_len(b);
-                    for _ in 0..n {
-                        self.advance();
-                    }
-                    s.push_str(std::str::from_utf8(&self.src[char_start..self.pos]).unwrap_or("\u{FFFD}"));
+                    for _ in 0..n { self.advance(); }
+                    parts.last_mut().unwrap().push_str(
+                        std::str::from_utf8(&self.src[char_start..self.pos]).unwrap_or("\u{FFFD}"),
+                    );
                 }
             }
         }
-        Ok(Token::new(TokenKind::String, s, line, col))
+
+        if has_interp {
+            Ok(Token::new(TokenKind::InterpString, parts.join("\0"), line, col))
+        } else {
+            Ok(Token::new(TokenKind::String, parts.into_iter().next().unwrap(), line, col))
+        }
     }
 
     /// lex_raw_string 读取反引号 raw string（不转义）。

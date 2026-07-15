@@ -67,6 +67,30 @@ impl Function {
 /// 返回结果与错误（错误非 None 时在 VM 中转为抛出）。
 pub type BuiltinFn = fn(vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value>;
 
+/// BuiltinDoc 内置函数的文档元数据（静态，用于 help 系统）。
+///
+/// 每个字段都是 &'static，零运行时分配。通过 register_builtin_doc 注册到 VM，
+/// 脚本侧用 help("funcName") 查询。未补全文档的函数 doc 为 None。
+///
+/// 设计目标：让 AI 和人类能通过 help() 自省内置函数的签名、参数、返回值、
+/// 示例与常见错误，无需查阅外部文档。
+pub struct BuiltinDoc {
+    /// category 分类标识（如 "regex"、"string"、"array"）。用于 help() 分类列表。
+    pub category: &'static str,
+    /// signature 函数签名（如 "regFind(pattern, s) -> string|undefined"）。
+    pub signature: &'static str,
+    /// summary 一句话功能简介。
+    pub summary: &'static str,
+    /// params 参数说明列表：(参数名, 说明)。可变参数用 "..." 标注。
+    pub params: &'static [(&'static str, &'static str)],
+    /// returns 返回值说明。
+    pub returns: &'static str,
+    /// examples 示例代码片段（每条一行，含预期结果注释）。
+    pub examples: &'static [&'static str],
+    /// errors 常见错误提示（AI 友好，帮助定位参数顺序、类型等问题）。
+    pub errors: &'static [&'static str],
+}
+
 /// Builtin 内置函数。
 #[derive(Clone)]
 pub struct Builtin {
@@ -74,11 +98,18 @@ pub struct Builtin {
     pub name: &'static str,
     /// fn Go 实现的函数。
     pub func: BuiltinFn,
+    /// doc 文档元数据（可选；未补全的函数为 None）。
+    pub doc: Option<&'static BuiltinDoc>,
 }
 
 impl Builtin {
-    /// new 创建内置函数。
+    /// new 创建内置函数（无文档）。
     pub fn new(name: &'static str, func: BuiltinFn) -> Self {
-        Builtin { name, func }
+        Builtin { name, func, doc: None }
+    }
+
+    /// new_with_doc 创建带文档的内置函数。
+    pub fn new_with_doc(name: &'static str, func: BuiltinFn, doc: &'static BuiltinDoc) -> Self {
+        Builtin { name, func, doc: Some(doc) }
     }
 }

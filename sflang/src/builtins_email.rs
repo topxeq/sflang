@@ -12,11 +12,43 @@
 //!            "--starttls",                // 可选：STARTTLS (端口 587)
 //!            "--attach=/path/to/file.pdf")  // 可选：附件（可重复多个）
 
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 use crate::vm::VM;
 
+static DOC_SENDMAIL: BuiltinDoc = BuiltinDoc {
+    category: "email",
+    signature: "sendMail(--host=, --port=, --user=, --password=, --from=, --to=, --subject=, --body=, [--html], [--ssl], [--starttls], [--attach=path]) -> undefined",
+    summary: "通过 SMTP 发送邮件，支持纯文本/HTML、明文/TLS/STARTTLS、多附件。",
+    params: &[
+        ("--host", "SMTP 服务器地址，如 smtp.example.com"),
+        ("--port", "端口号，默认 587（--ssl 常用 465，--starttls 常用 587）"),
+        ("--user", "SMTP 认证用户名（留空则不认证）"),
+        ("--password", "SMTP 认证密码"),
+        ("--from", "发件人地址"),
+        ("--to", "收件人地址"),
+        ("--subject", "邮件主题，默认 (No Subject)"),
+        ("--body", "邮件正文"),
+        ("--html", "可选开关，正文按 HTML 解析"),
+        ("--ssl", "可选开关，使用隐式 TLS（端口 465）"),
+        ("--starttls", "可选开关，使用 STARTTLS（端口 587）"),
+        ("--attach", "可选附件路径，可重复多个"),
+    ],
+    returns: "undefined（发送成功），失败返回 error 对象",
+    examples: &[
+        "sendMail(\"--host=smtp.example.com\", \"--port=465\", \"--user=me@x.com\", \"--password=secret\", \"--from=me@x.com\", \"--to=you@y.com\", \"--subject=Hi\", \"--body=Hello\", \"--ssl\")  // 发送一封 TLS 邮件",
+        "sendMail(\"--host=smtp.example.com\", \"--port=587\", \"--user=me@x.com\", \"--password=secret\", \"--from=me@x.com\", \"--to=you@y.com\", \"--subject=Report\", \"--body=<b>HTML</b>\", \"--html\", \"--starttls\", \"--attach=/tmp/report.pdf\")  // 带 HTML 正文与附件的 STARTTLS 邮件",
+    ],
+    errors: &[
+        "sendMail() 至少需要 --host, --from, --to 参数",
+        "sendMail() 创建 TLS 连接失败 / 创建 STARTTLS 连接失败（可能原因：网络不通）",
+        "sendMail() 发送失败（可能原因：认证失败、网络问题、收件人地址错误）",
+        "sendMail() 读取附件 'xxx' 失败：路径不存在或无读权限",
+    ],
+};
+
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("sendMail", bi_send_mail);
+    vm.register_builtin_doc("sendMail", bi_send_mail, &DOC_SENDMAIL);
 }
 
 fn get_switch(args: &[Value], key: &str, default: &str) -> String {

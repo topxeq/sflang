@@ -594,14 +594,14 @@ fn test_undefined_sources() {
     assert!(run("var x = undefined; return x[0]").is_err());
     // undefined 比较 < → 抛异常（类型不兼容）
     assert!(run("return undefined < 5").is_err());
-    // default / defaultUndef
-    assert_eq!(eval("return default(undefined, 99)"), Value::Int(99));
+    // defaultVal / defaultUndef
+    assert_eq!(eval("return defaultVal(undefined, 99)"), Value::Int(99));
     assert_eq!(eval("return defaultUndef(undefined, 99)"), Value::Int(99));
     // defaultUndef 不对 0/"" 触发兜底
     assert_eq!(eval("return defaultUndef(0, 99)"), Value::Int(0));
     assert_eq!(eval("return defaultUndef(\"\", 99)"), Value::str(""));
-    // default 对 falsy(0) 触发兜底
-    assert_eq!(eval("return default(0, 99)"), Value::Int(99));
+    // defaultVal 对 falsy(0) 触发兜底
+    assert_eq!(eval("return defaultVal(0, 99)"), Value::Int(99));
     // undefToEmpty
     assert_eq!(eval("return undefToEmpty(undefined)"), Value::str(""));
     assert_eq!(eval("return undefToEmpty(42)"), Value::str("42"));
@@ -4055,3 +4055,586 @@ fn test_s3_multipart_complete_wrong_parts_type() {
     assert_eq!(r, Value::Bool(true));
 }
 
+
+// ---- switch 语句 ----
+
+#[test]
+fn test_switch_basic_match() {
+    // 命中第二个 case
+    assert_eq!(eval(r#"
+        var r = ""
+        switch 2 {
+            case 1 { r = "one" }
+            case 2 { r = "two" }
+            default { r = "other" }
+        }
+        return r
+    "#), Value::str("two"));
+}
+
+#[test]
+fn test_switch_first_case() {
+    assert_eq!(eval(r#"
+        var r = ""
+        switch 1 { case 1 { r = "one" } case 2 { r = "two" } }
+        return r
+    "#), Value::str("one"));
+}
+
+#[test]
+fn test_switch_default_branch() {
+    // 无匹配时走 default
+    assert_eq!(eval(r#"
+        var r = ""
+        switch 99 { case 1 { r = "one" } default { r = "def" } }
+        return r
+    "#), Value::str("def"));
+}
+
+#[test]
+fn test_switch_no_match_no_default() {
+    // 无匹配且无 default：变量不变
+    assert_eq!(eval(r#"
+        var hit = "no"
+        switch 99 { case 1 { hit = "yes" } }
+        return hit
+    "#), Value::str("no"));
+}
+
+#[test]
+fn test_switch_no_fallthrough() {
+    // 默认不贯穿：命中后只执行该 case
+    assert_eq!(eval(r#"
+        var log = ""
+        switch 1 { case 1 { log = log + "A" } case 2 { log = log + "B" } }
+        return log
+    "#), Value::str("A"));
+}
+
+#[test]
+fn test_switch_string_match() {
+    assert_eq!(eval(r#"
+        var r = ""
+        switch "hi" { case "hello" { r = "en" } case "hi" { r = "matched" } }
+        return r
+    "#), Value::str("matched"));
+}
+
+#[test]
+fn test_switch_break_in_case() {
+    // break 提前跳出 switch
+    assert_eq!(eval(r#"
+        var log = ""
+        switch 1 {
+            case 1 {
+                log = log + "A"
+                break
+            }
+        }
+        return log
+    "#), Value::str("A"));
+}
+
+#[test]
+fn test_switch_break_in_loop_only_exits_switch() {
+    // switch 内的 break 只跳出 switch，不影响外层循环
+    assert_eq!(eval(r#"
+        var n = 0
+        for i := 0; i < 3; i++ {
+            switch i {
+                case 1 { break }
+                default { n = n + 1 }
+            }
+        }
+        return n
+    "#), Value::Int(2));
+}
+
+#[test]
+fn test_switch_continue_affects_outer_loop() {
+    // switch 内的 continue 作用于外层循环（switch 不是循环）
+    assert_eq!(eval(r#"
+        var sum = 0
+        for i := 0; i < 5; i++ {
+            switch i { case 2 { continue } }
+            sum = sum + i
+        }
+        return sum
+    "#), Value::Int(8));   // 0+1+3+4
+}
+
+#[test]
+fn test_switch_break_label_outer_loop() {
+    // break label 从 switch 内直接跳出外层循环
+    assert_eq!(eval(r#"
+        var total = 0
+        outer: for i := 0; i < 10; i++ {
+            switch i { case 3 { break outer } }
+            total = total + i
+        }
+        return total
+    "#), Value::Int(3));   // 0+1+2
+}
+
+#[test]
+fn test_switch_match_expression() {
+    // switch 值可以是任意表达式
+    assert_eq!(eval(r#"
+        var r = ""
+        var a = 10
+        switch a + 20 {
+            case 15 { r = "fifteen" }
+            case 30 { r = "thirty" }
+            default { r = "other" }
+        }
+        return r
+    "#), Value::str("thirty"));
+}
+
+#[test]
+fn test_switch_empty() {
+    // 空 switch（无 case 无 default）合法，什么都不做
+    assert_eq!(eval(r#"
+        switch 1 { }
+        return 42
+    "#), Value::Int(42));
+}
+
+#[test]
+fn test_switch_duplicate_default_error() {
+    // 重复 default 应解析报错
+    assert!(run("switch 1 { default {} default {} }").is_err());
+}
+
+#[test]
+fn test_switch_case_value_expression() {
+    // case 值也可以是表达式
+    assert_eq!(eval(r#"
+        var r = ""
+        switch 5 {
+            case 2 + 2 { r = "four" }
+            case 2 + 3 { r = "five" }
+            default { r = "other" }
+        }
+        return r
+    "#), Value::str("five"));
+}
+
+#[test]
+fn test_switch_in_function_return() {
+    // switch 在函数内配合 return
+    assert_eq!(eval(r#"
+        func describe(n) {
+            switch n {
+                case 0 { return "zero" }
+                case 1 { return "one" }
+                default { return "many" }
+            }
+        }
+        return describe(0) + "," + describe(1) + "," + describe(99)
+    "#), Value::str("zero,one,many"));
+}
+
+// ---- help 系统 ----
+
+#[test]
+fn test_help_no_args_lists_categories() {
+    // help() 无参应返回包含分类信息的字符串
+    let r = eval("return help()");
+    assert!(matches!(r, Value::Str(_)));
+    if let Value::Str(s) = &r {
+        assert!(s.contains("内置函数"));
+        assert!(s.contains("regex"));
+        assert!(s.contains("core"));
+    }
+}
+
+#[test]
+fn test_help_function_detail() {
+    // help("regFind") 应返回该函数的详细文档
+    let r = eval("return help(\"regFind\")");
+    assert!(matches!(r, Value::Str(_)));
+    if let Value::Str(s) = &r {
+        assert!(s.contains("regFind"));
+        assert!(s.contains("pattern"));
+        assert!(s.contains("regex"));
+    }
+}
+
+#[test]
+fn test_help_core_function() {
+    // help("len") 应返回 len 的文档
+    let r = eval("return help(\"len\")");
+    if let Value::Str(s) = &r {
+        assert!(s.contains("len"));
+        assert!(s.contains("长度"));
+    }
+}
+
+#[test]
+fn test_help_unknown_function_returns_error() {
+    // 不存在的函数名应返回错误
+    let r = run("return help(\"___nonexistent_func___\")");
+    assert!(r.is_err());
+}
+
+#[test]
+fn test_help_category_query() {
+    // help("regex") 应列出 regex 分类的函数
+    let r = eval("return help(\"regex\")");
+    if let Value::Str(s) = &r {
+        assert!(s.contains("regFind"));
+        assert!(s.contains("regMatch"));
+    }
+}
+
+#[test]
+fn test_help_fuzzy_match() {
+    // 拼写接近的应返回相似建议
+    let r = eval("return help(\"regfind\")");
+    if let Value::Str(s) = &r {
+        assert!(s.contains("regFind"));
+    }
+}
+
+// ---- 块级作用域 ----
+
+#[test]
+fn test_block_scope_if_body() {
+    // if body 内变量块外不可见
+    assert_eq!(eval(r#"
+        if true { var x = 10 }
+        return x
+    "#), Value::Undefined);
+}
+
+#[test]
+fn test_block_scope_while_body() {
+    // while body 内变量块外不可见
+    assert_eq!(eval(r#"
+        var i = 0
+        while i < 1 { var y = 20; i++ }
+        return y
+    "#), Value::Undefined);
+}
+
+#[test]
+fn test_block_scope_for_loop_var() {
+    // C 风格 for 的循环变量循环后不可见
+    assert_eq!(eval(r#"
+        for i := 0; i < 3; i++ {}
+        return i
+    "#), Value::Undefined);
+}
+
+#[test]
+fn test_block_scope_switch_case() {
+    // switch case body 内变量块外不可见
+    assert_eq!(eval(r#"
+        switch 1 { case 1 { var z = 30 } }
+        return z
+    "#), Value::Undefined);
+}
+
+#[test]
+fn test_block_scope_bare_block() {
+    // 裸 {} 块内变量块外不可见
+    assert_eq!(eval(r#"
+        { var w = 40 }
+        return w
+    "#), Value::Undefined);
+}
+
+#[test]
+fn test_block_scope_shadowing() {
+    // 块内遮蔽外层变量，块外仍读外层值
+    assert_eq!(eval(r#"
+        var x = 10
+        { var x = 99 }
+        return x
+    "#), Value::Int(10));
+}
+
+#[test]
+fn test_block_scope_shadowing_inside() {
+    // 块内读到内层遮蔽值
+    assert_eq!(eval(r#"
+        var x = 10
+        var r = 0
+        { var x = 99; r = x }
+        return r
+    "#), Value::Int(99));
+}
+
+#[test]
+fn test_block_scope_nested_for_access_outer() {
+    // 嵌套 for 内层能访问外层循环变量（作用域嵌套）
+    assert_eq!(eval(r#"
+        var s = 0
+        for i := 0; i < 3; i++ {
+            for j := 0; j < 2; j++ {
+                s = s + i
+            }
+        }
+        return s
+    "#), Value::Int(6));   // (0+0)*2 + (1+1)*2 + (2+2)*2 = 0+2+4 = 6
+}
+
+#[test]
+fn test_block_scope_closure_capture() {
+    // 闭包捕获块内变量，块结束后仍可访问
+    assert_eq!(eval(r#"
+        func f() {
+            var r
+            { var x = 42; r = func() { return x } }
+            return r()
+        }
+        return f()
+    "#), Value::Int(42));
+}
+
+#[test]
+fn test_block_scope_for_in_still_works() {
+    // for-in 变量循环后不可见（已有行为，回归验证）
+    assert_eq!(eval(r#"
+        for v in range(3) {}
+        return v
+    "#), Value::Undefined);
+}
+
+#[test]
+fn test_block_scope_try_catch_var() {
+    // catch 变量 catch 块外不可见（用非全局名避免与 eG 冲突）
+    assert_eq!(eval(r#"
+        try { throw "err" } catch (myerr) { }
+        return myerr
+    "#), Value::Undefined);
+}
+
+// ---- JWT RS256 ----
+
+#[test]
+fn test_jwt_rs256_roundtrip() {
+    // 生成 RSA 密钥对，用 RS256 签发 token，再用公钥验证
+    use rsa::{RsaPrivateKey, pkcs8::EncodePublicKey, pkcs8::EncodePrivateKey};
+    use rsa::pkcs8::LineEnding;
+
+    let mut rng = rand::thread_rng();
+    let private_key = RsaPrivateKey::new(&mut rng, 2048).expect("failed to generate key");
+    let public_key = private_key.to_public_key();
+
+    let private_pem = private_key
+        .to_pkcs8_pem(LineEnding::LF)
+        .expect("failed to encode private key")
+        .to_string();
+    let public_pem = public_key
+        .to_public_key_pem(LineEnding::LF)
+        .expect("failed to encode public key");
+
+    // 生成 RS256 token
+    let mut sf = Sflang::new();
+    sf.set_global("__privKey", Value::str_from(private_pem));
+    let token = sf.run_string(r#"
+        return genJwtToken({"user": "alice", "role": "admin"}, __privKey, "RS256")
+    "#).expect("genJwtToken RS256 failed");
+    let token_str = match &token {
+        Value::Str(s) => s.to_string(),
+        _ => panic!("expected string, got {:?}", token),
+    };
+
+    // 验证 token（用公钥）
+    let mut sf2 = Sflang::new();
+    sf2.set_global("__pubKey", Value::str_from(public_pem));
+    sf2.set_global("__token", Value::str_from(token_str));
+    let payload = sf2.run_string(r#"
+        return parseJwtToken(__token, __pubKey)
+    "#).expect("parseJwtToken RS256 failed");
+
+    // payload 应包含 user=alice（jsonDecode 返回 map 或 object）
+    let user = match &payload {
+        Value::Object(o) => o.lock().unwrap().get("user").map(|v| v.clone()),
+        Value::Map(m) => m.lock().unwrap().get("user").map(|v| v.clone()),
+        _ => panic!("expected object/map, got {:?}", payload),
+    };
+    assert_eq!(user, Some(Value::str("alice")));
+}
+
+#[test]
+fn test_jwt_hs256_still_works() {
+    // HS256 回归验证（默认算法）
+    let r = eval(r#"
+        var t = genJwtToken({"user": "bob"}, "secret123")
+        var p = parseJwtToken(t, "secret123")
+        return p["user"]
+    "#);
+    assert_eq!(r, Value::str("bob"));
+}
+
+#[test]
+fn test_jwt_rs256_wrong_key_fails() {
+    // 用错误的公钥验证应返回 error
+    use rsa::{RsaPrivateKey, pkcs8::{EncodePublicKey, EncodePrivateKey}, pkcs8::LineEnding};
+
+    let mut rng = rand::thread_rng();
+    let key1 = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+    let key2 = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+
+    let priv_pem = key1.to_pkcs8_pem(LineEnding::LF).unwrap().to_string();
+    let wrong_pub_pem = key2.to_public_key().to_public_key_pem(LineEnding::LF).unwrap();
+
+    let mut sf = Sflang::new();
+    sf.set_global("__privKey", Value::str_from(priv_pem));
+    let token = sf.run_string(r#"
+        return genJwtToken({"x": 1}, __privKey, "RS256")
+    "#).unwrap();
+    let token_str = token.to_str();
+
+    let mut sf2 = Sflang::new();
+    sf2.set_global("__pubKey", Value::str_from(wrong_pub_pem));
+    sf2.set_global("__token", Value::str_from(token_str));
+    let result = sf2.run_string(r#"return parseJwtToken(__token, __pubKey)"#);
+    assert!(result.is_err(), "wrong key should fail verification");
+}
+
+// ---- 默认参数 ----
+
+#[test]
+fn test_default_param_basic() {
+    assert_eq!(eval(r#"
+        func greet(name, greeting="你好") { return greeting + ", " + name }
+        return greet("Alice")
+    "#), Value::str("你好, Alice"));
+}
+
+#[test]
+fn test_default_param_override() {
+    assert_eq!(eval(r#"
+        func greet(name, greeting="你好") { return greeting + ", " + name }
+        return greet("Bob", "Hi")
+    "#), Value::str("Hi, Bob"));
+}
+
+#[test]
+fn test_default_param_multiple() {
+    assert_eq!(eval(r#"
+        func f(a, b=10, c=20) { return a + b + c }
+        return f(1)
+    "#), Value::Int(31));
+}
+
+#[test]
+fn test_default_param_reference_earlier() {
+    // 默认值可引用前面的参数
+    assert_eq!(eval(r#"
+        func f(a, b=a+1) { return a + b }
+        return f(10)
+    "#), Value::Int(21));
+}
+
+#[test]
+fn test_default_param_none_when_passed() {
+    // 传了 undefined 仍用默认值
+    assert_eq!(eval(r#"
+        func f(a, b=99) { return b }
+        return f(1)
+    "#), Value::Int(99));
+}
+
+// ---- 字符串拼接 + ----
+
+#[test]
+fn test_string_concat_with_int() {
+    assert_eq!(eval(r#"return "count: " + 42"#), Value::str("count: 42"));
+}
+
+#[test]
+fn test_string_concat_with_float() {
+    assert_eq!(eval(r#"return "pi=" + 3.14"#), Value::str("pi=3.14"));
+}
+
+#[test]
+fn test_string_concat_with_bool() {
+    assert_eq!(eval(r#"return "flag=" + true"#), Value::str("flag=true"));
+}
+
+#[test]
+fn test_int_concat_string() {
+    // 数字在左、字符串在右
+    assert_eq!(eval(r#"return 1 + "a""#), Value::str("1a"));
+}
+
+#[test]
+fn test_int_plus_int_still_arithmetic() {
+    // 数值 + 数值 仍是加法，不是拼接
+    assert_eq!(eval(r#"return 1 + 2"#), Value::Int(3));
+}
+
+#[test]
+fn test_string_concat_chain() {
+    assert_eq!(eval(r#"return "a=" + 1 + ", b=" + true"#), Value::str("a=1, b=true"));
+}
+
+// ---- 字符串插值 ${expr} ----
+
+#[test]
+fn test_interp_basic() {
+    assert_eq!(eval(r#"
+        var name = "World"
+        return "Hello, ${name}!"
+    "#), Value::str("Hello, World!"));
+}
+
+#[test]
+fn test_interp_expression() {
+    assert_eq!(eval(r#"return "${1+2} items""#), Value::str("3 items"));
+}
+
+#[test]
+fn test_interp_multiple() {
+    assert_eq!(eval(r#"
+        var a = 1; var b = 2
+        return "${a} + ${b} = ${a+b}"
+    "#), Value::str("1 + 2 = 3"));
+}
+
+#[test]
+fn test_interp_member_access() {
+    assert_eq!(eval(r#"
+        var o = {name: "Alice"}
+        return "user: ${o.name}"
+    "#), Value::str("user: Alice"));
+}
+
+#[test]
+fn test_interp_function_call() {
+    assert_eq!(eval(r#"
+        var arr = [1, 2, 3]
+        return "len=${len(arr)}"
+    "#), Value::str("len=3"));
+}
+
+#[test]
+fn test_interp_escaped() {
+    // \${} 输出字面 ${}
+    assert_eq!(eval(r#"return "literal: \${x}""#), Value::str("literal: ${x}"));
+}
+
+#[test]
+fn test_interp_raw_string_no_interp() {
+    // 反引号 raw string 不插值
+    assert_eq!(eval(r#"return `${1+2}`"#), Value::str("${1+2}"));
+}
+
+#[test]
+fn test_interp_nested_braces() {
+    assert_eq!(eval(r#"
+        var f = func(x) { return x * 2 }
+        return "${f(5+3)}"
+    "#), Value::str("16"));
+}
+
+#[test]
+fn test_interp_no_interp_plain_string() {
+    // 不含 ${} 的字符串仍是普通字符串
+    assert_eq!(eval(r#"return "no interp here""#), Value::str("no interp here"));
+}

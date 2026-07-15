@@ -19,39 +19,276 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, Once};
 use std::sync::atomic::{AtomicI64, Ordering};
 
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 use crate::vm::VM;
+
+// ---- 并发原语文档 ----
+
+static DOC_NEW_CHANNEL: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "newChannel() -> channel",
+    summary: "创建无缓冲通道（mpsc），用于跨线程通信。配合 run 和 chanSend/chanRecv 使用。",
+    params: &[],
+    returns: "channel 通道对象",
+    examples: &[
+        "var ch = newChannel()",
+        "run sender()       // 子线程 chanSend(ch, 42)",
+        "var v = chanRecv(ch) // 主线程接收",
+    ],
+    errors: &[],
+};
+
+static DOC_CHAN_SEND: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "chanSend(ch, val) -> undefined",
+    summary: "向通道发送值（阻塞直到接收方就绪）。",
+    params: &[("ch", "channel 对象"), ("val", "要发送的值")],
+    returns: "undefined",
+    examples: &["chanSend(ch, 42)"],
+    errors: &["ch 参数应为 channel 类型"],
+};
+
+static DOC_CHAN_RECV: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "chanRecv(ch) -> value",
+    summary: "从通道接收值（阻塞直到有数据）。",
+    params: &[("ch", "channel 对象")],
+    returns: "接收到的值；通道关闭后返回 undefined",
+    examples: &["var v = chanRecv(ch)"],
+    errors: &[],
+};
+
+static DOC_CHAN_TRY_RECV: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "chanTryRecv(ch) -> value|undefined",
+    summary: "非阻塞接收：有数据返回值，无数据返回 undefined。",
+    params: &[("ch", "channel 对象")],
+    returns: "值或 undefined（无数据时）",
+    examples: &["var v = chanTryRecv(ch); if v != undefined { pln(v) }"],
+    errors: &[],
+};
+
+static DOC_NEW_MUTEX: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "newMutex() -> mutex",
+    summary: "创建互斥锁，用于保护共享数据的并发访问。",
+    params: &[],
+    returns: "mutex 锁对象",
+    examples: &[
+        "var m = newMutex()",
+        "lock(m); count++; unlock(m)",
+    ],
+    errors: &[],
+};
+
+static DOC_LOCK: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "lock(m) -> undefined",
+    summary: "加锁（阻塞直到获取锁）。",
+    params: &[("m", "mutex 对象")],
+    returns: "undefined",
+    examples: &["lock(m)"],
+    errors: &[],
+};
+
+static DOC_UNLOCK: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "unlock(m) -> undefined",
+    summary: "释放锁。",
+    params: &[("m", "mutex 对象")],
+    returns: "undefined",
+    examples: &["unlock(m)"],
+    errors: &["未持有锁时 unlock 会 panic"],
+};
+
+static DOC_TRY_LOCK: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "tryLock(m) -> bool",
+    summary: "尝试加锁（非阻塞）：成功返回 true，锁被占用返回 false。",
+    params: &[("m", "mutex 对象")],
+    returns: "bool 是否成功获取锁",
+    examples: &["if tryLock(m) { ... unlock(m) }"],
+    errors: &[],
+};
+
+static DOC_NEW_RWMUTEX: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "newRWMutex() -> rwmutex",
+    summary: "创建读写锁：允许多个读锁或一个写锁。",
+    params: &[],
+    returns: "rwmutex 读写锁对象",
+    examples: &["var rw = newRWMutex()"],
+    errors: &[],
+};
+
+static DOC_RLOCK: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "rlock(rw) -> undefined",
+    summary: "获取读锁（允许多个读者并发）。",
+    params: &[("rw", "rwmutex 对象")],
+    returns: "undefined",
+    examples: &["rlock(rw); ... runlock(rw)"],
+    errors: &[],
+};
+
+static DOC_RUNLOCK: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "runlock(rw) -> undefined",
+    summary: "释放读锁。",
+    params: &[("rw", "rwmutex 对象")],
+    returns: "undefined",
+    examples: &["runlock(rw)"],
+    errors: &[],
+};
+
+static DOC_WLOCK: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "wlock(rw) -> undefined",
+    summary: "获取写锁（排他，阻塞直到无其他读者/写者）。",
+    params: &[("rw", "rwmutex 对象")],
+    returns: "undefined",
+    examples: &["wlock(rw); ... wunlock(rw)"],
+    errors: &[],
+};
+
+static DOC_WUNLOCK: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "wunlock(rw) -> undefined",
+    summary: "释放写锁。",
+    params: &[("rw", "rwmutex 对象")],
+    returns: "undefined",
+    examples: &["wunlock(rw)"],
+    errors: &[],
+};
+
+static DOC_NEW_WAITGROUP: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "newWaitGroup() -> waitGroup",
+    summary: "创建 WaitGroup，用于等待一组并发任务完成。",
+    params: &[],
+    returns: "waitGroup 对象",
+    examples: &[
+        "var wg = newWaitGroup()",
+        "wgAdd(wg, 3); for i := 0; i < 3; i++ { run worker(wg) }",
+        "wgWait(wg)  // 等待 3 个任务完成",
+    ],
+    errors: &[],
+};
+
+static DOC_WG_ADD: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "wgAdd(wg, n) -> undefined",
+    summary: "增加 WaitGroup 计数 n。",
+    params: &[("wg", "waitGroup 对象"), ("n", "增加的计数（int）")],
+    returns: "undefined",
+    examples: &["wgAdd(wg, 3)"],
+    errors: &[],
+};
+
+static DOC_WG_DONE: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "wgDone(wg) -> undefined",
+    summary: "标记一个任务完成（计数减 1）。",
+    params: &[("wg", "waitGroup 对象")],
+    returns: "undefined",
+    examples: &["wgDone(wg)"],
+    errors: &["计数减为负数会 panic"],
+};
+
+static DOC_WG_WAIT: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "wgWait(wg) -> undefined",
+    summary: "阻塞等待计数归零（所有任务完成）。",
+    params: &[("wg", "waitGroup 对象")],
+    returns: "undefined",
+    examples: &["wgWait(wg)"],
+    errors: &[],
+};
+
+static DOC_NEW_SEMAPHORE: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "newSemaphore(n) -> semaphore",
+    summary: "创建信号量，限制同时访问的并发数。",
+    params: &[("n", "最大并发数（int）")],
+    returns: "semaphore 对象",
+    examples: &["var sem = newSemaphore(5)  // 最多 5 个并发"],
+    errors: &[],
+};
+
+static DOC_SEM_ACQUIRE: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "semAcquire(sem) -> undefined",
+    summary: "获取信号量（阻塞直到有空位）。",
+    params: &[("sem", "semaphore 对象")],
+    returns: "undefined",
+    examples: &["semAcquire(sem)"],
+    errors: &[],
+};
+
+static DOC_SEM_RELEASE: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "semRelease(sem) -> undefined",
+    summary: "释放信号量（空位加 1）。",
+    params: &[("sem", "semaphore 对象")],
+    returns: "undefined",
+    examples: &["semRelease(sem)"],
+    errors: &[],
+};
+
+static DOC_NEW_ONCE: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "newOnce() -> once",
+    summary: "创建 Once 对象，保证初始化代码只执行一次。",
+    params: &[],
+    returns: "once 对象",
+    examples: &[
+        "var o = newOnce()",
+        "onceDo(o, func() { pln(\"只执行一次\") })",
+    ],
+    errors: &[],
+};
+
+static DOC_ONCE_DO: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "onceDo(o, fn) -> undefined",
+    summary: "保证 fn 只在第一次调用时执行（并发安全）。",
+    params: &[("o", "once 对象"), ("fn", "要执行的函数")],
+    returns: "undefined",
+    examples: &["onceDo(o, initFunc)"],
+    errors: &[],
+};
 
 /// register 注册所有并发相关内置函数。
 pub fn register(vm: &mut VM) {
     // channel
-    vm.register_builtin("newChannel", bi_new_channel);
-    vm.register_builtin("chanSend", bi_chan_send);
-    vm.register_builtin("chanRecv", bi_chan_recv);
-    vm.register_builtin("chanTryRecv", bi_chan_try_recv);
+    vm.register_builtin_doc("newChannel", bi_new_channel, &DOC_NEW_CHANNEL);
+    vm.register_builtin_doc("chanSend", bi_chan_send, &DOC_CHAN_SEND);
+    vm.register_builtin_doc("chanRecv", bi_chan_recv, &DOC_CHAN_RECV);
+    vm.register_builtin_doc("chanTryRecv", bi_chan_try_recv, &DOC_CHAN_TRY_RECV);
     // mutex
-    vm.register_builtin("newMutex", bi_new_mutex);
-    vm.register_builtin("lock", bi_lock);
-    vm.register_builtin("unlock", bi_unlock);
-    vm.register_builtin("tryLock", bi_try_lock);
+    vm.register_builtin_doc("newMutex", bi_new_mutex, &DOC_NEW_MUTEX);
+    vm.register_builtin_doc("lock", bi_lock, &DOC_LOCK);
+    vm.register_builtin_doc("unlock", bi_unlock, &DOC_UNLOCK);
+    vm.register_builtin_doc("tryLock", bi_try_lock, &DOC_TRY_LOCK);
     // rwmutex
-    vm.register_builtin("newRWMutex", bi_new_rwmutex);
-    vm.register_builtin("rlock", bi_rlock);
-    vm.register_builtin("runlock", bi_runlock);
-    vm.register_builtin("wlock", bi_wlock);
-    vm.register_builtin("wunlock", bi_wunlock);
+    vm.register_builtin_doc("newRWMutex", bi_new_rwmutex, &DOC_NEW_RWMUTEX);
+    vm.register_builtin_doc("rlock", bi_rlock, &DOC_RLOCK);
+    vm.register_builtin_doc("runlock", bi_runlock, &DOC_RUNLOCK);
+    vm.register_builtin_doc("wlock", bi_wlock, &DOC_WLOCK);
+    vm.register_builtin_doc("wunlock", bi_wunlock, &DOC_WUNLOCK);
     // waitgroup
-    vm.register_builtin("newWaitGroup", bi_new_waitgroup);
-    vm.register_builtin("wgAdd", bi_wg_add);
-    vm.register_builtin("wgDone", bi_wg_done);
-    vm.register_builtin("wgWait", bi_wg_wait);
+    vm.register_builtin_doc("newWaitGroup", bi_new_waitgroup, &DOC_NEW_WAITGROUP);
+    vm.register_builtin_doc("wgAdd", bi_wg_add, &DOC_WG_ADD);
+    vm.register_builtin_doc("wgDone", bi_wg_done, &DOC_WG_DONE);
+    vm.register_builtin_doc("wgWait", bi_wg_wait, &DOC_WG_WAIT);
     // semaphore
-    vm.register_builtin("newSemaphore", bi_new_semaphore);
-    vm.register_builtin("semAcquire", bi_sem_acquire);
-    vm.register_builtin("semRelease", bi_sem_release);
+    vm.register_builtin_doc("newSemaphore", bi_new_semaphore, &DOC_NEW_SEMAPHORE);
+    vm.register_builtin_doc("semAcquire", bi_sem_acquire, &DOC_SEM_ACQUIRE);
+    vm.register_builtin_doc("semRelease", bi_sem_release, &DOC_SEM_RELEASE);
     // once
-    vm.register_builtin("newOnce", bi_new_once);
-    vm.register_builtin("onceDo", bi_once_do);
+    vm.register_builtin_doc("newOnce", bi_new_once, &DOC_NEW_ONCE);
+    vm.register_builtin_doc("onceDo", bi_once_do, &DOC_ONCE_DO);
 }
 
 // ============ 通用 downcast 辅助 ============

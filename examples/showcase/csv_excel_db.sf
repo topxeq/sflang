@@ -1,0 +1,135 @@
+// 示例：CSV/Excel 作为数据库（SQL 查询）
+// ==================================
+// Sflang 支持把 CSV 和 Excel 文件当作数据库，用 dbConnect + dbQuery 系列
+// 函数执行 SQL 子集查询。内置迷你 SQL 引擎，无需外部数据库。
+
+// ==================
+// 准备测试数据
+// ==================
+var csvData = "name,age,city,salary\n"
+csvData = csvData + "Alice,30,Beijing,15000\n"
+csvData = csvData + "Bob,25,Shanghai,12000\n"
+csvData = csvData + "Carol,35,Beijing,20000\n"
+csvData = csvData + "Dave,20,Shenzhen,9000\n"
+csvData = csvData + "Eve,28,Beijing,18000\n"
+csvData = csvData + "Frank,32,Shanghai,16000\n"
+
+writeFile("temp/employees.csv", csvData)
+pln("已创建 temp/employees.csv\n")
+
+// ==================
+// 连接 CSV 数据库
+// ==================
+var db = dbConnect("csv", "temp/employees.csv")
+if isErr(db) {
+    pln("连接失败:", db)
+    exit(1)
+}
+pln("连接成功，表名: employees")
+
+// ==================
+// SELECT * — 查询全部
+// ==================
+pln("\n--- SELECT * FROM employees ---")
+var all = dbQuery(db, "SELECT * FROM employees")
+pln("共 ${len(all)} 行")
+for row in all {
+    pln("  ${row["name"]}, ${row["age"]}岁, ${row["city"]}, ¥${row["salary"]}")
+}
+
+// ==================
+// WHERE — 条件过滤
+// ==================
+pln("\n--- WHERE age > 28 ---")
+var seniors = dbQuery(db, "SELECT name, age FROM employees WHERE age > 28 ORDER BY age DESC")
+for row in seniors {
+    pln("  ${row["name"]}: ${row["age"]}")
+}
+
+pln("\n--- WHERE city = 'Beijing' AND salary > 16000 ---")
+var beijing = dbQuery(db, "SELECT name, salary FROM employees WHERE city = 'Beijing' AND salary > 16000")
+for row in beijing {
+    pln("  ${row["name"]}: ¥${row["salary"]}")
+}
+
+// ==================
+// LIKE — 模式匹配
+// ==================
+pln("\n--- WHERE name LIKE 'A%' ---")
+var matched = dbQuery(db, "SELECT name FROM employees WHERE name LIKE 'A%'")
+for row in matched {
+    pln("  ${row["name"]}")
+}
+
+// ==================
+// 聚合：COUNT / SUM / AVG / MIN / MAX
+// ==================
+pln("\n--- 聚合统计 ---")
+var stats = dbQuery(db, "SELECT COUNT(*) AS cnt, SUM(salary) AS total, AVG(salary) AS avg_sal, MIN(age) AS min_age, MAX(age) AS max_age FROM employees")
+for row in stats {
+    pln("  总人数: ${row["cnt"]}")
+    pln("  总薪资: ¥${row["total"]}")
+    pln("  平均薪资: ¥${row["avg_sal"]}")
+    pln("  年龄范围: ${row["min_age"]} - ${row["max_age"]}")
+}
+
+// ==================
+// GROUP BY — 分组聚合
+// ==================
+pln("\n--- GROUP BY city ---")
+var byCity = dbQuery(db, "SELECT city, COUNT(*) AS cnt, AVG(salary) AS avg_sal FROM employees GROUP BY city ORDER BY cnt DESC")
+for row in byCity {
+    pln("  ${row["city"]}: ${row["cnt"]}人, 平均¥${row["avg_sal"]}")
+}
+
+// ==================
+// LIMIT + OFFSET — 分页
+// ==================
+pln("\n--- LIMIT 3 OFFSET 2（第 3-5 行）---")
+var page = dbQuery(db, "SELECT name FROM employees ORDER BY name LIMIT 3 OFFSET 2")
+for row in page {
+    pln("  ${row["name"]}")
+}
+
+// ==================
+// 列序号 — 用数字代替列名
+// ==================
+pln("\n--- 列序号: SELECT 0, 3 WHERE 2 = 'Shanghai' ---")
+var byIdx = dbQuery(db, "SELECT 0, 3 FROM employees WHERE 2 = 'Shanghai'")
+for row in byIdx {
+    pln("  ${row["0"]}: ¥${row["3"]}")
+}
+
+// ==================
+// dbQueryCount — 便捷计数
+// ==================
+pln("\n--- dbQueryCount ---")
+var cnt = dbQueryCount(db, "SELECT COUNT(*) AS c FROM employees WHERE age >= 30")
+pln("30岁以上人数: ${cnt}")
+
+// ==================
+// dbQueryRecs — 二维数组格式
+// ==================
+pln("\n--- dbQueryRecs（二维数组）---")
+var recs = dbQueryRecs(db, "SELECT name, age FROM employees LIMIT 2")
+for row in recs {
+    pln("  ", row)
+}
+
+// ==================
+// dbExec 不支持写
+// ==================
+pln("\n--- dbExec（csv 不支持写）---")
+var w = dbExec(db, "INSERT INTO employees VALUES('test')")
+pln("结果:", w)
+
+// ==================
+// Excel 数据库（如果文件存在）
+// ==================
+pln("\n--- Excel 数据库（示例）---")
+pln("// var db2 = dbConnect(\"excel\", \"book.xlsx\")")
+pln("// var rows = dbQuery(db2, \"SELECT * FROM Sheet1 WHERE age > 25\")")
+pln("// 每个 sheet 是一张表，sheet 名 = 表名")
+
+dbClose(db)
+pln("\n完成！")

@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex};
 use calamine::Reader;
 
 use crate::builtins_helpers as bh;
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 
 /// Workbook Sflang 中的 Excel 工作簿对象（可写）。
@@ -31,22 +32,306 @@ use crate::value::Value;
 /// 包装 rust_xlsxwriter::Workbook，用 Arc<Mutex<>> 实现线程安全共享。
 pub type Workbook = rust_xlsxwriter::Workbook;
 
+// ---- Excel 函数文档 ----
+
+static DOC_EXCEL_NEW: BuiltinDoc = BuiltinDoc {
+    category: "excel",
+    signature: "excelNew() -> workbook",
+    summary: "创建空 Excel 工作簿（用于写入，rust_xlsxwriter 后端）。",
+    params: &[],
+    returns: "workbook 工作簿对象（传给 excelWriteSheet/excelSaveAs 等）",
+    examples: &[
+        "var wb = excelNew()",
+        "excelWriteSheet(wb, 0, [[\"姓名\",\"分数\"],[\"Alice\",90]])",
+        "excelSaveAs(wb, \"./out.xlsx\")",
+    ],
+    errors: &[
+        "无参数，不会失败",
+        "工作簿默认无 sheet，首次 excelWriteSheet 到索引 0 会自动创建",
+    ],
+};
+
+static DOC_EXCEL_OPEN: BuiltinDoc = BuiltinDoc {
+    category: "excel",
+    signature: "excelOpen(path) -> workbook",
+    summary: "创建新工作簿（占位函数；rust_xlsxwriter 不支持打开已有文件编辑）。",
+    params: &[
+        ("path", "路径参数（兼容性保留，实际忽略 — 等价于 excelNew()）"),
+    ],
+    returns: "workbook 空工作簿对象",
+    examples: &[
+        "var wb = excelOpen(\"./template.xlsx\")  // 实际创建新工作簿",
+    ],
+    errors: &[
+        "rust_xlsxwriter 只能写不能读已有文件，此函数实际返回新工作簿",
+        "如需读取已有文件内容请用 excelReadSheet / excelReadAll / excelReadCell",
+    ],
+};
+
+static DOC_EXCEL_SAVE_AS: BuiltinDoc = BuiltinDoc {
+    category: "excel",
+    signature: "excelSaveAs(wb, path) -> undefined",
+    summary: "保存工作簿到 xlsx 文件。",
+    params: &[
+        ("wb", "excelNew / excelOpen 返回的工作簿"),
+        ("path", "目标 xlsx 文件路径"),
+    ],
+    returns: "undefined：保存成功；失败返回 error",
+    examples: &[
+        "var wb = excelNew()",
+        "excelWriteSheet(wb, 0, [[1,2],[3,4]])",
+        "excelSaveAs(wb, \"./result.xlsx\")  // 落盘",
+    ],
+    errors: &[
+        "第一个参数不是 workbook（未用 excelNew/excelOpen 创建）",
+        "保存失败：路径无效 / 权限不足 / 磁盘满",
+        "也可用 excelWriteToBytes 获取字节而不落盘",
+    ],
+};
+
+static DOC_EXCEL_READ_SHEET: BuiltinDoc = BuiltinDoc {
+    category: "excel",
+    signature: "excelReadSheet(path, sheet?) -> array<array>",
+    summary: "从 Excel 文件读取指定 sheet 为二维数组（支持 xlsx/xls/xlsb/ods）。",
+    params: &[
+        ("path", "Excel 文件路径"),
+        ("sheet", "可选：sheet 索引（0-based int）或名称（string），默认第一个 sheet"),
+    ],
+    returns: "array<array>：二维数组（每行每列的值，空单元格为空串，日期转为字符串）",
+    examples: &[
+        "var data = excelReadSheet(\"./in.xlsx\")               // 第一个 sheet",
+        "var data = excelReadSheet(\"./in.xlsx\", 1)             // 第二个 sheet（0-based）",
+        "var data = excelReadSheet(\"./in.xlsx\", \"Sheet2\")     // 按名称",
+        "var name = data[0][0]  // 第一行第一列",
+    ],
+    errors: &[
+        "打开文件失败：文件不存在 / 不是有效 Excel 文件",
+        "sheet 索引超出范围 / 名称不存在",
+        "数字保真为 int/float，bool 保真，空单元格为空串",
+    ],
+};
+
+static DOC_EXCEL_READ_ALL: BuiltinDoc = BuiltinDoc {
+    category: "excel",
+    signature: "excelReadAll(path) -> map<string, array<array>>",
+    summary: "读取 Excel 文件所有 sheets，返回 {sheet名: 二维数组}。",
+    params: &[
+        ("path", "Excel 文件路径"),
+    ],
+    returns: "map<string, array<array>>：键为 sheet 名，值为二维数组",
+    examples: &[
+        "var all = excelReadAll(\"./in.xlsx\")",
+        "var sheet1 = all[\"Sheet1\"]  // 取名为 Sheet1 的二维数组",
+        "for (var name in keys(all)) { println(name, len(all[name])) }",
+    ],
+    errors: &[
+        "打开文件失败：文件不存在 / 不是有效 Excel 文件",
+        "与 excelReadSheet 区别：本函数返回所有 sheet（map），后者返回单个（二维数组）",
+    ],
+};
+
+static DOC_EXCEL_WRITE_SHEET: BuiltinDoc = BuiltinDoc {
+    category: "excel",
+    signature: "excelWriteSheet(wb, sheet, data) -> undefined",
+    summary: "将二维数组写入工作簿的指定 sheet（自动按值类型写入）。",
+    params: &[
+        ("wb", "excelNew/excelOpen 返回的工作簿"),
+        ("sheet", "目标 sheet：int 索引（0-based）或 string 名称（不存在则创建）"),
+        ("data", "二维数组：每行是 array，元素可为 int/float/string/bool 等"),
+    ],
+    returns: "undefined：写入成功；失败返回 error",
+    examples: &[
+        "excelWriteSheet(wb, 0, [[\"id\",\"name\"],[1,\"Alice\"],[2,\"Bob\"]])",
+        "excelWriteSheet(wb, \"数据\", [[1,2.5,true],[\"x\",\"y\",false]])  // 按名称，自动创建",
+    ],
+    errors: &[
+        "data 必须为二维数组",
+        "sheet 参数应为 int 或 string",
+        "int/float 写为数字，bool 写为布尔，bigint/其他转字符串",
+    ],
+};
+
+static DOC_EXCEL_NEW_SHEET: BuiltinDoc = BuiltinDoc {
+    category: "excel",
+    signature: "excelNewSheet(wb, name) -> int",
+    summary: "在工作簿中新建 sheet，返回新 sheet 的索引。",
+    params: &[
+        ("wb", "excelNew/excelOpen 返回的工作簿"),
+        ("name", "新 sheet 的名称"),
+    ],
+    returns: "int：新 sheet 的 0-based 索引；失败返回 error",
+    examples: &[
+        "var idx = excelNewSheet(wb, \"汇总\")  // → 0（第一个新建的 sheet）",
+    ],
+    errors: &[
+        "设置名称失败（含非法字符）返回 error",
+        "返回索引为当前 sheet 总数减一（新 sheet 在末尾）",
+    ],
+};
+
+static DOC_EXCEL_OPEN_FROM_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "excel",
+    signature: "excelOpenFromBytes(bytes) -> map<string, array<array>>",
+    summary: "从字节读取 Excel（不落盘），返回所有 sheet 的 {名: 二维数组}。",
+    params: &[
+        ("bytes", "Excel 文件字节内容：bytes / byteArray / string"),
+    ],
+    returns: "map<string, array<array>>：键为 sheet 名，值为二维数组",
+    examples: &[
+        "var b = fileReadBytes(\"./in.xlsx\")",
+        "var sheets = excelOpenFromBytes(b)",
+        "// 也可直接处理 HTTP 下载 / S3 获取的 Excel 字节",
+    ],
+    errors: &[
+        "第一个参数应为 bytes/byteArray/string（不是文件路径）",
+        "解析失败：字节流不是有效 Excel 文件或格式不支持",
+        "calamine 只读，返回的是数据而非 workbook 对象（不能用于写入）",
+    ],
+};
+
+static DOC_EXCEL_WRITE_TO_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "excel",
+    signature: "excelWriteToBytes(wb) -> bytes",
+    summary: "将工作簿序列化为 xlsx 字节（不落盘）。",
+    params: &[
+        ("wb", "excelNew/excelOpen 返回的工作簿"),
+    ],
+    returns: "bytes：完整的 xlsx 文件字节内容；失败返回 error",
+    examples: &[
+        "var wb = excelNew()",
+        "excelWriteSheet(wb, 0, [[\"a\",1],[\"b\",2]])",
+        "var data = excelWriteToBytes(wb)  // → xlsx 字节",
+        "fileWriteBytes(\"./out.xlsx\", data)  // 可写入文件或上传 S3",
+    ],
+    errors: &[
+        "第一个参数不是 workbook",
+        "序列化失败：工作簿未正确初始化或含非法状态",
+    ],
+};
+
+static DOC_EXCEL_CLOSE: BuiltinDoc = BuiltinDoc {
+    category: "excel",
+    signature: "excelClose(wb) -> undefined",
+    summary: "关闭工作簿（语义占位；rust_xlsxwriter 在 GC 时自动释放）。",
+    params: &[
+        ("wb", "excelNew/excelOpen 返回的工作簿"),
+    ],
+    returns: "undefined（不做实际清理，仅校验类型）",
+    examples: &[
+        "var wb = excelNew()",
+        "excelSaveAs(wb, \"./out.xlsx\")",
+        "excelClose(wb)  // 显式标记不再使用",
+    ],
+    errors: &[
+        "无实际资源需释放（Workbook 在 Drop 时自动回收）",
+        "传入非 workbook 类型返回 error（仅做类型校验）",
+    ],
+};
+
+static DOC_EXCEL_GET_SHEET_LIST: BuiltinDoc = BuiltinDoc {
+    category: "excel",
+    signature: "excelGetSheetList(wb_or_path) -> array<string>",
+    summary: "获取 sheet 名称列表（支持工作簿对象或文件路径）。",
+    params: &[
+        ("wb_or_path", "工作簿对象（excelNew 创建）或 Excel 文件路径（string）"),
+    ],
+    returns: "array<string>：sheet 名称列表（按顺序）",
+    examples: &[
+        "var names = excelGetSheetList(\"./in.xlsx\")  // → [\"Sheet1\",\"Sheet2\"]",
+        "var wb = excelNew()",
+        "excelNewSheet(wb, \"数据\")",
+        "excelGetSheetList(wb)  // → [\"数据\"]",
+    ],
+    errors: &[
+        "参数应为 workbook 或 string 路径",
+        "打开文件失败：路径不存在 / 不是有效 Excel 文件",
+    ],
+};
+
+static DOC_EXCEL_READ_CELL: BuiltinDoc = BuiltinDoc {
+    category: "excel",
+    signature: "excelReadCell(path, sheet, row, col) -> value",
+    summary: "读取 Excel 文件中指定单个单元格的值。",
+    params: &[
+        ("path", "Excel 文件路径"),
+        ("sheet", "sheet 索引（0-based int）或名称（string）"),
+        ("row", "行号（0-based，非负整数）"),
+        ("col", "列号（0-based，非负整数）"),
+    ],
+    returns: "value：单元格值（int/float/string/bool）；越界返回空串",
+    examples: &[
+        "var v = excelReadCell(\"./in.xlsx\", 0, 0, 0)            // 第一个 sheet 的 A1",
+        "var v = excelReadCell(\"./in.xlsx\", \"Sheet1\", 2, 1)     // 第三行第二列",
+    ],
+    errors: &[
+        "row/col 不能为负（应为 0-based 非负整数）",
+        "sheet 索引超出范围 / 名称不存在",
+        "打开文件失败；越界单元格返回空串而非 error",
+    ],
+};
+
+static DOC_EXCEL_WRITE_CELL: BuiltinDoc = BuiltinDoc {
+    category: "excel",
+    signature: "excelWriteCell(wb, sheet, row, col, value) -> undefined",
+    summary: "写入单个单元格到工作簿（按值类型自动写入）。",
+    params: &[
+        ("wb", "excelNew/excelOpen 返回的工作簿"),
+        ("sheet", "sheet 索引（0-based int）或名称（不存在则创建）"),
+        ("row", "行号（0-based，非负整数）"),
+        ("col", "列号（0-based，非负整数）"),
+        ("value", "要写入的值：int/float/string/bool 等"),
+    ],
+    returns: "undefined：写入成功；失败返回 error",
+    examples: &[
+        "excelWriteCell(wb, 0, 0, 0, \"标题\")        // A1",
+        "excelWriteCell(wb, \"Sheet1\", 1, 2, 95.5)   // 第三列第二行",
+        "excelWriteCell(wb, 0, 5, 0, true)           // 写布尔值",
+    ],
+    errors: &[
+        "需要 5 个参数 (wb, sheet, row, col, value)",
+        "row/col 不能为负",
+        "sheet 索引超出当前范围会自动创建缺失的 sheet",
+    ],
+};
+
+static DOC_EXCEL_GET_COLUMN_NAME_BY_INDEX: BuiltinDoc = BuiltinDoc {
+    category: "excel",
+    signature: "excelGetColumnNameByIndex(idx_or_name) -> string|int",
+    summary: "列号(0-based)↔列名(A,B,...,Z,AA,...) 双向互转。",
+    params: &[
+        ("idx_or_name", "int 列号（0-based → 列名）或 string 列名（→ 0-based 列号）"),
+    ],
+    returns: "传 int 返回列名 string（如 \"AA\"）；传 string 返回列号 int（如 26）",
+    examples: &[
+        "excelGetColumnNameByIndex(0)      // → \"A\"",
+        "excelGetColumnNameByIndex(25)     // → \"Z\"",
+        "excelGetColumnNameByIndex(26)     // → \"AA\"",
+        "excelGetColumnNameByIndex(\"AB\")   // → 27",
+        "excelGetColumnNameByIndex(\"a\")    // → 0（大小写不敏感）",
+    ],
+    errors: &[
+        "传 int 时列号不能为负",
+        "传 string 时应为 A-Z 字母组合（如 \"A\"/\"AB\"），否则返回 error",
+        "列名大小写不敏感（内部转大写处理）",
+    ],
+};
+
 /// register 注册所有 Excel 内置函数。
 pub fn register(vm: &mut crate::vm::VM) {
-    vm.register_builtin("excelNew", bi_excel_new);
-    vm.register_builtin("excelOpen", bi_excel_open);
-    vm.register_builtin("excelSaveAs", bi_excel_save_as);
-    vm.register_builtin("excelReadSheet", bi_excel_read_sheet);
-    vm.register_builtin("excelReadAll", bi_excel_read_all);
-    vm.register_builtin("excelWriteSheet", bi_excel_write_sheet);
-    vm.register_builtin("excelNewSheet", bi_excel_new_sheet);
-    vm.register_builtin("excelOpenFromBytes", bi_excel_open_from_bytes);
-    vm.register_builtin("excelWriteToBytes", bi_excel_write_to_bytes);
-    vm.register_builtin("excelClose", bi_excel_close);
-    vm.register_builtin("excelGetSheetList", bi_excel_get_sheet_list);
-    vm.register_builtin("excelReadCell", bi_excel_read_cell);
-    vm.register_builtin("excelWriteCell", bi_excel_write_cell);
-    vm.register_builtin("excelGetColumnNameByIndex", bi_excel_get_column_name_by_index);
+    vm.register_builtin_doc("excelNew", bi_excel_new, &DOC_EXCEL_NEW);
+    vm.register_builtin_doc("excelOpen", bi_excel_open, &DOC_EXCEL_OPEN);
+    vm.register_builtin_doc("excelSaveAs", bi_excel_save_as, &DOC_EXCEL_SAVE_AS);
+    vm.register_builtin_doc("excelReadSheet", bi_excel_read_sheet, &DOC_EXCEL_READ_SHEET);
+    vm.register_builtin_doc("excelReadAll", bi_excel_read_all, &DOC_EXCEL_READ_ALL);
+    vm.register_builtin_doc("excelWriteSheet", bi_excel_write_sheet, &DOC_EXCEL_WRITE_SHEET);
+    vm.register_builtin_doc("excelNewSheet", bi_excel_new_sheet, &DOC_EXCEL_NEW_SHEET);
+    vm.register_builtin_doc("excelOpenFromBytes", bi_excel_open_from_bytes, &DOC_EXCEL_OPEN_FROM_BYTES);
+    vm.register_builtin_doc("excelWriteToBytes", bi_excel_write_to_bytes, &DOC_EXCEL_WRITE_TO_BYTES);
+    vm.register_builtin_doc("excelClose", bi_excel_close, &DOC_EXCEL_CLOSE);
+    vm.register_builtin_doc("excelGetSheetList", bi_excel_get_sheet_list, &DOC_EXCEL_GET_SHEET_LIST);
+    vm.register_builtin_doc("excelReadCell", bi_excel_read_cell, &DOC_EXCEL_READ_CELL);
+    vm.register_builtin_doc("excelWriteCell", bi_excel_write_cell, &DOC_EXCEL_WRITE_CELL);
+    vm.register_builtin_doc("excelGetColumnNameByIndex", bi_excel_get_column_name_by_index, &DOC_EXCEL_GET_COLUMN_NAME_BY_INDEX);
 }
 
 // ---- 辅助函数 ----
@@ -73,6 +358,12 @@ fn workbook_downcast<'a>(v: &'a Value, fn_name: &str) -> Result<&'a Arc<Mutex<Wo
             fn_name, other.type_name(),
         ))),
     }
+}
+
+/// data_to_value 将 calamine Data 转为 Value。
+/// data_to_value_pub 是公开别名，供 builtins_db.rs 的 excel 数据库连接复用。
+pub fn data_to_value_pub(data: &calamine::Data) -> Value {
+    data_to_value(data)
 }
 
 /// calamine_data_to_value 将 calamine Data 转为 Value。

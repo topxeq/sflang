@@ -13,26 +13,106 @@
 use std::sync::{Arc, Mutex};
 
 use crate::builtins_helpers as bh;
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 use crate::vm::VM;
 
+static DOC_JSON_ENCODE: BuiltinDoc = BuiltinDoc {
+    category: "json",
+    signature: "jsonEncode(v) -> string",
+    summary: "将 Sflang 值编码为 JSON 字符串。别名 toJson。",
+    params: &[("v", "任意值（undefined→null, bool/number/string/array/object 可编码）")],
+    returns: "string JSON 文本",
+    examples: &[
+        "jsonEncode({\"a\": 1, \"b\": [2,3]})  → {\"a\":1,\"b\":[2,3]}",
+        "jsonEncode(undefined)                → null",
+    ],
+    errors: &[],
+};
+
+static DOC_JSON_DECODE: BuiltinDoc = BuiltinDoc {
+    category: "json",
+    signature: "jsonDecode(s) -> value|error",
+    summary: "将 JSON 字符串解码为 Sflang 值。别名 fromJson。",
+    params: &[("s", "JSON 文本字符串")],
+    returns: "value（object/array/string/number/bool/undefined）；解析失败返回 error",
+    examples: &[
+        "jsonDecode(\"{\\\"a\\\":1}\")  → {\"a\": 1}",
+        "jsonDecode(\"[1,2,3]\")       → [1, 2, 3]",
+    ],
+    errors: &[
+        "JSON 语法错误返回 error 对象（用 isErr 检查）",
+        "JSON 的 null 解码为 undefined",
+    ],
+};
+
+static DOC_GETJSONNODESTR: BuiltinDoc = BuiltinDoc {
+    category: "json",
+    signature: "getJsonNodeStr(json, path) -> string|undefined",
+    summary: "按点号路径提取 JSON 节点文本。",
+    params: &[("json", "JSON 字符串或 object"), ("path", "点号路径，如 a.b.c")],
+    returns: "string；未找到 undefined",
+    examples: &["getJsonNodeStr(j, \"user.name\")"],
+    errors: &[],
+};
+
+static DOC_GETJSONNODE: BuiltinDoc = BuiltinDoc {
+    category: "json",
+    signature: "getJsonNode(json, path) -> value|undefined",
+    summary: "按路径提取 JSON 节点（保留类型）。",
+    params: &[("json", "JSON 字符串或 object"), ("path", "点号路径")],
+    returns: "value；未找到 undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_FORMATJSON: BuiltinDoc = BuiltinDoc {
+    category: "json",
+    signature: "formatJson(v) -> string",
+    summary: "格式化 JSON（带缩进）。",
+    params: &[("v", "任意值")],
+    returns: "string 缩进的 JSON",
+    examples: &["formatJson({\"a\":1})  // {\\n  \"a\": 1\\n}"],
+    errors: &[],
+};
+
+static DOC_COMPACTJSON: BuiltinDoc = BuiltinDoc {
+    category: "json",
+    signature: "compactJson(v) -> string",
+    summary: "压缩 JSON（无空白）。",
+    params: &[("v", "任意值")],
+    returns: "string 紧凑 JSON",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_GETJSONNODESTRS: BuiltinDoc = BuiltinDoc {
+    category: "json",
+    signature: "getJsonNodeStrs(json, paths) -> array<string>",
+    summary: "批量提取多个路径。",
+    params: &[("json", "JSON 字符串或 object"), ("paths", "路径数组")],
+    returns: "array<string>",
+    examples: &[],
+    errors: &[],
+};
+
 /// register 注册所有 JSON 内置函数到 VM。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("jsonEncode", bi_json_encode);
-    vm.register_builtin("jsonDecode", bi_json_decode);
-    vm.register_builtin("toJson", bi_json_encode);
-    vm.register_builtin("fromJson", bi_json_decode);
-    vm.register_builtin("getJsonNodeStr", bi_get_json_node_str);
-    vm.register_builtin("getJsonNode", bi_get_json_node);
-    vm.register_builtin("formatJson", bi_format_json);
-    vm.register_builtin("compactJson", bi_compact_json);
-    vm.register_builtin("getJsonNodeStrs", bi_get_json_node_strs);
+    vm.register_builtin_doc("jsonEncode", bi_json_encode, &DOC_JSON_ENCODE);
+    vm.register_builtin_doc("jsonDecode", bi_json_decode, &DOC_JSON_DECODE);
+    vm.register_builtin_doc("toJson", bi_json_encode, &DOC_JSON_ENCODE);
+    vm.register_builtin_doc("fromJson", bi_json_decode, &DOC_JSON_DECODE);
+    vm.register_builtin_doc("getJsonNodeStr", bi_get_json_node_str, &DOC_GETJSONNODESTR);
+    vm.register_builtin_doc("getJsonNode", bi_get_json_node, &DOC_GETJSONNODE);
+    vm.register_builtin_doc("formatJson", bi_format_json, &DOC_FORMATJSON);
+    vm.register_builtin_doc("compactJson", bi_compact_json, &DOC_COMPACTJSON);
+    vm.register_builtin_doc("getJsonNodeStrs", bi_get_json_node_strs, &DOC_GETJSONNODESTRS);
 }
 
 // ---- 编码（Value → JSON 字符串）----
 
 /// encode_value 递归编码 Value 到 JSON 字符串。
-fn encode_value(v: &Value, out: &mut String) {
+pub fn encode_value(v: &Value, out: &mut String) {
     match v {
         Value::Undefined => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),

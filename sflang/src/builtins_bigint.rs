@@ -23,16 +23,87 @@ use crate::bigint::BigInt;
 use crate::bigfloat::BigFloat;
 use crate::value::Value;
 use crate::vm::VM;
+use crate::function::BuiltinDoc;
+
+static DOC_BIGINT: BuiltinDoc = BuiltinDoc {
+    category: "bigint",
+    signature: "bigInt(s) -> bigInt",
+    summary: "从字符串创建任意精度整数。",
+    params: &[("s", "数字字符串或 int")],
+    returns: "bigInt",
+    examples: &["bigInt(\"99999999999999999999\")", "bigInt(42)"],
+    errors: &[],
+};
+
+static DOC_BIGFLOAT: BuiltinDoc = BuiltinDoc {
+    category: "bigint",
+    signature: "bigFloat(s) -> bigFloat",
+    summary: "创建任意精度十进制浮点数。",
+    params: &[("s", "数字字符串或数值")],
+    returns: "bigFloat",
+    examples: &["bigFloat(\"0.1\")"],
+    errors: &[],
+};
+
+static DOC_TOBIGINT: BuiltinDoc = BuiltinDoc {
+    category: "bigint",
+    signature: "toBigInt(v) -> bigInt",
+    summary: "将 int/string 转为 bigInt。",
+    params: &[("v", "int 或 string")],
+    returns: "bigInt",
+    examples: &["toBigInt(42)"],
+    errors: &[],
+};
+
+static DOC_TOBIGFLOAT: BuiltinDoc = BuiltinDoc {
+    category: "bigint",
+    signature: "toBigFloat(v) -> bigFloat",
+    summary: "将数值转为 bigFloat。",
+    params: &[("v", "int/float/string")],
+    returns: "bigFloat",
+    examples: &["toBigFloat(3.14)"],
+    errors: &[],
+};
+
+static DOC_ISBIGINT: BuiltinDoc = BuiltinDoc {
+    category: "bigint",
+    signature: "isBigInt(v) -> bool",
+    summary: "判断是否为 bigInt 类型。",
+    params: &[("v", "任意值")],
+    returns: "bool",
+    examples: &["isBigInt(bigInt(\"1\"))"],
+    errors: &[],
+};
+
+static DOC_ISBIGFLOAT: BuiltinDoc = BuiltinDoc {
+    category: "bigint",
+    signature: "isBigFloat(v) -> bool",
+    summary: "判断是否为 bigFloat 类型。",
+    params: &[("v", "任意值")],
+    returns: "bool",
+    examples: &["isBigFloat(bigFloat(\"1.0\"))"],
+    errors: &[],
+};
+
+static DOC_BIGFLOATDIV: BuiltinDoc = BuiltinDoc {
+    category: "bigint",
+    signature: "bigFloatDiv(a, b[, scale]) -> bigFloat",
+    summary: "bigFloat 精确除法（可选小数位数）。",
+    params: &[("a", "被除数"), ("b", "除数"), ("scale", "可选。小数位数")],
+    returns: "bigFloat",
+    examples: &["bigFloatDiv(a, b, 10)"],
+    errors: &["除零返回 error"],
+};
 
 /// register 注册所有大数内置函数到 VM。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("bigInt", bi_big_int);
-    vm.register_builtin("bigFloat", bi_big_float);
-    vm.register_builtin("toBigInt", bi_to_big_int);
-    vm.register_builtin("toBigFloat", bi_to_big_float);
-    vm.register_builtin("isBigInt", bi_is_big_int);
-    vm.register_builtin("isBigFloat", bi_is_big_float);
-    vm.register_builtin("bigFloatDiv", bi_big_float_div);
+    vm.register_builtin_doc("bigInt", bi_big_int, &DOC_BIGINT);
+    vm.register_builtin_doc("bigFloat", bi_big_float, &DOC_BIGFLOAT);
+    vm.register_builtin_doc("toBigInt", bi_to_big_int, &DOC_TOBIGINT);
+    vm.register_builtin_doc("toBigFloat", bi_to_big_float, &DOC_TOBIGFLOAT);
+    vm.register_builtin_doc("isBigInt", bi_is_big_int, &DOC_ISBIGINT);
+    vm.register_builtin_doc("isBigFloat", bi_is_big_float, &DOC_ISBIGFLOAT);
+    vm.register_builtin_doc("bigFloatDiv", bi_big_float_div, &DOC_BIGFLOATDIV);
 }
 
 /// bi_big_int 构造 bigInt。

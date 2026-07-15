@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::builtins_helpers as bh;
 use crate::value::{error_value, Value};
 use crate::vm::VM;
+use crate::function::BuiltinDoc;
 
 // ============ 类型定义 ============
 
@@ -110,13 +111,63 @@ fn seq_downcast<'a>(v: &'a Value, fn_name: &str) -> Result<&'a Arc<SeqState>, Va
 
 // ============ 内置函数 ============
 
+static DOC_SEQNEW: BuiltinDoc = BuiltinDoc {
+    category: "seq",
+    signature: "seqNew(connStr) -> seq",
+    summary: "创建序号生成器（基于数据库或文件）。",
+    params: &[("connStr", "连接配置")],
+    returns: "seq 对象",
+    examples: &["var s = seqNew(cfg)"],
+    errors: &[],
+};
+
+static DOC_SEQGET: BuiltinDoc = BuiltinDoc {
+    category: "seq",
+    signature: "seqGet(s, name) -> int",
+    summary: "获取下一个序号（递增并返回）。",
+    params: &[("s", "seq 对象"), ("name", "序号名称")],
+    returns: "int 下一个序号值",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_SEQGETCURRENT: BuiltinDoc = BuiltinDoc {
+    category: "seq",
+    signature: "seqGetCurrent(s, name) -> int",
+    summary: "获取当前序号（不递增）。",
+    params: &[("s", "seq 对象"), ("name", "序号名称")],
+    returns: "int 当前值",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_SEQRESET: BuiltinDoc = BuiltinDoc {
+    category: "seq",
+    signature: "seqReset(s, name, val) -> undefined",
+    summary: "重置序号为指定值。",
+    params: &[("s", "seq 对象"), ("name", "序号名称"), ("val", "新值")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_GETSEQ: BuiltinDoc = BuiltinDoc {
+    category: "seq",
+    signature: "getSeq(s, name) -> int",
+    summary: "seqGet 的别名。",
+    params: &[("s", "seq 对象"), ("name", "序号名称")],
+    returns: "int",
+    examples: &[],
+    errors: &[],
+};
+
 /// register 注册所有 Seq 相关内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("seqNew", bi_seq_new);
-    vm.register_builtin("seqGet", bi_seq_get);
-    vm.register_builtin("seqGetCurrent", bi_seq_get_current);
-    vm.register_builtin("seqReset", bi_seq_reset);
-    vm.register_builtin("getSeq", bi_get_seq);
+    vm.register_builtin_doc("seqNew", bi_seq_new, &DOC_SEQNEW);
+    vm.register_builtin_doc("seqGet", bi_seq_get, &DOC_SEQGET);
+    vm.register_builtin_doc("seqGetCurrent", bi_seq_get_current, &DOC_SEQGETCURRENT);
+    vm.register_builtin_doc("seqReset", bi_seq_reset, &DOC_SEQRESET);
+    vm.register_builtin_doc("getSeq", bi_get_seq, &DOC_GETSEQ);
 }
 
 /// bi_seq_new 创建序号生成器。

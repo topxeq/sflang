@@ -29,8 +29,25 @@ const PACK_MAGIC: &[u8] = b"SFLANG_PACK";
 const PACK_MAGIC_LEN: usize = 11;
 const PACK_TRAILER_LEN: usize = PACK_MAGIC_LEN + 8; // magic + u64 长度
 
-/// main 入口：解析命令行，分发到 REPL / 脚本执行 / 代码执行 / 打包。
+/// main 入口：在大栈线程中执行主逻辑。
+///
+/// VM 的函数调用通过 Rust 递归实现（run_frame → do_call → run_frame），
+/// 每层函数调用消耗一个 OS 栈帧。默认线程栈（Windows 1MB 主线程 / 8MB 子线程）
+/// 在递归约 200-300 层时就会溢出，远早于 max_call_depth 的逻辑保护。
+///
+/// 此处在 32MB 栈的子线程中执行主逻辑，使 max_call_depth=500 能真正可达。
+/// run 启动的并发子线程仍用默认 8MB 栈（避免高并发时地址空间膨胀）。
 fn main() -> ExitCode {
+    // 用大栈线程执行，避免深递归时 OS 栈溢出
+    let result = std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024) // 32MB，足够 500 层递归
+        .spawn(real_main)
+        .expect("failed to spawn main thread");
+    result.join().unwrap_or(ExitCode::from(1))
+}
+
+/// real_main 实际的入口逻辑：解析命令行，分发到 REPL / 脚本执行 / 代码执行 / 打包。
+fn real_main() -> ExitCode {
     // 优先检测：自身是否嵌入了脚本（自包含模式）
     if let Some(script) = read_embedded_script() {
         let args: Vec<String> = std::env::args().skip(1).collect();
@@ -94,6 +111,12 @@ fn main() -> ExitCode {
         "-v" | "--version" => {
             println!("sf 0.1.0 (Sflang, Rust implementation)");
             ExitCode::SUCCESS
+        }
+        "--list-builtins" | "-lb" => {
+            // 列出所有内置函数（按分类）
+            // 可选第二参数筛选分类：sf --list-builtins regex
+            let filter = args.get(2).map(|s| s.as_str());
+            list_builtins(filter)
         }
         s => {
             // 视为脚本文件
@@ -403,6 +426,7 @@ fn print_help() {
     println!("      [--output <路径>]    指定输出路径");
     println!("  sf -h | --help | help    显示此帮助");
     println!("  sf -v | --version        显示版本");
+    println!("  sf --list-builtins [分类] 列出所有内置函数（可按分类筛选）");
     println!();
     println!("预定义全局变量：");
     println!("  piG, eG       数学常量");
@@ -422,6 +446,55 @@ fn print_help() {
     println!("  for i in range(1, 10) {{");
     println!("      println(i)");
     println!("  }}");
+}
+
+/// list_builtins 列出所有内置函数（按分类），可选按分类筛选。
+/// 用法：sf --list-builtins [分类名]
+fn list_builtins(filter: Option<&str>) -> ExitCode {
+    let mut sf = sflang::Sflang::new();
+    let vm = sf.vm_mut();
+    let cats = vm.builtin_categories();
+    let total = vm.builtin_names().len();
+
+    if let Some(cat_filter) = filter {
+        // 筛选指定分类（大小写不敏感）
+        let lower = cat_filter.to_lowercase();
+        let found: Vec<_> = cats
+            .iter()
+            .filter(|(c, _)| c.to_lowercase() == lower)
+            .collect();
+        if found.is_empty() {
+            eprintln!("未找到分类 '{}'。可用分类：", cat_filter);
+            let all_cats: Vec<&str> = cats.iter().map(|(c, _)| *c).collect();
+            eprintln!("  {}", all_cats.join(", "));
+            eprintln!("提示：也可在脚本内用 help(\"{}\") 查询。", cat_filter);
+            return ExitCode::from(1);
+        }
+        for (cat, names) in &found {
+            println!("== {}（{} 个函数）==", cat, names.len());
+            // 每行最多 4 个，带简介
+            for name in names.iter() {
+                if let Some(doc) = vm.builtin_doc(name) {
+                    println!("  {} — {}", name, doc.summary);
+                } else {
+                    println!("  {}", name);
+                }
+            }
+        }
+    } else {
+        // 列出全部分类
+        println!("Sflang 内置函数（共 {} 个，按分类列出）：", total);
+        println!("用 sf --list-builtins <分类> 筛选，或在脚本内 help(\"函数名\") 查看详情。");
+        println!();
+        for (cat, names) in &cats {
+            println!("== {}（{}）==", cat, names.len());
+            for chunk in names.chunks(6) {
+                println!("  {}", chunk.join(", "));
+            }
+            println!();
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 /// print_repl_help 打印 REPL 帮助。

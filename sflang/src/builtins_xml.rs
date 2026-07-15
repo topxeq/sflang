@@ -18,12 +18,43 @@ use crate::builtins_helpers as bh;
 use crate::object_map::new_map;
 use crate::value::{Value, error_value};
 use crate::vm::VM;
+use crate::function::BuiltinDoc;
+
+static DOC_FROMXML: BuiltinDoc = BuiltinDoc {
+    category: "xml",
+    signature: "fromXml(s) -> object",
+    summary: "解析 XML 字符串为对象（递归转换）。",
+    params: &[("s", "XML 字符串")],
+    returns: "object 对象",
+    examples: &["var o = fromXml(xmlStr)"],
+    errors: &["XML 语法错误返回 error"],
+};
+
+static DOC_XMLGETNODESTR: BuiltinDoc = BuiltinDoc {
+    category: "xml",
+    signature: "xmlGetNodeStr(s, path) -> string|undefined",
+    summary: "按路径提取 XML 节点文本。",
+    params: &[("s", "XML 字符串"), ("path", "节点路径，如 root/child")],
+    returns: "string 节点文本；未找到返回 undefined",
+    examples: &["xmlGetNodeStr(xml, \"root/item/name\")"],
+    errors: &[],
+};
+
+static DOC_FORMATXML: BuiltinDoc = BuiltinDoc {
+    category: "xml",
+    signature: "formatXml(s) -> string",
+    summary: "格式化 XML（缩进美化）。",
+    params: &[("s", "XML 字符串")],
+    returns: "string 格式化后的 XML",
+    examples: &["formatXml(rawXml)"],
+    errors: &[],
+};
 
 /// register 注册 XML 内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("fromXml", bi_from_xml);
-    vm.register_builtin("xmlGetNodeStr", bi_xml_get_node_str);
-    vm.register_builtin("formatXml", bi_format_xml);
+    vm.register_builtin_doc("fromXml", bi_from_xml, &DOC_FROMXML);
+    vm.register_builtin_doc("xmlGetNodeStr", bi_xml_get_node_str, &DOC_XMLGETNODESTR);
+    vm.register_builtin_doc("formatXml", bi_format_xml, &DOC_FORMATXML);
 }
 
 // ===========================================================================

@@ -52,6 +52,7 @@ pub mod builtins_csv;
 pub mod builtins_xlsx;
 pub mod builtins_docx;
 pub mod builtins_db;
+pub mod sql_engine;
 pub mod aes;
 pub mod builtins_aes;
 pub mod txde;
@@ -85,7 +86,7 @@ pub mod api;
 // 重导出常用类型
 pub use value::{Value, TypeCode, SfError, error_value, err_to_value};
 pub use object_map::{Map, new_map, new_map_with_proto};
-pub use function::{Function, Builtin, BuiltinFn};
+pub use function::{Function, Builtin, BuiltinFn, BuiltinDoc};
 pub use console_writer::ConsoleWriter;
 pub use opcode::{Opcode, Code, FreeSource};
 pub use lexer::tokenize;

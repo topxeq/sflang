@@ -1,6 +1,6 @@
 // 示例 04.01：函数的输入参数
 // ==================================
-// 展示函数参数的各种用法：固定参数、可变参数、展开调用。
+// 展示函数参数的各种用法：固定参数、默认参数、可变参数、展开调用。
 
 // ---- 固定参数 ----
 func calc(a, b, c, d) {
@@ -8,14 +8,32 @@ func calc(a, b, c, d) {
 }
 pln("calc(3, 6, 8, 9) =", calc(3, 6, 8, 9))
 
-// 参数不足时，缺失的参数为 undefined
-// 参与算术会报错，但可以用来做可选参数判断
-func greet(name, greeting) {
-    var g = greeting ?? "你好"
-    return g + ", " + name + "!"
+// ---- 默认参数 ----
+// 用 = 默认值 声明，调用时省略该参数则自动使用默认值
+func greet(name, greeting="你好") {
+    return greeting + ", " + name + "!"
 }
-pln("greet 默认:", greet("Alice"))
-pln("greet 指定:", greet("Bob", "Hello"))
+pln("greet 默认:", greet("Alice"))           // 你好, Alice!
+pln("greet 指定:", greet("Bob", "Hello"))     // Hello, Bob!
+
+// 默认值可以引用前面的参数（按声明顺序）
+func makeRange(start, end=start+10) {
+    var result = []
+    for i := start; i < end; i++ {
+        push(result, i)
+    }
+    return result
+}
+pln("makeRange(1):", makeRange(1))           // [1,2,3,...,10]
+pln("makeRange(1, 4):", makeRange(1, 4))     // [1,2,3]
+
+// 多个默认参数，可选择性传
+func createFile(name, mode="rw", encoding="utf-8") {
+    return "${name} (mode=${mode}, encoding=${encoding})"
+}
+pln("全默认:", createFile("data.txt"))
+pln("部分指定:", createFile("log.txt", "w"))
+pln("全指定:", createFile("cfg.ini", "r", "gbk"))
 
 // ---- 可变参数（... 标记最后一个参数）----
 func sumUp(v0, v1, ...rest) {
@@ -64,3 +82,4 @@ func makeCounter() {
 }
 var counter = makeCounter()
 pln(counter(), counter(), counter())            // 1 2 3
+

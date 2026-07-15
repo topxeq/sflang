@@ -15,35 +15,282 @@
 use std::sync::{Mutex, OnceLock};
 
 use crate::builtins_helpers as bh;
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 use crate::vm::VM;
 
+static DOC_ABS: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "abs(x) -> int|float",
+    summary: "返回数值的绝对值。Int 返回 int，Float 返回 float。",
+    params: &[("x", "数值（int/float）")],
+    returns: "int|float 绝对值",
+    examples: &["abs(-5) → 5", "abs(-3.14) → 3.14"],
+    errors: &[],
+};
+
+static DOC_FLOOR: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "floor(x) -> int",
+    summary: "向下取整（返回不大于 x 的最大整数）。",
+    params: &[("x", "数值（int/float）")],
+    returns: "int",
+    examples: &["floor(3.7) → 3", "floor(-1.2) → -2"],
+    errors: &[],
+};
+
+static DOC_CEIL: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "ceil(x) -> int",
+    summary: "向上取整（返回不小于 x 的最小整数）。",
+    params: &[("x", "数值（int/float）")],
+    returns: "int",
+    examples: &["ceil(3.2) → 4", "ceil(-1.8) → -1"],
+    errors: &[],
+};
+
+static DOC_ROUND: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "round(x) -> int",
+    summary: "四舍五入到 nearest 整数（.5 远离零）。",
+    params: &[("x", "数值（int/float）")],
+    returns: "int",
+    examples: &["round(3.5) → 4", "round(2.4) → 2"],
+    errors: &[],
+};
+
+static DOC_SQRT: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "sqrt(x) -> float",
+    summary: "返回平方根。",
+    params: &[("x", "数值（int/float，≥0）")],
+    returns: "float 平方根",
+    examples: &["sqrt(9) → 3", "sqrt(2) → 1.4142135623730951"],
+    errors: &["负数返回 NaN"],
+};
+
+static DOC_POW: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "pow(base, exp) -> float",
+    summary: "返回 base 的 exp 次方。",
+    params: &[
+        ("base", "底数（int/float）"),
+        ("exp", "指数（int/float）"),
+    ],
+    returns: "float base^exp",
+    examples: &["pow(2, 10) → 1024", "pow(9, 0.5) → 3"],
+    errors: &[],
+};
+
+static DOC_RANDOM: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "random() -> float",
+    summary: "返回 [0, 1) 区间的伪随机浮点数。",
+    params: &[],
+    returns: "float [0, 1)",
+    examples: &["random() → 0.7231...（每次不同）"],
+    errors: &[],
+};
+
+static DOC_RAND_INT: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "randInt(lo, hi) -> int",
+    summary: "返回 [lo, hi] 区间的伪随机整数（含两端）。",
+    params: &[
+        ("lo", "下界（含）"),
+        ("hi", "上界（含）"),
+    ],
+    returns: "int [lo, hi] 闭区间内的随机整数",
+    examples: &["randInt(1, 6) → 1~6（模拟骰子）"],
+    errors: &[],
+};
+
+static DOC_MIN: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "min(a, b, ...) / min(arr) -> value",
+    summary: "返回最小值。支持可变参数或单个数组。",
+    params: &[("a, b, ...", "两个以上数值，或一个数值数组")],
+    returns: "最小值（类型与输入一致）",
+    examples: &["min(3, 1, 2) → 1", "min([5, 2, 8]) → 2"],
+    errors: &[],
+};
+
+static DOC_MAX: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "max(a, b, ...) / max(arr) -> value",
+    summary: "返回最大值。支持可变参数或单个数组。",
+    params: &[("a, b, ...", "两个以上数值，或一个数值数组")],
+    returns: "最大值（类型与输入一致）",
+    examples: &["max(3, 1, 2) → 3", "max([5, 2, 8]) → 8"],
+    errors: &[],
+};
+
+static DOC_SIGN: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "sign(x) -> int",
+    summary: "返回符号：正数 1，负数 -1，零 0。",
+    params: &[("x", "数值")],
+    returns: "int -1/0/1",
+    examples: &["sign(-5)  // -1"],
+    errors: &[],
+};
+
+static DOC_SIN: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "sin(x) -> float",
+    summary: "正弦（弧度）。",
+    params: &[("x", "弧度")],
+    returns: "float",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_COS: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "cos(x) -> float",
+    summary: "余弦（弧度）。",
+    params: &[("x", "弧度")],
+    returns: "float",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_TAN: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "tan(x) -> float",
+    summary: "正切（弧度）。",
+    params: &[("x", "弧度")],
+    returns: "float",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_ATAN: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "atan(x) -> float",
+    summary: "反正切（弧度）。",
+    params: &[("x", "数值")],
+    returns: "float",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_ATAN2: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "atan2(y, x) -> float",
+    summary: "双参数反正切。",
+    params: &[("y", "y 坐标"), ("x", "x 坐标")],
+    returns: "float 弧度",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LOG: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "log(x) -> float",
+    summary: "自然对数 ln(x)。",
+    params: &[("x", "数值（>0）")],
+    returns: "float",
+    examples: &[],
+    errors: &["x<=0 返回错误"],
+};
+
+static DOC_LOG2: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "log2(x) -> float",
+    summary: "以 2 为底对数。",
+    params: &[("x", "数值（>0）")],
+    returns: "float",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LOG10: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "log10(x) -> float",
+    summary: "以 10 为底对数。",
+    params: &[("x", "数值（>0）")],
+    returns: "float",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_EXP: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "exp(x) -> float",
+    summary: "自然指数 e^x。",
+    params: &[("x", "指数")],
+    returns: "float",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_PI: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "pi() -> float",
+    summary: "返回圆周率 pi（也作为全局 piG 暴露）。",
+    params: &[],
+    returns: "float 3.14159...",
+    examples: &["pi()  // 3.141592653589793"],
+    errors: &[],
+};
+
+static DOC_E: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "e() -> float",
+    summary: "返回自然对数底 e（也作为全局 eG 暴露）。",
+    params: &[],
+    returns: "float 2.71828...",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_FLEXEVAL: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "flexEval(expr) -> float|error",
+    summary: "求值数学表达式字符串。",
+    params: &[("expr", "数学表达式，如 \"1+2*3\"")],
+    returns: "float 结果；语法错误返回 error",
+    examples: &["flexEval(\"sin(0.5) + 1\")  // 1.479..."],
+    errors: &["表达式语法错误返回 error"],
+};
+
+static DOC_CALDISTANCEOFLATLON: BuiltinDoc = BuiltinDoc {
+    category: "math",
+    signature: "calDistanceOfLatLon(lat1, lon1, lat2, lon2) -> float",
+    summary: "计算两个经纬度坐标间的距离（米）。",
+    params: &[("lat1", "纬度1"), ("lon1", "经度1"), ("lat2", "纬度2"), ("lon2", "经度2")],
+    returns: "float 距离（米）",
+    examples: &["calDistanceOfLatLon(39.9, 116.4, 31.2, 121.5)  // 北京到上海"],
+    errors: &[],
+};
+
 /// register 注册所有数学内置函数到 VM。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("abs", bi_abs);
-    vm.register_builtin("floor", bi_floor);
-    vm.register_builtin("ceil", bi_ceil);
-    vm.register_builtin("round", bi_round);
-    vm.register_builtin("sqrt", bi_sqrt);
-    vm.register_builtin("pow", bi_pow);
-    vm.register_builtin("sign", bi_sign);
-    vm.register_builtin("min", bi_min);
-    vm.register_builtin("max", bi_max);
-    vm.register_builtin("sin", bi_sin);
-    vm.register_builtin("cos", bi_cos);
-    vm.register_builtin("tan", bi_tan);
-    vm.register_builtin("atan", bi_atan);
-    vm.register_builtin("atan2", bi_atan2);
-    vm.register_builtin("log", bi_log);
-    vm.register_builtin("log2", bi_log2);
-    vm.register_builtin("log10", bi_log10);
-    vm.register_builtin("exp", bi_exp);
-    vm.register_builtin("pi", bi_pi);
-    vm.register_builtin("e", bi_e);
-    vm.register_builtin("random", bi_random);
-    vm.register_builtin("randInt", bi_rand_int);
-    vm.register_builtin("flexEval", bi_flex_eval);
-    vm.register_builtin("calDistanceOfLatLon", bi_cal_distance_of_lat_lon);
+    vm.register_builtin_doc("abs", bi_abs, &DOC_ABS);
+    vm.register_builtin_doc("floor", bi_floor, &DOC_FLOOR);
+    vm.register_builtin_doc("ceil", bi_ceil, &DOC_CEIL);
+    vm.register_builtin_doc("round", bi_round, &DOC_ROUND);
+    vm.register_builtin_doc("sqrt", bi_sqrt, &DOC_SQRT);
+    vm.register_builtin_doc("pow", bi_pow, &DOC_POW);
+    vm.register_builtin_doc("sign", bi_sign, &DOC_SIGN);
+    vm.register_builtin_doc("min", bi_min, &DOC_MIN);
+    vm.register_builtin_doc("max", bi_max, &DOC_MAX);
+    vm.register_builtin_doc("sin", bi_sin, &DOC_SIN);
+    vm.register_builtin_doc("cos", bi_cos, &DOC_COS);
+    vm.register_builtin_doc("tan", bi_tan, &DOC_TAN);
+    vm.register_builtin_doc("atan", bi_atan, &DOC_ATAN);
+    vm.register_builtin_doc("atan2", bi_atan2, &DOC_ATAN2);
+    vm.register_builtin_doc("log", bi_log, &DOC_LOG);
+    vm.register_builtin_doc("log2", bi_log2, &DOC_LOG2);
+    vm.register_builtin_doc("log10", bi_log10, &DOC_LOG10);
+    vm.register_builtin_doc("exp", bi_exp, &DOC_EXP);
+    vm.register_builtin_doc("pi", bi_pi, &DOC_PI);
+    vm.register_builtin_doc("e", bi_e, &DOC_E);
+    vm.register_builtin_doc("random", bi_random, &DOC_RANDOM);
+    vm.register_builtin_doc("randInt", bi_rand_int, &DOC_RAND_INT);
+    vm.register_builtin_doc("flexEval", bi_flex_eval, &DOC_FLEXEVAL);
+    vm.register_builtin_doc("calDistanceOfLatLon", bi_cal_distance_of_lat_lon, &DOC_CALDISTANCEOFLATLON);
 }
 
 /// 对浮点结果按需装回 Int（若为整数值），否则保持 Float。

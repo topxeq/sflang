@@ -17,11 +17,32 @@ use crate::vm::VM;
 
 // 内嵌拼音数据表
 use crate::pinyin_data;
+use crate::function::BuiltinDoc;
+
+static DOC_TOPINYIN: BuiltinDoc = BuiltinDoc {
+    category: "pinyin",
+    signature: "toPinYin(s) -> string",
+    summary: "将中文字符串转为拼音（带声调标记）。",
+    params: &[("s", "中文字符串")],
+    returns: "string 拼音",
+    examples: &["toPinYin(\"你好\")  // nihao"],
+    errors: &[],
+};
+
+static DOC_TOPINYININITIAL: BuiltinDoc = BuiltinDoc {
+    category: "pinyin",
+    signature: "toPinYinInitial(s) -> string",
+    summary: "提取中文拼音首字母。",
+    params: &[("s", "中文字符串")],
+    returns: "string 首字母串",
+    examples: &["toPinYinInitial(\"你好\")  // nh"],
+    errors: &[],
+};
 
 /// register 注册拼音内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("toPinYin", bi_to_pinyin);
-    vm.register_builtin("toPinYinInitial", bi_to_pinyin_initial);
+    vm.register_builtin_doc("toPinYin", bi_to_pinyin, &DOC_TOPINYIN);
+    vm.register_builtin_doc("toPinYinInitial", bi_to_pinyin_initial, &DOC_TOPINYININITIAL);
 }
 
 /// lookup_pinyin 查找单个汉字的拼音（二分查找）。

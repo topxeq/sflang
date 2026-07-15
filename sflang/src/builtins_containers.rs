@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::value::{Value, error_value};
 use crate::vm::VM;
+use crate::function::BuiltinDoc;
 
 // ===========================================================================
 // Stack 类型
@@ -84,23 +85,143 @@ fn extract_queue<'a>(v: &'a Value, fn_name: &str) -> Result<&'a Arc<QueueT>, Val
 // 注册
 // ===========================================================================
 
+static DOC_NEWSTACK: BuiltinDoc = BuiltinDoc {
+    category: "containers",
+    signature: "newStack() -> stack",
+    summary: "创建栈（后进先出 LIFO）。",
+    params: &[],
+    returns: "stack 对象",
+    examples: &["var s = newStack()"],
+    errors: &[],
+};
+
+static DOC_STACKPUSH: BuiltinDoc = BuiltinDoc {
+    category: "containers",
+    signature: "stackPush(s, val) -> undefined",
+    summary: "入栈。",
+    params: &[("s", "stack 对象"), ("val", "要压入的值")],
+    returns: "undefined",
+    examples: &["stackPush(s, 42)"],
+    errors: &[],
+};
+
+static DOC_STACKPOP: BuiltinDoc = BuiltinDoc {
+    category: "containers",
+    signature: "stackPop(s) -> value",
+    summary: "出栈（弹出栈顶元素）。",
+    params: &[("s", "stack 对象")],
+    returns: "栈顶值",
+    examples: &["var v = stackPop(s)"],
+    errors: &["空栈 pop 会返回 undefined 或报错"],
+};
+
+static DOC_STACKPEEK: BuiltinDoc = BuiltinDoc {
+    category: "containers",
+    signature: "stackPeek(s) -> value",
+    summary: "查看栈顶（不出栈）。",
+    params: &[("s", "stack 对象")],
+    returns: "栈顶值",
+    examples: &["var v = stackPeek(s)"],
+    errors: &[],
+};
+
+static DOC_STACKLEN: BuiltinDoc = BuiltinDoc {
+    category: "containers",
+    signature: "stackLen(s) -> int",
+    summary: "返回栈元素数。",
+    params: &[("s", "stack 对象")],
+    returns: "int",
+    examples: &["stackLen(s)"],
+    errors: &[],
+};
+
+static DOC_STACKCLEAR: BuiltinDoc = BuiltinDoc {
+    category: "containers",
+    signature: "stackClear(s) -> undefined",
+    summary: "清空栈。",
+    params: &[("s", "stack 对象")],
+    returns: "undefined",
+    examples: &["stackClear(s)"],
+    errors: &[],
+};
+
+static DOC_NEWQUEUE: BuiltinDoc = BuiltinDoc {
+    category: "containers",
+    signature: "newQueue() -> queue",
+    summary: "创建队列（先进先出 FIFO）。",
+    params: &[],
+    returns: "queue 对象",
+    examples: &["var q = newQueue()"],
+    errors: &[],
+};
+
+static DOC_QUEUEPUSH: BuiltinDoc = BuiltinDoc {
+    category: "containers",
+    signature: "queuePush(q, val) -> undefined",
+    summary: "入队。",
+    params: &[("q", "queue 对象"), ("val", "值")],
+    returns: "undefined",
+    examples: &["queuePush(q, 1)"],
+    errors: &[],
+};
+
+static DOC_QUEUEPOP: BuiltinDoc = BuiltinDoc {
+    category: "containers",
+    signature: "queuePop(q) -> value",
+    summary: "出队（弹出队首元素）。",
+    params: &[("q", "queue 对象")],
+    returns: "队首值",
+    examples: &["var v = queuePop(q)"],
+    errors: &[],
+};
+
+static DOC_QUEUEPEEK: BuiltinDoc = BuiltinDoc {
+    category: "containers",
+    signature: "queuePeek(q) -> value",
+    summary: "查看队首（不出队）。",
+    params: &[("q", "queue 对象")],
+    returns: "队首值",
+    examples: &["queuePeek(q)"],
+    errors: &[],
+};
+
+static DOC_QUEUELEN: BuiltinDoc = BuiltinDoc {
+    category: "containers",
+    signature: "queueLen(q) -> int",
+    summary: "返回队列元素数。",
+    params: &[("q", "queue 对象")],
+    returns: "int",
+    examples: &["queueLen(q)"],
+    errors: &[],
+};
+
+static DOC_QUEUECLEAR: BuiltinDoc = BuiltinDoc {
+    category: "containers",
+    signature: "queueClear(q) -> undefined",
+    summary: "清空队列。",
+    params: &[("q", "queue 对象")],
+    returns: "undefined",
+    examples: &["queueClear(q)"],
+    errors: &[],
+};
+
 /// register 注册 Stack 和 Queue 相关内置函数。
 pub fn register(vm: &mut VM) {
     // Stack
-    vm.register_builtin("newStack", bi_new_stack);
-    vm.register_builtin("stackPush", bi_stack_push);
-    vm.register_builtin("stackPop", bi_stack_pop);
-    vm.register_builtin("stackPeek", bi_stack_peek);
-    vm.register_builtin("stackLen", bi_stack_len);
-    vm.register_builtin("stackClear", bi_stack_clear);
+    vm.register_builtin_doc("newStack", bi_new_stack, &DOC_NEWSTACK);
+    vm.register_builtin_doc("stackPush", bi_stack_push, &DOC_STACKPUSH);
+    vm.register_builtin_doc("stackPop", bi_stack_pop, &DOC_STACKPOP);
+    vm.register_builtin_doc("stackPeek", bi_stack_peek, &DOC_STACKPEEK);
+    vm.register_builtin_doc("stackLen", bi_stack_len, &DOC_STACKLEN);
+    vm.register_builtin_doc("stackClear", bi_stack_clear, &DOC_STACKCLEAR);
 
     // Queue
-    vm.register_builtin("newQueue", bi_new_queue);
-    vm.register_builtin("queuePush", bi_queue_push);
-    vm.register_builtin("queuePop", bi_queue_pop);
-    vm.register_builtin("queuePeek", bi_queue_peek);
-    vm.register_builtin("queueLen", bi_queue_len);
-    vm.register_builtin("queueClear", bi_queue_clear);
+    vm.register_builtin_doc("newQueue", bi_new_queue, &DOC_NEWQUEUE);
+    vm.register_builtin_doc("queuePush", bi_queue_push, &DOC_QUEUEPUSH);
+    vm.register_builtin_doc("queuePop", bi_queue_pop, &DOC_QUEUEPOP);
+    vm.register_builtin_doc("queuePeek", bi_queue_peek, &DOC_QUEUEPEEK);
+    vm.register_builtin_doc("queueLen", bi_queue_len, &DOC_QUEUELEN);
+    vm.register_builtin_doc("queueClear", bi_queue_clear, &DOC_QUEUECLEAR);
 }
 
 // ===========================================================================

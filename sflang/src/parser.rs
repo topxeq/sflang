@@ -109,6 +109,7 @@ impl Parser {
                 }
             }
             TokenKind::If => self.parse_if(),
+            TokenKind::Switch => self.parse_switch(),
             TokenKind::While => self.parse_while(None),
             TokenKind::For => self.parse_for(None),
             TokenKind::Break => {
@@ -260,7 +261,7 @@ impl Parser {
         self.expect(TokenKind::RParen, "')'")?;
         self.consume_semicolon();
 
-        Ok(Stmt::Block { tok, stmts })
+        Ok(Stmt::DeclGroup { tok, stmts })
     }
 
     fn parse_func_decl(&mut self) -> Result<Stmt, ParseError> {
@@ -313,6 +314,56 @@ impl Parser {
             }
         }
         Ok(Stmt::IfStmt { tok, cond, then, elif_conds, elif_bodies, else_block })
+    }
+
+    /// parse_switch 解析 switch 语句。
+    ///
+    /// 语法：
+    ///   switch 值 {
+    ///       case 值1 { ... }
+    ///       case 值2 { ... }
+    ///       default { ... }     // 可选，最多一个
+    ///   }
+    ///
+    /// 语义：等值匹配（==），命中即执行对应块并跳出（不贯穿）；default 可选。
+    fn parse_switch(&mut self) -> Result<Stmt, ParseError> {
+        let tok = self.advance(); // 消费 switch
+        let value = self.parse_expr()?;
+        self.expect(TokenKind::LBrace, "'{'")?;
+
+        let mut cases: Vec<(Expr, Block)> = Vec::new();
+        let mut default: Option<Block> = None;
+
+        while !self.check(TokenKind::RBrace) && !self.at_end() {
+            // 跳过空语句分隔
+            while self.match_token(TokenKind::Semicolon) {}
+            if self.check(TokenKind::RBrace) { break; }
+
+            if self.check(TokenKind::Case) {
+                self.advance(); // 消费 case
+                let case_val = self.parse_expr()?;
+                let body = self.parse_block()?;
+                cases.push((case_val, body));
+            } else if self.check(TokenKind::Default) {
+                if default.is_some() {
+                    return Err(self.err(
+                        "switch 中 default 只能出现一次 (可能原因：重复的 default 块)",
+                    ));
+                }
+                self.advance(); // 消费 default
+                default = Some(self.parse_block()?);
+            } else {
+                return Err(ParseError {
+                    msg: format!(
+                        "switch 体内期望 'case' 或 'default'，但得到 '{}' (可能原因：case/default 关键字缺失或块未用 {{}} 包裹)",
+                        self.peek().value
+                    ),
+                    line: self.peek().line,
+                });
+            }
+        }
+        self.expect(TokenKind::RBrace, "'}'")?;
+        Ok(Stmt::SwitchStmt { tok, value, cases, default })
     }
 
     fn parse_while(&mut self, label: Option<String>) -> Result<Stmt, ParseError> {
@@ -843,6 +894,26 @@ impl Parser {
                 self.advance();
                 let value = tok.value.clone();
                 Ok(Expr::StringLit { tok, value })
+            }
+            TokenKind::InterpString => {
+                self.advance();
+                // 按 NUL 分隔解码段：偶数=文本，奇数=表达式源码
+                let segments: Vec<&str> = tok.value.split('\0').collect();
+                let mut parts: Vec<InterpPart> = Vec::new();
+                for (i, seg) in segments.iter().enumerate() {
+                    if i % 2 == 0 {
+                        // 文本段（跳过空文本以简化，但保留首尾空串以确保拼接正确）
+                        parts.push(InterpPart::Text(seg.to_string()));
+                    } else {
+                        // 表达式段：用子 parser 解析
+                        let sub_tokens = crate::lexer::tokenize(seg, "<interp>")
+                            .map_err(|e| ParseError { msg: format!("插值表达式词法错误: {}", e), line: tok.line })?;
+                        let mut sub_parser = Parser::new(sub_tokens, "<interp>");
+                        let expr = sub_parser.parse_expr()?;
+                        parts.push(InterpPart::Expr(expr));
+                    }
+                }
+                Ok(Expr::InterpStringLit { tok, parts })
             }
             TokenKind::True => { self.advance(); Ok(Expr::BoolLit { tok, value: true }) }
             TokenKind::False => { self.advance(); Ok(Expr::BoolLit { tok, value: false }) }

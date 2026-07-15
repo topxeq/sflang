@@ -42,36 +42,378 @@ use crate::builtins_helpers as bh;
 use crate::builtins_image::{parse_color, wrap_image};
 use crate::value::{error_value, Value};
 use crate::vm::VM;
+use crate::function::BuiltinDoc;
+
+// ===================== 基础噪声 =====================
+
+static DOC_IMAGE_GEN_NOISE: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenNoise(width, height, seed?) -> image",
+    summary: "生成白噪声（随机雪花）图片。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("seed", "可选随机种子（int/float，缺省用系统时间）"),
+    ],
+    returns: "image 灰度白噪声图片",
+    examples: &["imageGenNoise(256, 256, 42)  // 同种子可重现"],
+    errors: &["width/height 必须 > 0"],
+};
+
+static DOC_IMAGE_GEN_PERLIN: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenPerlin(width, height, scale?, seed?) -> image",
+    summary: "生成 Perlin 噪声图片（平滑渐变噪声）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("scale", "可选噪声粒度，越大越粗糙（默认 0.05，>0）"),
+        ("seed", "可选随机种子（默认用系统时间）"),
+    ],
+    returns: "image 灰度 Perlin 噪声图片",
+    examples: &[
+        "imageGenPerlin(256, 256, 0.05, 42)",
+        "imageGenPerlin(256, 256)  // 用默认 scale 和随机种子",
+    ],
+    errors: &["width/height 必须 > 0", "scale 必须 > 0"],
+};
+
+static DOC_IMAGE_GEN_FBM: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenFBM(width, height, octaves?, scale?, seed?) -> image",
+    summary: "生成分形布朗运动（FBM）噪声图片（多倍频叠加 Perlin）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("octaves", "可选倍频数，控制细节层次（默认 4，范围 1-8）"),
+        ("scale", "可选噪声粒度（默认 0.05，>0）"),
+        ("seed", "可选随机种子（默认用系统时间）"),
+    ],
+    returns: "image 灰度 FBM 噪声图片（octaves 越多细节越丰富）",
+    examples: &["imageGenFBM(256, 256, 6, 0.05, 42)"],
+    errors: &["width/height 必须 > 0", "scale 必须 > 0"],
+};
+
+static DOC_IMAGE_GEN_WORLEY: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenWorley(width, height, cellSize?, seed?) -> image",
+    summary: "生成 Worley 噪声图片（细胞状图案）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("cellSize", "可选特征点网格大小（默认 32，>=4）"),
+        ("seed", "可选随机种子（默认用系统时间）"),
+    ],
+    returns: "image 灰度 Worley 噪声图片（基于最近特征点距离）",
+    examples: &["imageGenWorley(256, 256, 32, 42)"],
+    errors: &["width/height 必须 > 0"],
+};
+
+static DOC_IMAGE_GEN_VORONOI: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenVoronoi(width, height, count?, seed?) -> image",
+    summary: "生成 Voronoi 图（彩色细胞，每个区域取最近特征点颜色）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("count", "可选特征点数量（默认 50，>=2）"),
+        ("seed", "可选随机种子（默认用系统时间）"),
+    ],
+    returns: "image 彩色 Voronoi 图（HSL 随机配色）",
+    examples: &["imageGenVoronoi(256, 256, 30, 42)"],
+    errors: &["width/height 必须 > 0"],
+};
+
+// ===================== 纹理 =====================
+
+static DOC_IMAGE_GEN_PLASMA: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenPlasma(width, height, scale?, seed?) -> image",
+    summary: "生成等离子体效果（正弦波叠加 Perlin 噪声，彩色）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("scale", "可选噪声粒度（默认 0.05）"),
+        ("seed", "可选随机种子（默认用系统时间）"),
+    ],
+    returns: "image 彩色等离子体图案",
+    examples: &["imageGenPlasma(256, 256, 0.05, 42)"],
+    errors: &["width/height 必须 > 0"],
+};
+
+static DOC_IMAGE_GEN_MARBLE: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenMarble(width, height, scale?, seed?) -> image",
+    summary: "生成大理石纹理（噪声扰动正弦波，灰度）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("scale", "可选噪声粒度（默认 0.05）"),
+        ("seed", "可选随机种子（默认用系统时间）"),
+    ],
+    returns: "image 灰度大理石纹理",
+    examples: &["imageGenMarble(256, 256, 0.05, 42)"],
+    errors: &["width/height 必须 > 0"],
+};
+
+static DOC_IMAGE_GEN_WOOD: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenWood(width, height, scale?, seed?) -> image",
+    summary: "生成木纹纹理（同心圆 + 噪声扰动模拟年轮）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("scale", "可选噪声粒度（默认 0.05）"),
+        ("seed", "可选随机种子（默认用系统时间）"),
+    ],
+    returns: "image 棕色调木纹纹理",
+    examples: &["imageGenWood(256, 256, 0.05, 42)"],
+    errors: &["width/height 必须 > 0"],
+};
+
+static DOC_IMAGE_GEN_CLOUDS: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenClouds(width, height, scale?, seed?) -> image",
+    summary: "生成云彩纹理（FBM + 对比度增强，灰度）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("scale", "可选噪声粒度（默认 0.02）"),
+        ("seed", "可选随机种子（默认用系统时间）"),
+    ],
+    returns: "image 灰度云彩纹理",
+    examples: &["imageGenClouds(256, 256, 0.02, 42)"],
+    errors: &["width/height 必须 > 0"],
+};
+
+// ===================== 渐变与图案 =====================
+
+static DOC_IMAGE_GEN_LINEAR: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenLinear(width, height, color1, color2, direction?) -> image",
+    summary: "生成线性渐变图片。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("color1", "起始颜色 [r,g,b] 或 [r,g,b,a]"),
+        ("color2", "结束颜色 [r,g,b] 或 [r,g,b,a]"),
+        ("direction", "可选方向 \"h\" 水平(默认)/\"v\" 垂直/\"d\" 对角"),
+    ],
+    returns: "image 从 color1 到 color2 的线性渐变",
+    examples: &[
+        "imageGenLinear(256, 256, [0,0,0,255], [255,255,255,255])",
+        "imageGenLinear(256, 256, colorFromHex(\"#ff0000\"), colorFromHex(\"#0000ff\"), \"d\")",
+    ],
+    errors: &[
+        "width/height 必须 > 0",
+        "direction 必须是 \"h\"/\"v\"/\"d\" 之一",
+    ],
+};
+
+static DOC_IMAGE_GEN_RADIAL: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenRadial(width, height, [cx, cy,] color1, color2) -> image",
+    summary: "生成径向渐变图片（从中心向外扩散）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("cx, cy", "可选渐变中心坐标（缺省居中，传则需 6 参数）"),
+        ("color1", "中心颜色 [r,g,b,a]"),
+        ("color2", "边缘颜色 [r,g,b,a]"),
+    ],
+    returns: "image 从中心 color1 到边缘 color2 的径向渐变",
+    examples: &[
+        "imageGenRadial(256, 256, [255,0,0,255], [0,0,255,255])  // 居中",
+        "imageGenRadial(256, 256, 64, 64, [255,0,0,255], [0,0,255,255])  // 指定中心",
+    ],
+    errors: &["width/height 必须 > 0", "支持 (w,h,c1,c2) 或 (w,h,cx,cy,c1,c2) 两种参数顺序"],
+};
+
+static DOC_IMAGE_GEN_CONIC: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenConic(width, height, [cx, cy,] color1, color2) -> image",
+    summary: "生成锥形（角度）渐变图片。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("cx, cy", "可选渐变中心坐标（缺省居中，传则需 6 参数）"),
+        ("color1", "起始颜色 [r,g,b,a]"),
+        ("color2", "结束颜色 [r,g,b,a]"),
+    ],
+    returns: "image 绕中心旋转一周从 color1 到 color2 的锥形渐变",
+    examples: &[
+        "imageGenConic(256, 256, [255,0,0,255], [0,0,255,255])",
+        "imageGenConic(256, 256, 128, 128, [255,0,0,255], [0,0,255,255])",
+    ],
+    errors: &["width/height 必须 > 0", "支持 (w,h,c1,c2) 或 (w,h,cx,cy,c1,c2) 两种参数顺序"],
+};
+
+static DOC_IMAGE_GEN_CHECKER: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenChecker(width, height, cellSize?, color1?, color2?) -> image",
+    summary: "生成棋盘格图案。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("cellSize", "可选格子大小（默认 16，>=1）"),
+        ("color1", "可选浅色（默认白色 [255,255,255,255]）"),
+        ("color2", "可选深色（默认黑色 [0,0,0,255]）"),
+    ],
+    returns: "image 棋盘格图案",
+    examples: &[
+        "imageGenChecker(256, 256)",
+        "imageGenChecker(256, 256, 32, colorFromHex(\"#ff0000\"), colorFromHex(\"#00ff00\"))",
+    ],
+    errors: &["width/height 必须 > 0"],
+};
+
+static DOC_IMAGE_GEN_STARS: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenStars(width, height, count?, seed?) -> image",
+    summary: "生成星空图案（深色背景上的随机亮点，大星带光晕）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("count", "可选星星数量（默认 100，>=0）"),
+        ("seed", "可选随机种子（默认用系统时间）"),
+    ],
+    returns: "image 星空图案（背景 [10,10,30]）",
+    examples: &["imageGenStars(256, 256, 200, 42)"],
+    errors: &["width/height 必须 > 0"],
+};
+
+static DOC_IMAGE_GEN_MAZE: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenMaze(width, height, cellSize?, seed?) -> image",
+    summary: "生成迷宫图案（DFS 递归回溯算法）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("cellSize", "可选格子大小（默认 10，>=2）"),
+        ("seed", "可选随机种子（默认用系统时间）"),
+    ],
+    returns: "image 白底黑墙迷宫图案",
+    examples: &["imageGenMaze(256, 256, 8, 42)"],
+    errors: &["width/height 必须 > 0", "cellSize 太大导致网格 <2x2 时返回纯黑图"],
+};
+
+static DOC_IMAGE_GEN_CIRCLES: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenCircles(width, height, count?, seed?) -> image",
+    summary: "生成随机彩色圆形图案。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("count", "可选圆形数量（默认 30，>=1）"),
+        ("seed", "可选随机种子（默认用系统时间）"),
+    ],
+    returns: "image 深色背景上的随机彩色实心圆图案",
+    examples: &["imageGenCircles(256, 256, 30, 42)"],
+    errors: &["width/height 必须 > 0"],
+};
+
+static DOC_IMAGE_GEN_LINES: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenLines(width, height, count?, seed?) -> image",
+    summary: "生成随机彩色线条图案（Bresenham 算法）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("count", "可选线条数量（默认 20，>=1）"),
+        ("seed", "可选随机种子（默认用系统时间）"),
+    ],
+    returns: "image 深色背景上的随机彩色线条图案",
+    examples: &["imageGenLines(256, 256, 20, 42)"],
+    errors: &["width/height 必须 > 0"],
+};
+
+static DOC_IMAGE_GEN_PARTICLES: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenParticles(width, height, count?, seed?) -> image",
+    summary: "生成粒子发散图案（从中心向外发散的彩色拖尾粒子）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("count", "可选粒子数量（默认 50，>=1）"),
+        ("seed", "可选随机种子（默认用系统时间）"),
+    ],
+    returns: "image 黑底彩色粒子发散图案",
+    examples: &["imageGenParticles(256, 256, 80, 42)"],
+    errors: &["width/height 必须 > 0"],
+};
+
+// ===================== 分形 =====================
+
+static DOC_IMAGE_GEN_MANDELBROT: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenMandelbrot(width, height, maxIter?, zoom?, centerX?, centerY?) -> image",
+    summary: "生成曼德博集合分形图（含平滑着色）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("maxIter", "可选最大迭代次数（默认 100，>=10，越大细节越多）"),
+        ("zoom", "可选缩放（默认 1.0，>0，越大放得越近）"),
+        ("centerX", "可选中心 X 坐标（默认 -0.5）"),
+        ("centerY", "可选中心 Y 坐标（默认 0.0）"),
+    ],
+    returns: "image 曼德博集合分形图（集合内黑色，外部按迭代次数 HSL 着色）",
+    examples: &[
+        "imageGenMandelbrot(256, 256)",
+        "imageGenMandelbrot(512, 512, 256, 4.0, -0.7, 0.0)  // 放大特定区域",
+    ],
+    errors: &["width/height 必须 > 0"],
+};
+
+static DOC_IMAGE_GEN_JULIA: BuiltinDoc = BuiltinDoc {
+    category: "imageGen",
+    signature: "imageGenJulia(width, height, cr, ci, maxIter?, zoom?) -> image",
+    summary: "生成朱利亚集合分形图（按迭代次数 HSL 着色）。",
+    params: &[
+        ("width", "图片宽度（像素，>0）"),
+        ("height", "图片高度（像素，>0）"),
+        ("cr", "复常数实部（float）"),
+        ("ci", "复常数虚部（float）"),
+        ("maxIter", "可选最大迭代次数（默认 100，>=10）"),
+        ("zoom", "可选缩放（默认 1.0，>0）"),
+    ],
+    returns: "image 朱利亚集合分形图",
+    examples: &[
+        "imageGenJulia(256, 256, -0.7, 0.27)",
+        "imageGenJulia(256, 256, -0.4, 0.6, 100, 1.0)",
+        "imageGenJulia(256, 256, 0.285, 0.01)  // 常用漂亮参数",
+    ],
+    errors: &["width/height 必须 > 0", "cr/ci 必须为数字"],
+};
 
 /// register 注册所有图片生成内置函数。
 pub fn register(vm: &mut VM) {
     // 基础噪声
-    vm.register_builtin("imageGenNoise", bi_image_gen_noise);
-    vm.register_builtin("imageGenPerlin", bi_image_gen_perlin);
-    vm.register_builtin("imageGenFBM", bi_image_gen_fbm);
-    vm.register_builtin("imageGenWorley", bi_image_gen_worley);
-    vm.register_builtin("imageGenVoronoi", bi_image_gen_voronoi);
+    vm.register_builtin_doc("imageGenNoise", bi_image_gen_noise, &DOC_IMAGE_GEN_NOISE);
+    vm.register_builtin_doc("imageGenPerlin", bi_image_gen_perlin, &DOC_IMAGE_GEN_PERLIN);
+    vm.register_builtin_doc("imageGenFBM", bi_image_gen_fbm, &DOC_IMAGE_GEN_FBM);
+    vm.register_builtin_doc("imageGenWorley", bi_image_gen_worley, &DOC_IMAGE_GEN_WORLEY);
+    vm.register_builtin_doc("imageGenVoronoi", bi_image_gen_voronoi, &DOC_IMAGE_GEN_VORONOI);
 
     // 纹理
-    vm.register_builtin("imageGenPlasma", bi_image_gen_plasma);
-    vm.register_builtin("imageGenMarble", bi_image_gen_marble);
-    vm.register_builtin("imageGenWood", bi_image_gen_wood);
-    vm.register_builtin("imageGenClouds", bi_image_gen_clouds);
+    vm.register_builtin_doc("imageGenPlasma", bi_image_gen_plasma, &DOC_IMAGE_GEN_PLASMA);
+    vm.register_builtin_doc("imageGenMarble", bi_image_gen_marble, &DOC_IMAGE_GEN_MARBLE);
+    vm.register_builtin_doc("imageGenWood", bi_image_gen_wood, &DOC_IMAGE_GEN_WOOD);
+    vm.register_builtin_doc("imageGenClouds", bi_image_gen_clouds, &DOC_IMAGE_GEN_CLOUDS);
 
     // 渐变与图案
-    vm.register_builtin("imageGenLinear", bi_image_gen_linear);
-    vm.register_builtin("imageGenRadial", bi_image_gen_radial);
-    vm.register_builtin("imageGenConic", bi_image_gen_conic);
-    vm.register_builtin("imageGenChecker", bi_image_gen_checker);
-    vm.register_builtin("imageGenStars", bi_image_gen_stars);
-    vm.register_builtin("imageGenMaze", bi_image_gen_maze);
-    vm.register_builtin("imageGenCircles", bi_image_gen_circles);
-    vm.register_builtin("imageGenLines", bi_image_gen_lines);
-    vm.register_builtin("imageGenParticles", bi_image_gen_particles);
+    vm.register_builtin_doc("imageGenLinear", bi_image_gen_linear, &DOC_IMAGE_GEN_LINEAR);
+    vm.register_builtin_doc("imageGenRadial", bi_image_gen_radial, &DOC_IMAGE_GEN_RADIAL);
+    vm.register_builtin_doc("imageGenConic", bi_image_gen_conic, &DOC_IMAGE_GEN_CONIC);
+    vm.register_builtin_doc("imageGenChecker", bi_image_gen_checker, &DOC_IMAGE_GEN_CHECKER);
+    vm.register_builtin_doc("imageGenStars", bi_image_gen_stars, &DOC_IMAGE_GEN_STARS);
+    vm.register_builtin_doc("imageGenMaze", bi_image_gen_maze, &DOC_IMAGE_GEN_MAZE);
+    vm.register_builtin_doc("imageGenCircles", bi_image_gen_circles, &DOC_IMAGE_GEN_CIRCLES);
+    vm.register_builtin_doc("imageGenLines", bi_image_gen_lines, &DOC_IMAGE_GEN_LINES);
+    vm.register_builtin_doc("imageGenParticles", bi_image_gen_particles, &DOC_IMAGE_GEN_PARTICLES);
 
     // 分形
-    vm.register_builtin("imageGenMandelbrot", bi_image_gen_mandelbrot);
-    vm.register_builtin("imageGenJulia", bi_image_gen_julia);
+    vm.register_builtin_doc("imageGenMandelbrot", bi_image_gen_mandelbrot, &DOC_IMAGE_GEN_MANDELBROT);
+    vm.register_builtin_doc("imageGenJulia", bi_image_gen_julia, &DOC_IMAGE_GEN_JULIA);
 }
 
 // ============ PRNG：XorShift64* ============

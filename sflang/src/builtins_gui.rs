@@ -20,6 +20,137 @@ use std::sync::{Arc, Mutex};
 use crate::builtins_helpers as bh;
 use crate::value::Value;
 use crate::vm::VM;
+use crate::function::BuiltinDoc;
+
+// ===================== GUI 函数文档 =====================
+
+static DOC_GUI_NEW_WINDOW: BuiltinDoc = BuiltinDoc {
+    category: "gui",
+    signature: "guiNewWindow(switches...) -> window",
+    summary: "创建 GUI 窗口配置对象（不显示）。",
+    params: &[
+        ("...switches", "--key=value 形式的开关，支持 --title/--width/--height"),
+    ],
+    returns: "window 窗口对象，传给 guiSetHtml/guiSetUrl/guiSetHandler/guiShow 等",
+    examples: &[
+        "var w = guiNewWindow(\"--title=My App\", \"--width=1024\", \"--height=768\")",
+    ],
+    errors: &[
+        "switches 为可变参数，未传时使用默认值 title=Sflang width=800 height=600",
+    ],
+};
+
+static DOC_GUI_SET_HTML: BuiltinDoc = BuiltinDoc {
+    category: "gui",
+    signature: "guiSetHtml(win, html) -> window",
+    summary: "设置窗口要加载的 HTML 内容。",
+    params: &[
+        ("win", "guiNewWindow 返回的窗口对象"),
+        ("html", "HTML 字符串"),
+    ],
+    returns: "window 返回传入的窗口对象（便于链式调用）",
+    examples: &["guiSetHtml(w, \"<h1>Hello</h1>\")"],
+    errors: &[
+        "win 必须是 guiNewWindow 创建的 window 对象",
+        "html 与 url 互斥，guiShow 优先使用 html",
+    ],
+};
+
+static DOC_GUI_SET_URL: BuiltinDoc = BuiltinDoc {
+    category: "gui",
+    signature: "guiSetUrl(win, url) -> window",
+    summary: "设置窗口要加载的 URL。",
+    params: &[
+        ("win", "guiNewWindow 返回的窗口对象"),
+        ("url", "URL 字符串（http/https/file 等）"),
+    ],
+    returns: "window 返回传入的窗口对象（便于链式调用）",
+    examples: &["guiSetUrl(w, \"https://example.com\")"],
+    errors: &[
+        "win 必须是 guiNewWindow 创建的 window 对象",
+        "html 与 url 互斥，guiShow 优先使用 html",
+    ],
+};
+
+static DOC_GUI_SET_HANDLER: BuiltinDoc = BuiltinDoc {
+    category: "gui",
+    signature: "guiSetHandler(win, func) -> window",
+    summary: "设置 IPC 消息处理函数。",
+    params: &[
+        ("win", "guiNewWindow 返回的窗口对象"),
+        ("func", "处理函数，接收 JS 通过 window.ipc.postMessage(msg) 发来的字符串"),
+    ],
+    returns: "window 返回传入的窗口对象（便于链式调用）",
+    examples: &[
+        "guiSetHandler(w, func(msg) { println(msg) })",
+    ],
+    errors: &[
+        "func 必须是可调用对象（函数/闭包），接收单个字符串参数",
+        "handler 在 guiShow 事件循环线程内同步执行，可安全重入 VM",
+    ],
+};
+
+static DOC_GUI_SHOW: BuiltinDoc = BuiltinDoc {
+    category: "gui",
+    signature: "guiShow(win) -> !",
+    summary: "显示窗口并进入事件循环（阻塞当前线程）。",
+    params: &[("win", "guiNewWindow 返回的窗口对象")],
+    returns: "永不返回（事件循环阻塞，直到窗口关闭）",
+    examples: &[
+        "guiShow(w)  // 阻塞直到用户关闭窗口",
+    ],
+    errors: &[
+        "win 必须是 guiNewWindow 创建的 window 对象",
+        "创建窗口/WebView 失败会抛错（如平台不支持）",
+        "未设置 html/url/handler 时显示默认占位 HTML",
+    ],
+};
+
+static DOC_GUI_EVAL: BuiltinDoc = BuiltinDoc {
+    category: "gui",
+    signature: "guiEval(win, jsCode) -> undefined",
+    summary: "在 WebView 中排队执行 JavaScript 代码。",
+    params: &[
+        ("win", "guiNewWindow 返回的窗口对象"),
+        ("jsCode", "要执行的 JavaScript 代码字符串"),
+    ],
+    returns: "undefined（JS 执行结果不回传到 Sflang）",
+    examples: &[
+        "guiEval(w, \"document.body.style.background='red'\")",
+    ],
+    errors: &[
+        "必须在 guiShow 之前或 handler 内调用，事件循环每 20ms 刷新队列",
+        "JS 代码错误不会抛回 Sflang，仅在 WebView 控制台报错",
+    ],
+};
+
+static DOC_GUI_SET_TITLE: BuiltinDoc = BuiltinDoc {
+    category: "gui",
+    signature: "guiSetTitle(win, title) -> window",
+    summary: "设置窗口标题。",
+    params: &[
+        ("win", "guiNewWindow 返回的窗口对象"),
+        ("title", "标题字符串"),
+    ],
+    returns: "window 返回传入的窗口对象（便于链式调用）",
+    examples: &["guiSetTitle(w, \"My App\")"],
+    errors: &["win 必须是 guiNewWindow 创建的 window 对象"],
+};
+
+static DOC_GUI_CLOSE: BuiltinDoc = BuiltinDoc {
+    category: "gui",
+    signature: "guiClose(win) -> undefined",
+    summary: "请求关闭窗口（用于在 handler 中程序化关闭）。",
+    params: &[("win", "guiNewWindow 返回的窗口对象")],
+    returns: "undefined（事件循环检测到标志后退出）",
+    examples: &[
+        "guiSetHandler(w, func(msg) { if (msg == \"quit\") { guiClose(w) } })",
+    ],
+    errors: &[
+        "win 必须是 guiNewWindow 创建的 window 对象",
+        "仅在 guiShow 事件循环运行期间有效",
+    ],
+};
 
 /// GuiWindow 窗口配置（可变，通过 Mutex 保护）。
 pub struct GuiWindow {
@@ -51,14 +182,14 @@ fn gui_downcast<'a>(v: &'a Value, fn_name: &str) -> Result<&'a Arc<Mutex<GuiWind
 }
 
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("guiNewWindow", bi_gui_new_window);
-    vm.register_builtin("guiSetHtml", bi_gui_set_html);
-    vm.register_builtin("guiSetUrl", bi_gui_set_url);
-    vm.register_builtin("guiSetHandler", bi_gui_set_handler);
-    vm.register_builtin("guiShow", bi_gui_show);
-    vm.register_builtin("guiEval", bi_gui_eval);
-    vm.register_builtin("guiSetTitle", bi_gui_set_title);
-    vm.register_builtin("guiClose", bi_gui_close);
+    vm.register_builtin_doc("guiNewWindow", bi_gui_new_window, &DOC_GUI_NEW_WINDOW);
+    vm.register_builtin_doc("guiSetHtml", bi_gui_set_html, &DOC_GUI_SET_HTML);
+    vm.register_builtin_doc("guiSetUrl", bi_gui_set_url, &DOC_GUI_SET_URL);
+    vm.register_builtin_doc("guiSetHandler", bi_gui_set_handler, &DOC_GUI_SET_HANDLER);
+    vm.register_builtin_doc("guiShow", bi_gui_show, &DOC_GUI_SHOW);
+    vm.register_builtin_doc("guiEval", bi_gui_eval, &DOC_GUI_EVAL);
+    vm.register_builtin_doc("guiSetTitle", bi_gui_set_title, &DOC_GUI_SET_TITLE);
+    vm.register_builtin_doc("guiClose", bi_gui_close, &DOC_GUI_CLOSE);
 }
 
 /// 全局 VM 指针（用于 IPC handler 中 VM 重入）。
@@ -193,18 +324,26 @@ fn bi_gui_show(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let mut builder = WebViewBuilder::new();
 
     // IPC handler：收到 JS postMessage 时调用 Sflang handler
+    //
+    // 安全性说明（unsafe 的合理性）：
+    //   - GUI 事件循环（EventLoop::run）阻塞当前线程，IPC 回调由 wry 在同一线程派发。
+    //   - 因此 VM 重入始终在 GUI 线程（即调用 guiShow 的线程），与 VM 同线程，无数据竞争。
+    //   - GUI_VM 全局裸指针在 guiShow 进入事件循环前设置、退出后清除，生命周期覆盖事件循环。
+    //   - 这是 wry/tao 的标准重入模式（事件循环必须在主线程，回调无并发）。
     let handler_clone = handler.clone();
     let win_for_ipc = win_arc.clone();
     builder = builder.with_ipc_handler(move |request: wry::http::Request<String>| {
         let msg = request.body().to_string();
 
-        // VM 重入：调用 handler 函数
+        // VM 重入：调用 handler 函数（同线程，安全）
         if let Some(ref handler_fn) = handler_clone {
             let stored_ptr = {
                 let p = GUI_VM.lock().unwrap();
                 *p
             };
             if stored_ptr != 0 {
+                // SAFETY: IPC 回调在 GUI 事件循环线程派发，与 VM 同线程，无并发访问。
+                // GUI_VM 指针在 guiShow 事件循环运行期间有效。
                 let vm = unsafe { &mut *(stored_ptr as *mut VM) };
                 match vm.call_function_value(handler_fn.clone(), vec![Value::str_from(msg)]) {
                     Ok(_) => {}

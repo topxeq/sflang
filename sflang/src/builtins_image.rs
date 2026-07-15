@@ -70,86 +70,980 @@ use rusttype::{Font, Point, Scale};
 use crate::builtins_helpers as bh;
 use crate::value::{error_value, Value};
 use crate::vm::VM;
+use crate::function::BuiltinDoc;
+
+// ===================== 图片加载/保存 =====================
+
+static DOC_IMAGE_LOAD: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageLoad(path) -> image",
+    summary: "从文件加载图片（自动识别格式）。",
+    params: &[("path", "图片文件路径（支持 png/jpg/gif/bmp/webp）")],
+    returns: "image 图片对象",
+    examples: &["img := imageLoad(\"photo.png\")"],
+    errors: &["文件不存在或不是支持的图片格式"],
+};
+
+static DOC_IMAGE_LOAD_FROM_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageLoadFromBytes(bytes, format?) -> image",
+    summary: "从字节数据加载图片。",
+    params: &[
+        ("bytes", "图片字节数据（bytes/byteArray）"),
+        ("format", "可选格式 \"png\"/\"jpg\"/\"gif\"/\"bmp\"/\"webp\"，缺省自动识别"),
+    ],
+    returns: "image 图片对象",
+    examples: &[
+        "var data = readFileBin(\"a.png\")",
+        "img := imageLoadFromBytes(data)",
+        "img := imageLoadFromBytes(data, \"png\")  // 指定格式更快",
+    ],
+    errors: &["数据损坏、格式不匹配或不支持"],
+};
+
+static DOC_IMAGE_SAVE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageSave(img, path, format) -> undefined",
+    summary: "保存图片到文件。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("path", "输出文件路径"),
+        ("format", "格式 \"png\"/\"jpg\"/\"gif\"/\"bmp\"/\"webp\""),
+    ],
+    returns: "undefined",
+    examples: &["imageSave(img, \"out.png\", \"png\")"],
+    errors: &["img 不是 image 对象", "路径不可写或磁盘空间不足", "格式拼写错误"],
+};
+
+static DOC_IMAGE_SAVE_TO_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageSaveToBytes(img, format) -> bytes",
+    summary: "将图片编码为字节。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("format", "格式 \"png\"/\"jpg\"/\"gif\"/\"bmp\"/\"webp\""),
+    ],
+    returns: "bytes 编码后的图片字节",
+    examples: &[
+        "var b = imageSaveToBytes(img, \"png\")",
+        "writeFileBin(\"out.png\", b)",
+    ],
+    errors: &["img 不是 image 对象", "图片数据无效", "格式拼写错误"],
+};
+
+// ===================== 图片基本操作 =====================
+
+static DOC_IMAGE_NEW: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageNew(width, height, bgColor?) -> image",
+    summary: "创建新图片（纯色填充）。",
+    params: &[
+        ("width", "宽度（像素，>0）"),
+        ("height", "高度（像素，>0）"),
+        ("bgColor", "可选背景色 [r,g,b,a]，缺省透明 [0,0,0,0]"),
+    ],
+    returns: "image 新建图片对象",
+    examples: &[
+        "img := imageNew(100, 100)  // 透明",
+        "img := imageNew(100, 100, [255,0,0,255])  // 红色背景",
+    ],
+    errors: &["width/height 不能为 0"],
+};
+
+static DOC_IMAGE_GET_WIDTH: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageGetWidth(img) -> int",
+    summary: "获取图片宽度。",
+    params: &[("img", "image 图片对象")],
+    returns: "int 像素宽度",
+    examples: &["var w = imageGetWidth(img)"],
+    errors: &["img 不是 image 对象（应先用 imageLoad/imageNew 创建）"],
+};
+
+static DOC_IMAGE_GET_HEIGHT: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageGetHeight(img) -> int",
+    summary: "获取图片高度。",
+    params: &[("img", "image 图片对象")],
+    returns: "int 像素高度",
+    examples: &["var h = imageGetHeight(img)"],
+    errors: &["img 不是 image 对象（应先用 imageLoad/imageNew 创建）"],
+};
+
+static DOC_IMAGE_GET_PIXEL: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageGetPixel(img, x, y) -> [r,g,b,a]",
+    summary: "获取指定坐标的像素颜色。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("x", "X 坐标（从 0 开始）"),
+        ("y", "Y 坐标（从 0 开始）"),
+    ],
+    returns: "[r,g,b,a] 颜色数组（每分量 0-255）",
+    examples: &["var px = imageGetPixel(img, 10, 20)  // 如 [255,0,0,255]"],
+    errors: &["img 不是 image 对象", "坐标超出图片范围"],
+};
+
+static DOC_IMAGE_SET_PIXEL: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageSetPixel(img, x, y, color) -> undefined",
+    summary: "设置指定坐标的像素颜色。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("x", "X 坐标（从 0 开始）"),
+        ("y", "Y 坐标（从 0 开始）"),
+        ("color", "颜色 [r,g,b] 或 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["imageSetPixel(img, 10, 20, [255,255,255,255])"],
+    errors: &["img 不是 image 对象", "坐标超出图片范围", "color 不是数组或长度不足 3"],
+};
+
+static DOC_IMAGE_FILL: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageFill(img, color) -> undefined",
+    summary: "用指定颜色填充整个图片。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("color", "填充颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["imageFill(img, [0,0,0,255])"],
+    errors: &["img 不是 image 对象", "color 格式错误"],
+};
+
+static DOC_IMAGE_CLONE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageClone(img) -> image",
+    summary: "深拷贝图片（返回独立副本）。",
+    params: &[("img", "image 图片对象")],
+    returns: "image 与原图互不影响的新图片",
+    examples: &["var copy = imageClone(img)"],
+    errors: &["img 不是 image 对象"],
+};
+
+// ===================== 图片变换 =====================
+
+static DOC_IMAGE_RESIZE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageResize(img, width, height, filter?) -> image",
+    summary: "缩放图片。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("width", "目标宽度（>0）"),
+        ("height", "目标高度（>0）"),
+        ("filter", "可选采样滤镜 \"nearest\"/\"triangle\"/\"catmullrom\"/\"gaussian\"/\"lanczos3\"，默认 lanczos3"),
+    ],
+    returns: "image 缩放后的新图片",
+    examples: &[
+        "small := imageResize(img, 50, 50)",
+        "small := imageResize(img, 50, 50, \"nearest\")  // 像素风",
+    ],
+    errors: &["img 不是 image 对象", "目标尺寸不能为 0"],
+};
+
+static DOC_IMAGE_CROP: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageCrop(img, x, y, width, height) -> image",
+    summary: "裁剪图片。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("x", "裁剪区左上角 X"),
+        ("y", "裁剪区左上角 Y"),
+        ("width", "裁剪区宽度"),
+        ("height", "裁剪区高度"),
+    ],
+    returns: "image 裁剪后的新图片",
+    examples: &["sub := imageCrop(img, 10, 10, 100, 100)"],
+    errors: &["img 不是 image 对象", "裁剪区域超出图片范围"],
+};
+
+static DOC_IMAGE_ROTATE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageRotate(img, degrees) -> image",
+    summary: "旋转图片（仅支持 90/180/270 度，正值顺时针）。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("degrees", "角度 90/180/270（正值顺时针，负值逆时针）"),
+    ],
+    returns: "image 旋转后的新图片",
+    examples: &["rotated := imageRotate(img, 90)"],
+    errors: &["img 不是 image 对象", "仅支持 90/180/270 度，任意角度请用 imageRotateFree"],
+};
+
+static DOC_IMAGE_ROTATE_FREE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageRotateFree(img, degrees, bgColor?) -> image",
+    summary: "任意角度旋转图片（正值逆时针）。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("degrees", "任意角度（float，正值逆时针）"),
+        ("bgColor", "可选空白区域填充色，默认透明 [0,0,0,0]"),
+    ],
+    returns: "image 旋转后的新图片（画布自动扩大以容纳全部内容）",
+    examples: &[
+        "rotated := imageRotateFree(img, 45)",
+        "rotated := imageRotateFree(img, 30, [255,255,255,255])  // 白底",
+    ],
+    errors: &["img 不是 image 对象"],
+};
+
+static DOC_IMAGE_FLIP_H: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageFlipH(img) -> image",
+    summary: "水平翻转图片（左右镜像）。",
+    params: &[("img", "image 图片对象")],
+    returns: "image 翻转后的新图片",
+    examples: &["mirrored := imageFlipH(img)"],
+    errors: &["img 不是 image 对象"],
+};
+
+static DOC_IMAGE_FLIP_V: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageFlipV(img) -> image",
+    summary: "垂直翻转图片（上下镜像）。",
+    params: &[("img", "image 图片对象")],
+    returns: "image 翻转后的新图片",
+    examples: &["mirrored := imageFlipV(img)"],
+    errors: &["img 不是 image 对象"],
+};
+
+static DOC_IMAGE_BLEND: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageBlend(baseImg, overlayImg, x, y) -> image",
+    summary: "将叠加图绘制到基础图上（alpha 混合）。",
+    params: &[
+        ("baseImg", "基础 image 对象"),
+        ("overlayImg", "叠加 image 对象"),
+        ("x", "叠加左上角 X"),
+        ("y", "叠加左上角 Y"),
+    ],
+    returns: "image 混合后的新图片（半透明像素自动 alpha 混合）",
+    examples: &["result := imageBlend(bg, logo, 10, 10)"],
+    errors: &["参数不是 image 对象"],
+};
+
+// ===================== 颜色滤镜 =====================
+
+static DOC_IMAGE_GRAY: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageGray(img) -> image",
+    summary: "灰度化图片。",
+    params: &[("img", "image 图片对象")],
+    returns: "image 灰度图片",
+    examples: &["gray := imageGray(img)"],
+    errors: &["img 不是 image 对象"],
+};
+
+static DOC_IMAGE_INVERT: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageInvert(img) -> undefined",
+    summary: "反色图片（就地修改）。",
+    params: &[("img", "image 图片对象")],
+    returns: "undefined（就地修改 img）",
+    examples: &["imageInvert(img)"],
+    errors: &["img 不是 image 对象"],
+};
+
+static DOC_IMAGE_BRIGHTNESS: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageBrightness(img, factor) -> image",
+    summary: "调整亮度。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("factor", "亮度增量（-255 到 255，正值变亮，负值变暗）"),
+    ],
+    returns: "image 调整后的新图片",
+    examples: &[
+        "bright := imageBrightness(img, 50)",
+        "dark := imageBrightness(img, -50)",
+    ],
+    errors: &["img 不是 image 对象"],
+};
+
+static DOC_IMAGE_CONTRAST: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageContrast(img, factor) -> image",
+    summary: "调整对比度。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("factor", "对比度系数（float，正值增加对比度，负值降低）"),
+    ],
+    returns: "image 调整后的新图片",
+    examples: &["result := imageContrast(img, 1.5)"],
+    errors: &["img 不是 image 对象"],
+};
+
+static DOC_IMAGE_BLUR: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageBlur(img, sigma) -> image",
+    summary: "高斯模糊。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("sigma", "模糊半径，越大越模糊（通常 1.0-10.0，>=0）"),
+    ],
+    returns: "image 模糊后的新图片",
+    examples: &["blurry := imageBlur(img, 3.0)"],
+    errors: &["img 不是 image 对象", "sigma 不能为负数"],
+};
+
+static DOC_IMAGE_SHARPEN: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageSharpen(img) -> image",
+    summary: "锐化图片（拉普拉斯卷积核）。",
+    params: &[("img", "image 图片对象")],
+    returns: "image 锐化后的新图片",
+    examples: &["sharp := imageSharpen(img)"],
+    errors: &["img 不是 image 对象"],
+};
+
+static DOC_IMAGE_GAMMA: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageGamma(img, gamma) -> image",
+    summary: "伽马校正。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("gamma", "伽马值（>0，>1 变亮，<1 变暗，1 不变）"),
+    ],
+    returns: "image 校正后的新图片",
+    examples: &[
+        "bright := imageGamma(img, 2.0)",
+        "dark := imageGamma(img, 0.5)",
+    ],
+    errors: &["img 不是 image 对象", "gamma 必须 > 0"],
+};
+
+static DOC_IMAGE_SEPIA: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageSepia(img) -> image",
+    summary: "棕褐色滤镜（复古效果）。",
+    params: &[("img", "image 图片对象")],
+    returns: "image 棕褐色复古风格的新图片",
+    examples: &["vintage := imageSepia(img)"],
+    errors: &["img 不是 image 对象"],
+};
+
+static DOC_IMAGE_THRESHOLD: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageThreshold(img, threshold) -> image",
+    summary: "二值化阈值（灰度 > threshold 变白，否则变黑）。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("threshold", "阈值 0-255"),
+    ],
+    returns: "image 黑白二值图片",
+    examples: &["bw := imageThreshold(img, 128)"],
+    errors: &["img 不是 image 对象"],
+};
+
+static DOC_IMAGE_TINT: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageTint(img, color) -> image",
+    summary: "用指定颜色着色（保留亮度，替换色调）。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("color", "着色目标颜色 [r,g,b,a]"),
+    ],
+    returns: "image 着色后的新图片",
+    examples: &["tinted := imageTint(img, [255,0,0,255])  // 红色调"],
+    errors: &["img 不是 image 对象", "color 格式错误"],
+};
+
+static DOC_IMAGE_OPACITY: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageOpacity(img, factor) -> image",
+    summary: "调整图片透明度。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("factor", "透明度系数（0.0 全透明，1.0 不变，>1 增强，按 0-255 截断）"),
+    ],
+    returns: "image 调整 alpha 后的新图片",
+    examples: &["semi := imageOpacity(img, 0.5)  // 半透明"],
+    errors: &["img 不是 image 对象"],
+};
+
+static DOC_IMAGE_EDGE_DETECT: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageEdgeDetect(img) -> image",
+    summary: "边缘检测（Sobel 算子）。",
+    params: &[("img", "image 图片对象")],
+    returns: "image 边缘高亮的灰度图片",
+    examples: &["edges := imageEdgeDetect(img)"],
+    errors: &["img 不是 image 对象", "图片小于 3x3 时返回灰度原图"],
+};
+
+static DOC_IMAGE_CONVOLVE3X3: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageConvolve3x3(img, kernel) -> image",
+    summary: "自定义 3x3 卷积核滤镜。",
+    params: &[
+        ("img", "image 图片对象"),
+        ("kernel", "9 个数字的数组 [k0..k8]，对应 3x3 矩阵，自动归一化"),
+    ],
+    returns: "image 卷积后的新图片",
+    examples: &[
+        "// 模糊核",
+        "blurry := imageConvolve3x3(img, [1,1,1, 1,1,1, 1,1,1])",
+    ],
+    errors: &["img 不是 image 对象", "kernel 必须为恰好 9 元素的数字数组"],
+};
+
+// ===================== 图片信息 =====================
+
+static DOC_IMAGE_HISTOGRAM: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "imageHistogram(img) -> [rHist, gHist, bHist, aHist]",
+    summary: "获取图片直方图（RGBA 四通道）。",
+    params: &[("img", "image 图片对象")],
+    returns: "4 个数组的数组，每个是 256 元素的该亮度像素计数",
+    examples: &[
+        "var h = imageHistogram(img)",
+        "var redHist = h[0]  // redHist[i] = 红色分量为 i 的像素数",
+    ],
+    errors: &["img 不是 image 对象"],
+};
+
+// ===================== Canvas 画布 =====================
+
+static DOC_CANVAS_NEW: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasNew(width, height, bgColor?) -> canvas",
+    summary: "创建新画布（纯色填充）。",
+    params: &[
+        ("width", "宽度（像素，>0）"),
+        ("height", "高度（像素，>0）"),
+        ("bgColor", "可选背景色 [r,g,b,a]，缺省透明"),
+    ],
+    returns: "canvas 画布对象（用于绘图）",
+    examples: &[
+        "c := canvasNew(200, 200, [0,0,0,255])",
+    ],
+    errors: &["width/height 不能为 0"],
+};
+
+static DOC_CANVAS_FROM_IMAGE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasFromImage(img) -> canvas",
+    summary: "从图片创建画布（拷贝像素数据以便绘图）。",
+    params: &[("img", "image 图片对象")],
+    returns: "canvas 与原图相同像素的画布",
+    examples: &["c := canvasFromImage(img)"],
+    errors: &["img 不是 image 对象"],
+};
+
+static DOC_CANVAS_TO_IMAGE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasToImage(canvas) -> image",
+    summary: "画布转图片（用于保存/滤镜）。",
+    params: &[("canvas", "canvas 画布对象")],
+    returns: "image 与画布相同像素的图片",
+    examples: &["img := canvasToImage(c)"],
+    errors: &["canvas 不是画布对象"],
+};
+
+static DOC_CANVAS_GET_WIDTH: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasGetWidth(canvas) -> int",
+    summary: "获取画布宽度。",
+    params: &[("canvas", "canvas 画布对象")],
+    returns: "int 像素宽度",
+    examples: &["var w = canvasGetWidth(c)"],
+    errors: &["canvas 不是画布对象"],
+};
+
+static DOC_CANVAS_GET_HEIGHT: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasGetHeight(canvas) -> int",
+    summary: "获取画布高度。",
+    params: &[("canvas", "canvas 画布对象")],
+    returns: "int 像素高度",
+    examples: &["var h = canvasGetHeight(c)"],
+    errors: &["canvas 不是画布对象"],
+};
+
+static DOC_CANVAS_GET_PIXEL: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasGetPixel(canvas, x, y) -> [r,g,b,a]",
+    summary: "获取画布指定坐标的像素颜色。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("x", "X 坐标（从 0 开始）"),
+        ("y", "Y 坐标（从 0 开始）"),
+    ],
+    returns: "[r,g,b,a] 颜色数组",
+    examples: &["var px = canvasGetPixel(c, 5, 5)"],
+    errors: &["canvas 不是画布对象", "坐标超出画布范围"],
+};
+
+static DOC_CANVAS_SET_PIXEL: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasSetPixel(canvas, x, y, color) -> undefined",
+    summary: "设置画布指定坐标的像素颜色。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("x", "X 坐标（从 0 开始）"),
+        ("y", "Y 坐标（从 0 开始）"),
+        ("color", "颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["canvasSetPixel(c, 5, 5, [255,0,0,255])"],
+    errors: &["canvas 不是画布对象", "坐标超出画布范围", "color 格式错误"],
+};
+
+static DOC_CANVAS_FILL: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasFill(canvas, color) -> undefined",
+    summary: "用指定颜色填充整个画布。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("color", "填充颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["canvasFill(c, [255,255,255,255])"],
+    errors: &["canvas 不是画布对象", "color 格式错误"],
+};
+
+static DOC_CANVAS_CLEAR: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasClear(canvas, color?) -> undefined",
+    summary: "清空画布（默认清为透明，可指定颜色）。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("color", "可选清空颜色，缺省透明 [0,0,0,0]"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "canvasClear(c)  // 透明",
+        "canvasClear(c, [255,255,255,255])  // 白色",
+    ],
+    errors: &["canvas 不是画布对象", "color 格式错误"],
+};
+
+// ===================== Canvas 绘图 =====================
+
+static DOC_CANVAS_DRAW_LINE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasDrawLine(canvas, x1, y1, x2, y2, color) -> undefined",
+    summary: "画线段（Bresenham 算法，单像素宽）。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("x1, y1", "起点坐标"),
+        ("x2, y2", "终点坐标"),
+        ("color", "线条颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["canvasDrawLine(c, 0, 0, 100, 100, [255,0,0,255])"],
+    errors: &["canvas 不是画布对象", "color 格式错误", "越界坐标自动跳过"],
+};
+
+static DOC_CANVAS_DRAW_LINE_W: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasDrawLineW(canvas, x1, y1, x2, y2, width, color) -> undefined",
+    summary: "画带宽度的线段（圆刷模拟笔触）。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("x1, y1", "起点坐标"),
+        ("x2, y2", "终点坐标"),
+        ("width", "线条宽度（像素）"),
+        ("color", "线条颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["canvasDrawLineW(c, 0, 0, 100, 100, 3, [0,0,255,255])"],
+    errors: &["canvas 不是画布对象", "color 格式错误"],
+};
+
+static DOC_CANVAS_DRAW_RECT: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasDrawRect(canvas, x, y, width, height, color) -> undefined",
+    summary: "画矩形边框。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("x, y", "左上角坐标"),
+        ("width", "矩形宽度"),
+        ("height", "矩形高度"),
+        ("color", "边框颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["canvasDrawRect(c, 10, 10, 80, 40, [255,0,0,255])"],
+    errors: &["canvas 不是画布对象", "color 格式错误"],
+};
+
+static DOC_CANVAS_FILL_RECT: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasFillRect(canvas, x, y, width, height, color) -> undefined",
+    summary: "填充矩形。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("x, y", "左上角坐标"),
+        ("width", "矩形宽度"),
+        ("height", "矩形高度"),
+        ("color", "填充颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["canvasFillRect(c, 10, 10, 80, 40, [0,255,0,255])"],
+    errors: &["canvas 不是画布对象", "color 格式错误"],
+};
+
+static DOC_CANVAS_DRAW_ROUND_RECT: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasDrawRoundRect(canvas, x, y, width, height, radius, color) -> undefined",
+    summary: "画圆角矩形边框。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("x, y", "左上角坐标"),
+        ("width", "矩形宽度"),
+        ("height", "矩形高度"),
+        ("radius", "圆角半径（自动限制为不超过宽高的一半）"),
+        ("color", "边框颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["canvasDrawRoundRect(c, 10, 10, 80, 40, 8, [0,0,255,255])"],
+    errors: &["canvas 不是画布对象", "color 格式错误"],
+};
+
+static DOC_CANVAS_FILL_ROUND_RECT: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasFillRoundRect(canvas, x, y, width, height, radius, color) -> undefined",
+    summary: "填充圆角矩形。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("x, y", "左上角坐标"),
+        ("width", "矩形宽度"),
+        ("height", "矩形高度"),
+        ("radius", "圆角半径（自动限制为不超过宽高的一半）"),
+        ("color", "填充颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["canvasFillRoundRect(c, 10, 10, 80, 40, 8, [255,128,0,255])"],
+    errors: &["canvas 不是画布对象", "color 格式错误"],
+};
+
+static DOC_CANVAS_DRAW_CIRCLE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasDrawCircle(canvas, cx, cy, radius, color) -> undefined",
+    summary: "画圆边框（中点画圆算法）。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("cx, cy", "圆心坐标"),
+        ("radius", "半径"),
+        ("color", "边框颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["canvasDrawCircle(c, 50, 50, 30, [255,0,0,255])"],
+    errors: &["canvas 不是画布对象", "color 格式错误"],
+};
+
+static DOC_CANVAS_FILL_CIRCLE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasFillCircle(canvas, cx, cy, radius, color) -> undefined",
+    summary: "填充实心圆。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("cx, cy", "圆心坐标"),
+        ("radius", "半径"),
+        ("color", "填充颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["canvasFillCircle(c, 50, 50, 30, [0,255,0,255])"],
+    errors: &["canvas 不是画布对象", "color 格式错误"],
+};
+
+static DOC_CANVAS_DRAW_ELLIPSE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasDrawEllipse(canvas, cx, cy, rx, ry, color) -> undefined",
+    summary: "画椭圆边框。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("cx, cy", "中心坐标"),
+        ("rx", "水平半径"),
+        ("ry", "垂直半径"),
+        ("color", "边框颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["canvasDrawEllipse(c, 50, 50, 40, 20, [0,0,255,255])"],
+    errors: &["canvas 不是画布对象", "color 格式错误", "rx/ry <= 0 时不绘制"],
+};
+
+static DOC_CANVAS_FILL_ELLIPSE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasFillEllipse(canvas, cx, cy, rx, ry, color) -> undefined",
+    summary: "填充实心椭圆。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("cx, cy", "中心坐标"),
+        ("rx", "水平半径"),
+        ("ry", "垂直半径"),
+        ("color", "填充颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["canvasFillEllipse(c, 50, 50, 40, 20, [255,0,255,255])"],
+    errors: &["canvas 不是画布对象", "color 格式错误", "rx/ry <= 0 时不绘制"],
+};
+
+static DOC_CANVAS_DRAW_TRIANGLE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasDrawTriangle(canvas, x1, y1, x2, y2, x3, y3, color) -> undefined",
+    summary: "画三角形边框（连接三个顶点）。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("x1, y1", "顶点 1"),
+        ("x2, y2", "顶点 2"),
+        ("x3, y3", "顶点 3"),
+        ("color", "边框颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["canvasDrawTriangle(c, 50,0, 0,100, 100,100, [255,0,0,255])"],
+    errors: &["canvas 不是画布对象", "color 格式错误"],
+};
+
+static DOC_CANVAS_FILL_TRIANGLE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasFillTriangle(canvas, x1, y1, x2, y2, x3, y3, color) -> undefined",
+    summary: "填充三角形（重心坐标法）。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("x1, y1", "顶点 1"),
+        ("x2, y2", "顶点 2"),
+        ("x3, y3", "顶点 3"),
+        ("color", "填充颜色 [r,g,b,a]"),
+    ],
+    returns: "undefined",
+    examples: &["canvasFillTriangle(c, 50,0, 0,100, 100,100, [0,255,0,255])"],
+    errors: &["canvas 不是画布对象", "color 格式错误", "三点共线时不绘制"],
+};
+
+static DOC_CANVAS_DRAW_TEXT: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasDrawText(canvas, x, y, text, color, fontSize?, font?) -> undefined",
+    summary: "在画布上绘制文字（抗锯齿）。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("x, y", "文字基线左上角坐标"),
+        ("text", "要绘制的字符串"),
+        ("color", "文字颜色 [r,g,b,a]"),
+        ("fontSize", "可选字号（默认 16）"),
+        ("font", "可选 loadFont 返回的字体对象，缺省用系统字体"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "canvasDrawText(c, 10, 10, \"Hello\", [0,0,0,255])",
+        "canvasDrawText(c, 10, 10, \"大字\", [255,0,0,255], 32)",
+        "var f = loadFont(\"arial.ttf\")",
+        "canvasDrawText(c, 10, 10, \"Hi\", [0,0,0,255], 20, f)",
+    ],
+    errors: &[
+        "canvas 不是画布对象",
+        "未找到系统默认字体时需用 loadFont 加载后作为第 7 参数传入",
+        "字体文件不存在或损坏",
+    ],
+};
+
+static DOC_CANVAS_DRAW_IMAGE: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasDrawImage(canvas, img, x, y) -> undefined",
+    summary: "在画布上绘制图片（透明像素跳过）。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("img", "要绘制的 image 对象"),
+        ("x, y", "绘制左上角坐标"),
+    ],
+    returns: "undefined",
+    examples: &["canvasDrawImage(c, sprite, 10, 10)"],
+    errors: &["canvas 不是画布对象", "img 不是 image 对象"],
+};
+
+static DOC_CANVAS_DRAW_GRADIENT: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasDrawGradient(canvas, x, y, w, h, color1, color2, direction) -> undefined",
+    summary: "画线性渐变矩形。",
+    params: &[
+        ("canvas", "canvas 画布对象"),
+        ("x, y", "左上角坐标"),
+        ("w", "宽度"),
+        ("h", "高度"),
+        ("color1", "起始颜色 [r,g,b,a]"),
+        ("color2", "结束颜色 [r,g,b,a]"),
+        ("direction", "\"h\" 水平渐变 或 \"v\" 垂直渐变"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "canvasDrawGradient(c, 0, 0, 100, 100, [255,0,0,255], [0,0,255,255], \"h\")",
+    ],
+    errors: &["canvas 不是画布对象", "direction 必须是 \"h\" 或 \"v\""],
+};
+
+static DOC_CANVAS_MEASURE_TEXT: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "canvasMeasureText(text, fontSize?, font?) -> [width, height]",
+    summary: "测量文字尺寸（不实际绘制）。",
+    params: &[
+        ("text", "要测量的字符串"),
+        ("fontSize", "可选字号（默认 16）"),
+        ("font", "可选 loadFont 返回的字体对象，缺省用系统字体"),
+    ],
+    returns: "[width, height] 文字宽高（像素）",
+    examples: &[
+        "var size = canvasMeasureText(\"Hello\", 20)",
+        "var w = size[0]  // 文字宽度",
+    ],
+    errors: &[
+        "未找到系统默认字体时需用 loadFont 加载后作为第 3 参数传入",
+        "字体文件不存在或损坏",
+    ],
+};
+
+// ===================== 颜色与字体 =====================
+
+static DOC_COLOR_NEW: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "colorNew(r, g, b, a?) -> [r,g,b,a]",
+    summary: "创建颜色数组（各分量限制到 0-255）。",
+    params: &[
+        ("r", "红色 0-255"),
+        ("g", "绿色 0-255"),
+        ("b", "蓝色 0-255"),
+        ("a", "可选 alpha 0-255（默认 255）"),
+    ],
+    returns: "[r,g,b,a] 颜色数组",
+    examples: &[
+        "colorNew(255, 0, 0)  // [255,0,0,255]",
+        "colorNew(255, 0, 0, 128)  // 半透明红",
+    ],
+    errors: &["r/g/b/a 应为数字（超出范围自动截断）"],
+};
+
+static DOC_COLOR_FROM_HEX: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "colorFromHex(hex) -> [r,g,b,a]",
+    summary: "从十六进制字符串创建颜色。",
+    params: &[("hex", "十六进制颜色字符串，支持 \"#rrggbb\"/\"rrggbb\"/\"#rrggbbaa\"")],
+    returns: "[r,g,b,a] 颜色数组",
+    examples: &[
+        "colorFromHex(\"#ff0000\")  // [255,0,0,255]",
+        "colorFromHex(\"ff0000\")  // 同上，# 可省",
+        "colorFromHex(\"#ff000080\")  // [255,0,0,128] 半透明",
+    ],
+    errors: &["格式必须为 #rrggbb 或 #rrggbbaa（6 或 8 位十六进制）"],
+};
+
+static DOC_COLOR_TO_HEX: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "colorToHex(color) -> string",
+    summary: "颜色转十六进制字符串。",
+    params: &[("color", "颜色 [r,g,b] 或 [r,g,b,a]")],
+    returns: "string 形如 \"#rrggbbaa\" 的十六进制字符串",
+    examples: &["var s = colorToHex([255,0,0,255])  // \"#ff0000ff\""],
+    errors: &["color 不是数组或长度不足 3"],
+};
+
+static DOC_COLOR_BLEND: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "colorBlend(color1, color2, ratio) -> [r,g,b,a]",
+    summary: "按比例混合两种颜色。",
+    params: &[
+        ("color1", "第一个颜色 [r,g,b,a]"),
+        ("color2", "第二个颜色 [r,g,b,a]"),
+        ("ratio", "混合比例（0.0 完全用 color1，1.0 完全用 color2）"),
+    ],
+    returns: "[r,g,b,a] 混合后的颜色",
+    examples: &[
+        "colorBlend([0,0,0,255], [255,255,255,255], 0.5)  // 中灰色",
+    ],
+    errors: &["color1/color2 不是颜色数组", "ratio 超出 [0,1] 自动截断"],
+};
+
+static DOC_LOAD_FONT: BuiltinDoc = BuiltinDoc {
+    category: "image",
+    signature: "loadFont(fontPath) -> font",
+    summary: "从文件加载 TrueType/OpenType 字体。",
+    params: &[("fontPath", "字体文件路径（.ttf/.otf/.ttc）")],
+    returns: "font 字体对象，用于 canvasDrawText/canvasMeasureText",
+    examples: &[
+        "var f = loadFont(\"C:\\\\Windows\\\\Fonts\\\\arial.ttf\")",
+        "canvasDrawText(c, 10, 10, \"Hi\", [0,0,0,255], 20, f)",
+    ],
+    errors: &["文件不存在或无权限", "文件不是有效的 TrueType/OpenType 字体"],
+};
 
 /// register 注册所有图像处理内置函数。
 pub fn register(vm: &mut VM) {
     // 图片加载/保存
-    vm.register_builtin("imageLoad", bi_image_load);
-    vm.register_builtin("imageLoadFromBytes", bi_image_load_from_bytes);
-    vm.register_builtin("imageSave", bi_image_save);
-    vm.register_builtin("imageSaveToBytes", bi_image_save_to_bytes);
+    vm.register_builtin_doc("imageLoad", bi_image_load, &DOC_IMAGE_LOAD);
+    vm.register_builtin_doc("imageLoadFromBytes", bi_image_load_from_bytes, &DOC_IMAGE_LOAD_FROM_BYTES);
+    vm.register_builtin_doc("imageSave", bi_image_save, &DOC_IMAGE_SAVE);
+    vm.register_builtin_doc("imageSaveToBytes", bi_image_save_to_bytes, &DOC_IMAGE_SAVE_TO_BYTES);
 
     // 图片基本操作
-    vm.register_builtin("imageNew", bi_image_new);
-    vm.register_builtin("imageGetWidth", bi_image_get_width);
-    vm.register_builtin("imageGetHeight", bi_image_get_height);
-    vm.register_builtin("imageGetPixel", bi_image_get_pixel);
-    vm.register_builtin("imageSetPixel", bi_image_set_pixel);
-    vm.register_builtin("imageFill", bi_image_fill);
-    vm.register_builtin("imageClone", bi_image_clone);
+    vm.register_builtin_doc("imageNew", bi_image_new, &DOC_IMAGE_NEW);
+    vm.register_builtin_doc("imageGetWidth", bi_image_get_width, &DOC_IMAGE_GET_WIDTH);
+    vm.register_builtin_doc("imageGetHeight", bi_image_get_height, &DOC_IMAGE_GET_HEIGHT);
+    vm.register_builtin_doc("imageGetPixel", bi_image_get_pixel, &DOC_IMAGE_GET_PIXEL);
+    vm.register_builtin_doc("imageSetPixel", bi_image_set_pixel, &DOC_IMAGE_SET_PIXEL);
+    vm.register_builtin_doc("imageFill", bi_image_fill, &DOC_IMAGE_FILL);
+    vm.register_builtin_doc("imageClone", bi_image_clone, &DOC_IMAGE_CLONE);
 
     // 图片变换
-    vm.register_builtin("imageResize", bi_image_resize);
-    vm.register_builtin("imageCrop", bi_image_crop);
-    vm.register_builtin("imageRotate", bi_image_rotate);
-    vm.register_builtin("imageRotateFree", bi_image_rotate_free);
-    vm.register_builtin("imageFlipH", bi_image_flip_h);
-    vm.register_builtin("imageFlipV", bi_image_flip_v);
-    vm.register_builtin("imageBlend", bi_image_blend);
+    vm.register_builtin_doc("imageResize", bi_image_resize, &DOC_IMAGE_RESIZE);
+    vm.register_builtin_doc("imageCrop", bi_image_crop, &DOC_IMAGE_CROP);
+    vm.register_builtin_doc("imageRotate", bi_image_rotate, &DOC_IMAGE_ROTATE);
+    vm.register_builtin_doc("imageRotateFree", bi_image_rotate_free, &DOC_IMAGE_ROTATE_FREE);
+    vm.register_builtin_doc("imageFlipH", bi_image_flip_h, &DOC_IMAGE_FLIP_H);
+    vm.register_builtin_doc("imageFlipV", bi_image_flip_v, &DOC_IMAGE_FLIP_V);
+    vm.register_builtin_doc("imageBlend", bi_image_blend, &DOC_IMAGE_BLEND);
 
     // 颜色滤镜
-    vm.register_builtin("imageGray", bi_image_gray);
-    vm.register_builtin("imageInvert", bi_image_invert);
-    vm.register_builtin("imageBrightness", bi_image_brightness);
-    vm.register_builtin("imageContrast", bi_image_contrast);
-    vm.register_builtin("imageBlur", bi_image_blur);
-    vm.register_builtin("imageSharpen", bi_image_sharpen);
-    vm.register_builtin("imageGamma", bi_image_gamma);
-    vm.register_builtin("imageSepia", bi_image_sepia);
-    vm.register_builtin("imageThreshold", bi_image_threshold);
-    vm.register_builtin("imageTint", bi_image_tint);
-    vm.register_builtin("imageOpacity", bi_image_opacity);
-    vm.register_builtin("imageEdgeDetect", bi_image_edge_detect);
-    vm.register_builtin("imageConvolve3x3", bi_image_convolve3x3);
+    vm.register_builtin_doc("imageGray", bi_image_gray, &DOC_IMAGE_GRAY);
+    vm.register_builtin_doc("imageInvert", bi_image_invert, &DOC_IMAGE_INVERT);
+    vm.register_builtin_doc("imageBrightness", bi_image_brightness, &DOC_IMAGE_BRIGHTNESS);
+    vm.register_builtin_doc("imageContrast", bi_image_contrast, &DOC_IMAGE_CONTRAST);
+    vm.register_builtin_doc("imageBlur", bi_image_blur, &DOC_IMAGE_BLUR);
+    vm.register_builtin_doc("imageSharpen", bi_image_sharpen, &DOC_IMAGE_SHARPEN);
+    vm.register_builtin_doc("imageGamma", bi_image_gamma, &DOC_IMAGE_GAMMA);
+    vm.register_builtin_doc("imageSepia", bi_image_sepia, &DOC_IMAGE_SEPIA);
+    vm.register_builtin_doc("imageThreshold", bi_image_threshold, &DOC_IMAGE_THRESHOLD);
+    vm.register_builtin_doc("imageTint", bi_image_tint, &DOC_IMAGE_TINT);
+    vm.register_builtin_doc("imageOpacity", bi_image_opacity, &DOC_IMAGE_OPACITY);
+    vm.register_builtin_doc("imageEdgeDetect", bi_image_edge_detect, &DOC_IMAGE_EDGE_DETECT);
+    vm.register_builtin_doc("imageConvolve3x3", bi_image_convolve3x3, &DOC_IMAGE_CONVOLVE3X3);
 
     // 图片信息
-    vm.register_builtin("imageHistogram", bi_image_histogram);
+    vm.register_builtin_doc("imageHistogram", bi_image_histogram, &DOC_IMAGE_HISTOGRAM);
 
     // Canvas 画布
-    vm.register_builtin("canvasNew", bi_canvas_new);
-    vm.register_builtin("canvasFromImage", bi_canvas_from_image);
-    vm.register_builtin("canvasToImage", bi_canvas_to_image);
-    vm.register_builtin("canvasGetWidth", bi_canvas_get_width);
-    vm.register_builtin("canvasGetHeight", bi_canvas_get_height);
-    vm.register_builtin("canvasGetPixel", bi_canvas_get_pixel);
-    vm.register_builtin("canvasSetPixel", bi_canvas_set_pixel);
-    vm.register_builtin("canvasFill", bi_canvas_fill);
-    vm.register_builtin("canvasClear", bi_canvas_clear);
+    vm.register_builtin_doc("canvasNew", bi_canvas_new, &DOC_CANVAS_NEW);
+    vm.register_builtin_doc("canvasFromImage", bi_canvas_from_image, &DOC_CANVAS_FROM_IMAGE);
+    vm.register_builtin_doc("canvasToImage", bi_canvas_to_image, &DOC_CANVAS_TO_IMAGE);
+    vm.register_builtin_doc("canvasGetWidth", bi_canvas_get_width, &DOC_CANVAS_GET_WIDTH);
+    vm.register_builtin_doc("canvasGetHeight", bi_canvas_get_height, &DOC_CANVAS_GET_HEIGHT);
+    vm.register_builtin_doc("canvasGetPixel", bi_canvas_get_pixel, &DOC_CANVAS_GET_PIXEL);
+    vm.register_builtin_doc("canvasSetPixel", bi_canvas_set_pixel, &DOC_CANVAS_SET_PIXEL);
+    vm.register_builtin_doc("canvasFill", bi_canvas_fill, &DOC_CANVAS_FILL);
+    vm.register_builtin_doc("canvasClear", bi_canvas_clear, &DOC_CANVAS_CLEAR);
 
     // Canvas 绘图
-    vm.register_builtin("canvasDrawLine", bi_canvas_draw_line);
-    vm.register_builtin("canvasDrawLineW", bi_canvas_draw_line_w);
-    vm.register_builtin("canvasDrawRect", bi_canvas_draw_rect);
-    vm.register_builtin("canvasFillRect", bi_canvas_fill_rect);
-    vm.register_builtin("canvasDrawRoundRect", bi_canvas_draw_round_rect);
-    vm.register_builtin("canvasFillRoundRect", bi_canvas_fill_round_rect);
-    vm.register_builtin("canvasDrawCircle", bi_canvas_draw_circle);
-    vm.register_builtin("canvasFillCircle", bi_canvas_fill_circle);
-    vm.register_builtin("canvasDrawEllipse", bi_canvas_draw_ellipse);
-    vm.register_builtin("canvasFillEllipse", bi_canvas_fill_ellipse);
-    vm.register_builtin("canvasDrawTriangle", bi_canvas_draw_triangle);
-    vm.register_builtin("canvasFillTriangle", bi_canvas_fill_triangle);
-    vm.register_builtin("canvasDrawText", bi_canvas_draw_text);
-    vm.register_builtin("canvasDrawImage", bi_canvas_draw_image);
-    vm.register_builtin("canvasDrawGradient", bi_canvas_draw_gradient);
-    vm.register_builtin("canvasMeasureText", bi_canvas_measure_text);
+    vm.register_builtin_doc("canvasDrawLine", bi_canvas_draw_line, &DOC_CANVAS_DRAW_LINE);
+    vm.register_builtin_doc("canvasDrawLineW", bi_canvas_draw_line_w, &DOC_CANVAS_DRAW_LINE_W);
+    vm.register_builtin_doc("canvasDrawRect", bi_canvas_draw_rect, &DOC_CANVAS_DRAW_RECT);
+    vm.register_builtin_doc("canvasFillRect", bi_canvas_fill_rect, &DOC_CANVAS_FILL_RECT);
+    vm.register_builtin_doc("canvasDrawRoundRect", bi_canvas_draw_round_rect, &DOC_CANVAS_DRAW_ROUND_RECT);
+    vm.register_builtin_doc("canvasFillRoundRect", bi_canvas_fill_round_rect, &DOC_CANVAS_FILL_ROUND_RECT);
+    vm.register_builtin_doc("canvasDrawCircle", bi_canvas_draw_circle, &DOC_CANVAS_DRAW_CIRCLE);
+    vm.register_builtin_doc("canvasFillCircle", bi_canvas_fill_circle, &DOC_CANVAS_FILL_CIRCLE);
+    vm.register_builtin_doc("canvasDrawEllipse", bi_canvas_draw_ellipse, &DOC_CANVAS_DRAW_ELLIPSE);
+    vm.register_builtin_doc("canvasFillEllipse", bi_canvas_fill_ellipse, &DOC_CANVAS_FILL_ELLIPSE);
+    vm.register_builtin_doc("canvasDrawTriangle", bi_canvas_draw_triangle, &DOC_CANVAS_DRAW_TRIANGLE);
+    vm.register_builtin_doc("canvasFillTriangle", bi_canvas_fill_triangle, &DOC_CANVAS_FILL_TRIANGLE);
+    vm.register_builtin_doc("canvasDrawText", bi_canvas_draw_text, &DOC_CANVAS_DRAW_TEXT);
+    vm.register_builtin_doc("canvasDrawImage", bi_canvas_draw_image, &DOC_CANVAS_DRAW_IMAGE);
+    vm.register_builtin_doc("canvasDrawGradient", bi_canvas_draw_gradient, &DOC_CANVAS_DRAW_GRADIENT);
+    vm.register_builtin_doc("canvasMeasureText", bi_canvas_measure_text, &DOC_CANVAS_MEASURE_TEXT);
 
     // 颜色与字体
-    vm.register_builtin("colorNew", bi_color_new);
-    vm.register_builtin("colorFromHex", bi_color_from_hex);
-    vm.register_builtin("colorToHex", bi_color_to_hex);
-    vm.register_builtin("colorBlend", bi_color_blend);
-    vm.register_builtin("loadFont", bi_load_font);
+    vm.register_builtin_doc("colorNew", bi_color_new, &DOC_COLOR_NEW);
+    vm.register_builtin_doc("colorFromHex", bi_color_from_hex, &DOC_COLOR_FROM_HEX);
+    vm.register_builtin_doc("colorToHex", bi_color_to_hex, &DOC_COLOR_TO_HEX);
+    vm.register_builtin_doc("colorBlend", bi_color_blend, &DOC_COLOR_BLEND);
+    vm.register_builtin_doc("loadFont", bi_load_font, &DOC_LOAD_FONT);
 }
 
 // ============ 类型定义 ============

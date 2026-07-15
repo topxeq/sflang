@@ -37,36 +37,489 @@ use std::io::Read;
 use std::sync::Arc;
 
 use crate::builtins_helpers as bh;
+use crate::function::BuiltinDoc;
 use crate::hash;
 use crate::http_lite;
 use crate::value::{error_value, Value};
 use crate::vm::VM;
 
+// ---- S3 函数文档 ----
+
+static DOC_S3_CONNECT: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3Connect(endpoint, region, ak, sk, pathStyle?) -> s3Client",
+    summary: "创建 S3 兼容客户端（AWS S3 / MinIO / R2 / OSS / COS），自动 SigV4 签名。",
+    params: &[
+        ("endpoint", "服务端点，如 \"https://s3.amazonaws.com\" 或 \"http://minio.local:9000\""),
+        ("region", "区域，如 \"us-east-1\""),
+        ("ak", "Access Key"),
+        ("sk", "Secret Key"),
+        ("pathStyle", "可选 bool：是否用 path-style URL（MinIO/R2/OSS/COS 需 true；省略时自动推断）"),
+    ],
+    returns: "s3Client 客户端对象（其他 s3* 函数的首参）；endpoint 解析失败返回 error",
+    examples: &[
+        "var c = s3Connect(\"https://s3.amazonaws.com\", \"us-east-1\", \"AK...\", \"SK...\")",
+        "var c = s3Connect(\"http://minio.local:9000\", \"us-east-1\", \"minio\", \"minio123\")",
+        "var c = s3Connect(\"https://s3.amazonaws.com\", \"us-east-1\", \"AK\", \"SK\", false)  // 显式 virtual-hosted",
+    ],
+    errors: &[
+        "endpoint 解析失败：需以 http:// 或 https:// 开头",
+        "path-style 推断规则：非标准端口 / IP / 非 amazonaws.com 默认为 true（兼容 MinIO）",
+        "请求超时 30 秒（timeout_secs 固定）",
+    ],
+};
+
+static DOC_S3_CLOSE: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3Close(client) -> undefined",
+    summary: "关闭客户端（无实际资源，仅规范占位；客户端由 GC 回收）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+    ],
+    returns: "undefined（恒成功）",
+    examples: &[
+        "var c = s3Connect(...)",
+        "s3Close(c)  // 显式标记不再使用",
+    ],
+    errors: &[
+        "客户端无连接池等需释放资源，close 仅作语义占位",
+    ],
+};
+
+static DOC_S3_LIST_BUCKETS: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3ListBuckets(client) -> array<object>",
+    summary: "列出当前账号下所有 bucket。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+    ],
+    returns: "array<object>：每个元素为 {name: string, createdAt: string}；失败返回 error",
+    examples: &[
+        "var bs = s3ListBuckets(c)  // → [{\"name\":\"photos\",\"createdAt\":\"2024-01-01T00:00:00Z\"}, ...]",
+        "for (var b in s3ListBuckets(c)) { println(b[\"name\"]) }",
+    ],
+    errors: &[
+        "HTTP 401/403：AK/SK 错误或过期、权限不足、签名错误、本地时钟偏差超 15 分钟",
+        "请求失败：endpoint 不可达、网络问题",
+    ],
+};
+
+static DOC_S3_CREATE_BUCKET: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3CreateBucket(client, bucket) -> bool",
+    summary: "创建 bucket。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称（须符合 DNS 命名规则）"),
+    ],
+    returns: "bool：true 创建成功；失败返回 error",
+    examples: &[
+        "s3CreateBucket(c, \"my-new-bucket\")  // → true",
+    ],
+    errors: &[
+        "HTTP 409：bucket 已存在",
+        "bucket 名不合法（含大写字母、下划线等）、权限不足",
+    ],
+};
+
+static DOC_S3_DELETE_BUCKET: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3DeleteBucket(client, bucket) -> bool",
+    summary: "删除空 bucket（bucket 必须为空，否则失败）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "要删除的 bucket 名称"),
+    ],
+    returns: "bool：true 删除成功；失败返回 error",
+    examples: &[
+        "s3DeleteBucket(c, \"my-empty-bucket\")  // → true",
+    ],
+    errors: &[
+        "HTTP 409：bucket 非空（须先删除所有对象）",
+        "bucket 不存在、权限不足",
+    ],
+};
+
+static DOC_S3_BUCKET_EXISTS: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3BucketExists(client, bucket) -> bool",
+    summary: "检查 bucket 是否存在（HEAD 请求）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+    ],
+    returns: "bool：true 存在，false 不存在；其他错误返回 error",
+    examples: &[
+        "if (s3BucketExists(c, \"my-bucket\")) { println(\"存在\") }",
+    ],
+    errors: &[
+        "HTTP 200 → true，HTTP 404 → false，其他状态返回 error",
+        "请求失败：endpoint 不可达、网络问题",
+    ],
+};
+
+static DOC_S3_LIST_OBJECTS: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3ListObjects(client, bucket, prefix?, maxKeys?) -> array<object>",
+    summary: "列出 bucket 内对象（支持前缀过滤与最大数量）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("prefix", "可选：对象 key 前缀过滤（默认空串）"),
+        ("maxKeys", "可选：最大返回数量（默认 1000）"),
+    ],
+    returns: "array<object>：每个元素为 {key:string, size:int, lastModified:string}",
+    examples: &[
+        "s3ListObjects(c, \"photos\")                       // → [{\"key\":\"a.jpg\",\"size\":1024,...}]",
+        "s3ListObjects(c, \"photos\", \"2024/\")              // 只列出 2024/ 前缀",
+        "s3ListObjects(c, \"photos\", \"2024/\", 100)         // 最多 100 个",
+    ],
+    errors: &[
+        "HTTP 404：bucket 不存在、path-style 配置错误（MinIO 应为 true）",
+        "权限不足、endpoint 不可达",
+    ],
+};
+
+static DOC_S3_PUT_OBJECT: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3PutObject(client, bucket, key, body) -> bool",
+    summary: "写入对象（body 可为 string/bytes/byteArray），自动推断 Content-Type。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("key", "对象 key（路径）"),
+        ("body", "对象内容：string / bytes / byteArray"),
+    ],
+    returns: "bool：true 写入成功；失败返回 error",
+    examples: &[
+        "s3PutObject(c, \"logs\", \"2024/app.log\", \"log line 1\\n\")  // 文本",
+        "s3PutObject(c, \"data\", \"blob.bin\", fileReadBytes(\"./data.bin\"))  // 二进制",
+    ],
+    errors: &[
+        "body 类型必须为 string/bytes/byteArray",
+        "HTTP 404：bucket 不存在；权限不足；key 不合法",
+        "单次 PUT 上限 5GB，更大文件用 s3UploadBigFile",
+    ],
+};
+
+static DOC_S3_GET_OBJECT: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3GetObject(client, bucket, key) -> string",
+    summary: "读取对象为字符串（UTF-8 解码，适合文本）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("key", "对象 key"),
+    ],
+    returns: "string：对象内容（UTF-8）；失败返回 error",
+    examples: &[
+        "var text = s3GetObject(c, \"logs\", \"2024/app.log\")  // → \"log line 1\\n\"",
+        "println(s3GetObject(c, \"config\", \"app.json\"))",
+    ],
+    errors: &[
+        "二进制内容会以 UTF-8 lossy 解码（乱码），二进制请用 s3GetObjectBytes",
+        "HTTP 404：bucket/key 不存在；权限不足",
+    ],
+};
+
+static DOC_S3_GET_OBJECT_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3GetObjectBytes(client, bucket, key) -> bytes",
+    summary: "读取对象为 bytes（二进制安全）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("key", "对象 key"),
+    ],
+    returns: "bytes：对象原始字节内容；失败返回 error",
+    examples: &[
+        "var data = s3GetObjectBytes(c, \"data\", \"blob.bin\")",
+        "fileWriteBytes(\"./local.bin\", s3GetObjectBytes(c, \"photos\", \"a.jpg\"))",
+    ],
+    errors: &[
+        "HTTP 404：bucket/key 不存在；权限不足",
+        "适合图片、压缩包等二进制内容",
+    ],
+};
+
+static DOC_S3_UPLOAD_FILE: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3UploadFile(client, bucket, key, localPath) -> bool",
+    summary: "将本地文件上传为对象（单次 PUT，适合 < 5GB）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("key", "目标对象 key"),
+        ("localPath", "本地源文件路径"),
+    ],
+    returns: "bool：true 上传成功；失败返回 error",
+    examples: &[
+        "s3UploadFile(c, \"backup\", \"db.sql.gz\", \"./db.sql.gz\")  // → true",
+        "s3UploadFile(c, \"photos\", \"2024/pic.jpg\", \"C:\\\\Images\\\\pic.jpg\")",
+    ],
+    errors: &[
+        "读取本地文件失败：文件不存在、无读取权限",
+        "单次 PUT 上限 5GB，更大文件用 s3UploadBigFile",
+        "HTTP 404：bucket 不存在；权限不足；网络问题",
+    ],
+};
+
+static DOC_S3_DOWNLOAD_FILE: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3DownloadFile(client, bucket, key, localPath) -> bool",
+    summary: "将对象下载到本地文件。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("key", "对象 key"),
+        ("localPath", "本地目标文件路径"),
+    ],
+    returns: "bool：true 下载成功；失败返回 error",
+    examples: &[
+        "s3DownloadFile(c, \"backup\", \"db.sql.gz\", \"./restored.sql.gz\")  // → true",
+    ],
+    errors: &[
+        "HTTP 404：bucket/key 不存在；网络问题",
+        "写入本地文件失败：路径不存在、无写入权限",
+    ],
+};
+
+static DOC_S3_DELETE_OBJECT: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3DeleteObject(client, bucket, key) -> bool",
+    summary: "删除单个对象。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("key", "要删除的对象 key"),
+    ],
+    returns: "bool：true 删除成功；失败返回 error",
+    examples: &[
+        "s3DeleteObject(c, \"logs\", \"2024/old.log\")  // → true",
+    ],
+    errors: &[
+        "HTTP 404：bucket/key 不存在；权限不足",
+        "删除不存在的 key 通常也返回成功（幂等）",
+    ],
+};
+
+static DOC_S3_DELETE_OBJECTS: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3DeleteObjects(client, bucket, keys) -> object",
+    summary: "批量删除多个对象（逐个 DELETE）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("keys", "array<string>：要删除的 key 列表"),
+    ],
+    returns: "object：{deleted: int, errors: array<{key, msg}>}",
+    examples: &[
+        "var r = s3DeleteObjects(c, \"logs\", [\"a.log\", \"b.log\", \"c.log\"])",
+        "// → {\"deleted\":3, \"errors\":[]}",
+        "println(r[\"deleted\"])  // 成功删除数",
+    ],
+    errors: &[
+        "非字符串 key 会被跳过并记入 errors",
+        "部分删除失败不影响其他 key（继续尝试），失败项记入 errors 数组",
+        "不是 S3 原生批量删除 API，而是循环单删（兼容性更好）",
+    ],
+};
+
+static DOC_S3_OBJECT_EXISTS: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3ObjectExists(client, bucket, key) -> bool",
+    summary: "检查对象是否存在（HEAD 请求）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("key", "对象 key"),
+    ],
+    returns: "bool：true 存在，false 不存在；其他错误返回 error",
+    examples: &[
+        "if (s3ObjectExists(c, \"config\", \"app.json\")) { ... }",
+    ],
+    errors: &[
+        "HTTP 200 → true，HTTP 404 → false，其他状态返回 error",
+        "请求失败：bucket 不存在、网络问题",
+    ],
+};
+
+static DOC_S3_OBJECT_SIZE: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3ObjectSize(client, bucket, key) -> int",
+    summary: "获取对象大小（字节，读取 Content-Length 头）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("key", "对象 key"),
+    ],
+    returns: "int：对象字节数；失败返回 error",
+    examples: &[
+        "var sz = s3ObjectSize(c, \"backup\", \"db.sql.gz\")  // → 1048576",
+    ],
+    errors: &[
+        "HTTP 404：对象不存在（与 bucket 不存在的 404 区分需看消息）",
+        "响应缺少 Content-Length 头时返回 error（服务端异常）",
+    ],
+};
+
+static DOC_S3_COPY_OBJECT: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3CopyObject(client, srcBucket, srcKey, dstBucket, dstKey) -> bool",
+    summary: "服务端拷贝对象（不经过本地，通过 x-amz-copy-source 头）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("srcBucket", "源 bucket"),
+        ("srcKey", "源对象 key"),
+        ("dstBucket", "目标 bucket"),
+        ("dstKey", "目标对象 key"),
+    ],
+    returns: "bool：true 拷贝成功；失败返回 error",
+    examples: &[
+        "s3CopyObject(c, \"photos\", \"a.jpg\", \"photos-backup\", \"2024/a.jpg\")  // → true",
+        "s3CopyObject(c, \"logs\", \"today.log\", \"logs\", \"archive/today.log\")  // 同 bucket 内拷贝",
+    ],
+    errors: &[
+        "源对象不存在、权限不足、目标 bucket 不存在",
+        "跨 region 拷贝可能不支持（取决于服务端）",
+    ],
+};
+
+static DOC_S3_MULTIPART_CREATE: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3MultipartCreate(client, bucket, key, contentType?) -> string",
+    summary: "启动 multipart upload，返回 uploadId（用于后续上传分片）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("key", "目标对象 key"),
+        ("contentType", "可选：Content-Type（默认按扩展名推断）"),
+    ],
+    returns: "string：uploadId（传给 s3MultipartUploadPart / Complete / Abort）；失败返回 error",
+    examples: &[
+        "var uploadId = s3MultipartCreate(c, \"big\", \"video.mp4\", \"video/mp4\")",
+    ],
+    errors: &[
+        "响应中未找到 UploadId 时返回 error（服务端响应格式异常）",
+        "HTTP 404：bucket 不存在；权限不足",
+        "通常用 s3UploadBigFile 便捷封装，无需手动调用此函数",
+    ],
+};
+
+static DOC_S3_MULTIPART_UPLOAD_PART: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3MultipartUploadPart(client, bucket, key, uploadId, partNo, data) -> string",
+    summary: "上传单个分片，返回 ETag（含双引号，用于 Complete）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("key", "目标对象 key"),
+        ("uploadId", "s3MultipartCreate 返回的 uploadId"),
+        ("partNo", "分片编号（1-10000）"),
+        ("data", "分片数据：string / bytes / byteArray"),
+    ],
+    returns: "string：ETag（含双引号）；失败返回 error",
+    examples: &[
+        "var etag = s3MultipartUploadPart(c, \"big\", \"video.mp4\", uploadId, 1, chunk1)",
+    ],
+    errors: &[
+        "partNo 必须在 1-10000 之间",
+        "除最后一片外每片至少 5MB（S3 规范，服务端校验）",
+        "响应缺少 ETag 头返回 error；uploadId 失效、网络问题",
+    ],
+};
+
+static DOC_S3_MULTIPART_COMPLETE: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3MultipartComplete(client, bucket, key, uploadId, parts) -> bool",
+    summary: "完成 multipart upload，合并所有分片为最终对象。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("key", "目标对象 key"),
+        ("uploadId", "s3MultipartCreate 返回的 uploadId"),
+        ("parts", "array<object>：每个元素为 {partNumber:int, etag:string}（来自 UploadPart 返回）"),
+    ],
+    returns: "bool：true 完成成功；失败返回 error",
+    examples: &[
+        "s3MultipartComplete(c, \"big\", \"video.mp4\", uploadId, [{\"partNumber\":1,\"etag\":etag1}, {\"partNumber\":2,\"etag\":etag2}])",
+    ],
+    errors: &[
+        "parts 元素必须含 partNumber(int) 和 etag(string) 字段",
+        "uploadId 失效、part 列表不完整、权限不足",
+        "完成后对象才真正可见，未 complete 的分片会被计费（建议失败时 Abort）",
+    ],
+};
+
+static DOC_S3_MULTIPART_ABORT: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3MultipartAbort(client, bucket, key, uploadId) -> bool",
+    summary: "取消 multipart upload，丢弃已上传分片（避免计费）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("key", "目标对象 key"),
+        ("uploadId", "要取消的 uploadId"),
+    ],
+    returns: "bool：true 取消成功；失败返回 error",
+    examples: &[
+        "s3MultipartAbort(c, \"big\", \"video.mp4\", uploadId)  // 上传中断时清理",
+    ],
+    errors: &[
+        "uploadId 已失效或已完成时仍返回成功（幂等）",
+        "网络问题导致取消失败",
+    ],
+};
+
+static DOC_S3_UPLOAD_BIG_FILE: BuiltinDoc = BuiltinDoc {
+    category: "s3",
+    signature: "s3UploadBigFile(client, bucket, key, localPath, partSize?) -> bool",
+    summary: "大文件分片上传（自动启动/上传/完成，失败自动 abort；< 5MB 回退单次 PUT）。",
+    params: &[
+        ("client", "s3Connect 返回的客户端对象"),
+        ("bucket", "bucket 名称"),
+        ("key", "目标对象 key"),
+        ("localPath", "本地大文件路径"),
+        ("partSize", "可选：分片大小字节（默认 5MB，最小 5MB，最大 5GB）"),
+    ],
+    returns: "bool：true 上传成功；失败返回 error（并已自动 abort）",
+    examples: &[
+        "s3UploadBigFile(c, \"videos\", \"movie.mp4\", \"./movie.mp4\")               // 默认 5MB 分片",
+        "s3UploadBigFile(c, \"videos\", \"movie.mp4\", \"./movie.mp4\", 10*1024*1024)  // 10MB 分片",
+    ],
+    errors: &[
+        "partSize 最小 5MB、最大 5GB；分片数上限 10000（文件过大需增大 partSize）",
+        "文件 < 5MB 自动回退单次 PUT",
+        "任一上传步骤失败自动 abort（清理分片避免计费）",
+        "读取本地文件失败：文件不存在、无权限",
+    ],
+};
+
 /// register 注册所有 S3 内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("s3Connect", bi_s3_connect);
-    vm.register_builtin("s3Close", bi_s3_close);
-    vm.register_builtin("s3ListBuckets", bi_s3_list_buckets);
-    vm.register_builtin("s3CreateBucket", bi_s3_create_bucket);
-    vm.register_builtin("s3DeleteBucket", bi_s3_delete_bucket);
-    vm.register_builtin("s3BucketExists", bi_s3_bucket_exists);
-    vm.register_builtin("s3ListObjects", bi_s3_list_objects);
-    vm.register_builtin("s3PutObject", bi_s3_put_object);
-    vm.register_builtin("s3GetObject", bi_s3_get_object);
-    vm.register_builtin("s3GetObjectBytes", bi_s3_get_object_bytes);
-    vm.register_builtin("s3UploadFile", bi_s3_upload_file);
-    vm.register_builtin("s3DownloadFile", bi_s3_download_file);
-    vm.register_builtin("s3DeleteObject", bi_s3_delete_object);
-    vm.register_builtin("s3DeleteObjects", bi_s3_delete_objects);
-    vm.register_builtin("s3ObjectExists", bi_s3_object_exists);
-    vm.register_builtin("s3ObjectSize", bi_s3_object_size);
-    vm.register_builtin("s3CopyObject", bi_s3_copy_object);
+    vm.register_builtin_doc("s3Connect", bi_s3_connect, &DOC_S3_CONNECT);
+    vm.register_builtin_doc("s3Close", bi_s3_close, &DOC_S3_CLOSE);
+    vm.register_builtin_doc("s3ListBuckets", bi_s3_list_buckets, &DOC_S3_LIST_BUCKETS);
+    vm.register_builtin_doc("s3CreateBucket", bi_s3_create_bucket, &DOC_S3_CREATE_BUCKET);
+    vm.register_builtin_doc("s3DeleteBucket", bi_s3_delete_bucket, &DOC_S3_DELETE_BUCKET);
+    vm.register_builtin_doc("s3BucketExists", bi_s3_bucket_exists, &DOC_S3_BUCKET_EXISTS);
+    vm.register_builtin_doc("s3ListObjects", bi_s3_list_objects, &DOC_S3_LIST_OBJECTS);
+    vm.register_builtin_doc("s3PutObject", bi_s3_put_object, &DOC_S3_PUT_OBJECT);
+    vm.register_builtin_doc("s3GetObject", bi_s3_get_object, &DOC_S3_GET_OBJECT);
+    vm.register_builtin_doc("s3GetObjectBytes", bi_s3_get_object_bytes, &DOC_S3_GET_OBJECT_BYTES);
+    vm.register_builtin_doc("s3UploadFile", bi_s3_upload_file, &DOC_S3_UPLOAD_FILE);
+    vm.register_builtin_doc("s3DownloadFile", bi_s3_download_file, &DOC_S3_DOWNLOAD_FILE);
+    vm.register_builtin_doc("s3DeleteObject", bi_s3_delete_object, &DOC_S3_DELETE_OBJECT);
+    vm.register_builtin_doc("s3DeleteObjects", bi_s3_delete_objects, &DOC_S3_DELETE_OBJECTS);
+    vm.register_builtin_doc("s3ObjectExists", bi_s3_object_exists, &DOC_S3_OBJECT_EXISTS);
+    vm.register_builtin_doc("s3ObjectSize", bi_s3_object_size, &DOC_S3_OBJECT_SIZE);
+    vm.register_builtin_doc("s3CopyObject", bi_s3_copy_object, &DOC_S3_COPY_OBJECT);
     // Multipart Upload（大文件分片上传）
-    vm.register_builtin("s3MultipartCreate", bi_s3_multipart_create);
-    vm.register_builtin("s3MultipartUploadPart", bi_s3_multipart_upload_part);
-    vm.register_builtin("s3MultipartComplete", bi_s3_multipart_complete);
-    vm.register_builtin("s3MultipartAbort", bi_s3_multipart_abort);
-    vm.register_builtin("s3UploadBigFile", bi_s3_upload_big_file);
+    vm.register_builtin_doc("s3MultipartCreate", bi_s3_multipart_create, &DOC_S3_MULTIPART_CREATE);
+    vm.register_builtin_doc("s3MultipartUploadPart", bi_s3_multipart_upload_part, &DOC_S3_MULTIPART_UPLOAD_PART);
+    vm.register_builtin_doc("s3MultipartComplete", bi_s3_multipart_complete, &DOC_S3_MULTIPART_COMPLETE);
+    vm.register_builtin_doc("s3MultipartAbort", bi_s3_multipart_abort, &DOC_S3_MULTIPART_ABORT);
+    vm.register_builtin_doc("s3UploadBigFile", bi_s3_upload_big_file, &DOC_S3_UPLOAD_BIG_FILE);
 }
 
 // ============ S3Client 结构 ============

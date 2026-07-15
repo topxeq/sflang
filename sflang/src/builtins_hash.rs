@@ -16,20 +16,166 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::builtins_helpers as bh;
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 use crate::vm::VM;
 
+// ---- 哈希函数文档 ----
+
+static DOC_MD5: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "md5(data) -> bytes",
+    summary: "计算 MD5 哈希，返回 16 字节 bytes。",
+    params: &[("data", "string/bytes/byteArray：待哈希的数据（string 取 UTF-8 字节）")],
+    returns: "bytes：16 字节 MD5 摘要",
+    examples: &[
+        "md5(\"abc\")          → 16 字节 bytes",
+        "bytesHex(md5(\"abc\")) → \"900150983cd24fb0d6963f7d28e17f72\"",
+    ],
+    errors: &["MD5 不再安全，勿用于密码存储；仅用于校验和/去重"],
+};
+
+static DOC_SHA1: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "sha1(data) -> bytes",
+    summary: "计算 SHA-1 哈希，返回 20 字节 bytes。",
+    params: &[("data", "string/bytes/byteArray：待哈希的数据（string 取 UTF-8 字节）")],
+    returns: "bytes：20 字节 SHA-1 摘要",
+    examples: &[
+        "sha1(\"abc\")          → 20 字节 bytes",
+        "bytesHex(sha1(\"abc\")) → \"a9993e364706816aba3e25717850c26c9cd0d89d\"",
+    ],
+    errors: &["SHA-1 已不推荐用于安全场景；新代码建议用 sha256"],
+};
+
+static DOC_SHA256: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "sha256(data) -> bytes",
+    summary: "计算 SHA-256 哈希，返回 32 字节 bytes。",
+    params: &[("data", "string/bytes/byteArray：待哈希的数据（string 取 UTF-8 字节）")],
+    returns: "bytes：32 字节 SHA-256 摘要",
+    examples: &[
+        "sha256(\"abc\")          → 32 字节 bytes",
+        "bytesHex(sha256(\"abc\")) → \"ba7816bf...ad2347\"（64 位十六进制）",
+    ],
+    errors: &["参数须为 string/bytes/byteArray"],
+};
+
+static DOC_MD5_HEX: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "md5Hex(data) -> string",
+    summary: "计算 MD5 哈希并返回 32 字符小写十六进制字符串。",
+    params: &[("data", "string/bytes/byteArray：待哈希的数据（string 取 UTF-8 字节）")],
+    returns: "string：32 字符小写十六进制摘要",
+    examples: &[
+        "md5Hex(\"abc\") → \"900150983cd24fb0d6963f7d28e17f72\"",
+    ],
+    errors: &["等价于 bytesHex(md5(data))；MD5 非安全算法"],
+};
+
+static DOC_SHA1_HEX: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "sha1Hex(data) -> string",
+    summary: "计算 SHA-1 哈希并返回 40 字符小写十六进制字符串。",
+    params: &[("data", "string/bytes/byteArray：待哈希的数据（string 取 UTF-8 字节）")],
+    returns: "string：40 字符小写十六进制摘要",
+    examples: &[
+        "sha1Hex(\"abc\") → \"a9993e364706816aba3e25717850c26c9cd0d89d\"",
+    ],
+    errors: &["等价于 bytesHex(sha1(data))"],
+};
+
+static DOC_SHA256_HEX: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "sha256Hex(data) -> string",
+    summary: "计算 SHA-256 哈希并返回 64 字符小写十六进制字符串。",
+    params: &[("data", "string/bytes/byteArray：待哈希的数据（string 取 UTF-8 字节）")],
+    returns: "string：64 字符小写十六进制摘要",
+    examples: &[
+        "sha256Hex(\"abc\") → \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"",
+    ],
+    errors: &["等价于 bytesHex(sha256(data))"],
+};
+
+static DOC_HMAC_SHA256: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "hmacSha256(key, message) -> bytes",
+    summary: "计算 HMAC-SHA256（RFC 2104），返回 32 字节 bytes。",
+    params: &[
+        ("key", "string/bytes/byteArray：HMAC 密钥"),
+        ("message", "string/bytes/byteArray：待认证的消息"),
+    ],
+    returns: "bytes：32 字节 HMAC-SHA256 摘要",
+    examples: &[
+        "bytesHex(hmacSha256(\"key\", \"The quick brown fox\")) → \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\"",
+    ],
+    errors: &["参数顺序为 key 在前、message 在后"],
+};
+
+static DOC_HMAC_SHA256_HEX: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "hmacSha256Hex(key, message) -> string",
+    summary: "计算 HMAC-SHA256 并返回 64 字符小写十六进制字符串。",
+    params: &[
+        ("key", "string/bytes/byteArray：HMAC 密钥"),
+        ("message", "string/bytes/byteArray：待认证的消息"),
+    ],
+    returns: "string：64 字符小写十六进制 HMAC-SHA256 摘要",
+    examples: &[
+        "hmacSha256Hex(\"key\", \"The quick brown fox\") → \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\"",
+    ],
+    errors: &["参数顺序为 key 在前、message 在后"],
+};
+
+static DOC_GET_OTP_CODE: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "getOtpCode(secret, timestamp?) -> string",
+    summary: "生成 TOTP（RFC 6238）6 位验证码，左侧补零。",
+    params: &[
+        ("secret", "Base32 编码的密钥字符串（字母表 A-Z, 2-7）"),
+        ("timestamp", "可选 int：Unix 秒；省略则用当前系统时间"),
+    ],
+    returns: "string：6 位数字验证码（左侧补零）",
+    examples: &[
+        "getOtpCode(\"JBSWY3DPEHPK3PXP\", 1234567890) → 固定 6 位码",
+        "getOtpCode(\"JBSWY3DPEHPK3PXP\")            → 用当前时间的 6 位码",
+    ],
+    errors: &[
+        "secret 必须是合法 Base32（A-Z, 2-7），空格和 = 填充会被忽略",
+        "解码后密钥为空时返回 error",
+    ],
+};
+
+static DOC_CHECK_OTP_CODE: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "checkOtpCode(secret, code, timestamp?) -> bool",
+    summary: "验证 TOTP 码是否匹配（比较前会 trim code），返回 bool。",
+    params: &[
+        ("secret", "Base32 编码的密钥字符串（字母表 A-Z, 2-7）"),
+        ("code", "用户输入的 6 位字符串（前后空白会被 trim）"),
+        ("timestamp", "可选 int：Unix 秒；省略则用当前系统时间"),
+    ],
+    returns: "bool：code 与该时间窗口的预期值一致返回 true",
+    examples: &[
+        "checkOtpCode(\"JBSWY3DPEHPK3PXP\", getOtpCode(\"JBSWY3DPEHPK3PXP\")) → true",
+    ],
+    errors: &[
+        "TOTP 有 30 秒时间窗口，时钟漂移可能误判",
+        "secret 必须是合法 Base32，否则返回 error",
+    ],
+};
+
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("md5", bi_md5);
-    vm.register_builtin("sha1", bi_sha1);
-    vm.register_builtin("sha256", bi_sha256);
-    vm.register_builtin("md5Hex", bi_md5_hex);
-    vm.register_builtin("sha1Hex", bi_sha1_hex);
-    vm.register_builtin("sha256Hex", bi_sha256_hex);
-    vm.register_builtin("hmacSha256", bi_hmac_sha256);
-    vm.register_builtin("hmacSha256Hex", bi_hmac_sha256_hex);
-    vm.register_builtin("getOtpCode", bi_get_otp_code);
-    vm.register_builtin("checkOtpCode", bi_check_otp_code);
+    vm.register_builtin_doc("md5", bi_md5, &DOC_MD5);
+    vm.register_builtin_doc("sha1", bi_sha1, &DOC_SHA1);
+    vm.register_builtin_doc("sha256", bi_sha256, &DOC_SHA256);
+    vm.register_builtin_doc("md5Hex", bi_md5_hex, &DOC_MD5_HEX);
+    vm.register_builtin_doc("sha1Hex", bi_sha1_hex, &DOC_SHA1_HEX);
+    vm.register_builtin_doc("sha256Hex", bi_sha256_hex, &DOC_SHA256_HEX);
+    vm.register_builtin_doc("hmacSha256", bi_hmac_sha256, &DOC_HMAC_SHA256);
+    vm.register_builtin_doc("hmacSha256Hex", bi_hmac_sha256_hex, &DOC_HMAC_SHA256_HEX);
+    vm.register_builtin_doc("getOtpCode", bi_get_otp_code, &DOC_GET_OTP_CODE);
+    vm.register_builtin_doc("checkOtpCode", bi_check_otp_code, &DOC_CHECK_OTP_CODE);
 }
 
 /// to_bytes 将参数转为字节 Vec。

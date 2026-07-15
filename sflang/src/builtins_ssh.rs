@@ -15,25 +15,337 @@
 
 use std::sync::Arc;
 
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 use crate::vm::VM;
 
+// ---- SSH 函数文档 ----
+
+static DOC_SSH_RUN: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshRun(\"--host=...\", \"--user=...\", \"--password=...\", command, opts...) -> string",
+    summary: "在远程主机执行 shell 命令，返回 stdout 输出（含 stderr）。",
+    params: &[
+        ("--host", "远程主机地址（必填）"),
+        ("--user", "登录用户名（必填）"),
+        ("--password", "密码认证（与 --key 二选一）"),
+        ("--key", "私钥文件路径（与 --password 二选一）"),
+        ("--keyPassphrase", "私钥口令（可选，私钥加密时）"),
+        ("--port", "SSH 端口，默认 22"),
+        ("--cmdTimeout", "命令超时秒数，默认 0（无超时）"),
+        ("command", "要执行的 shell 命令（非 -- 开头的字符串参数）"),
+    ],
+    returns: "string：命令的标准输出（含合并的 stderr）；失败返回 error",
+    examples: &[
+        "sshRun(\"--host=10.0.0.1\", \"--user=root\", \"--password=secret\", \"uname -a\")",
+        "sshRun(\"--host=10.0.0.1\", \"--user=app\", \"--key=/home/app/.ssh/id_rsa\", \"ls -la /var/log\")",
+        "sshRun(\"--host=10.0.0.1\", \"--user=app\", \"--password=secret\", \"--cmdTimeout=10\", \"sleep 999\")",
+    ],
+    errors: &[
+        "SSH 连接失败：网络不通 / 端口错误（返回 error 而非抛异常）",
+        "认证失败：密码或私钥被拒绝",
+        "缺少 --host / --user 参数；未提供 --password 或 --key",
+        "命令超时（--cmdTimeout 到期）",
+    ],
+};
+
+static DOC_SSH_LIST: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshList(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/dir\") -> array<string>",
+    summary: "通过 SFTP 列出远程目录下的文件名（不含子目录递归）。",
+    params: &[
+        ("--host/--user/--password", "认证参数（同 sshRun）"),
+        ("--remotePath", "要列出的远程目录路径，默认 /"),
+    ],
+    returns: "array<string>：目录下条目的文件名；失败返回 error",
+    examples: &[
+        "sshList(\"--host=10.0.0.1\", \"--user=root\", \"--password=secret\", \"--remotePath=/var/log\")  // → [\"syslog\",\"auth.log\"]",
+        "sshList(\"--host=10.0.0.1\", \"--user=app\", \"--password=secret\", \"--remotePath=/home/app\")",
+    ],
+    errors: &[
+        "SFTP 读取目录失败：路径不存在 / 权限不足",
+        "认证 / 连接失败（同 sshRun）",
+    ],
+};
+
+static DOC_SSH_UPLOAD: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshUpload(\"--host=...\", \"--user=...\", \"--password=...\", \"--localPath=...\", \"--remotePath=...\") -> undefined",
+    summary: "用 SFTP 将本地文件上传到远程主机。",
+    params: &[
+        ("--host/--user/--password", "认证参数"),
+        ("--localPath", "本地源文件路径（必填）"),
+        ("--remotePath", "远程目标文件路径（必填）"),
+    ],
+    returns: "undefined：上传成功；失败返回 error",
+    examples: &[
+        "sshUpload(\"--host=10.0.0.1\", \"--user=app\", \"--password=secret\", \"--localPath=./config.cfg\", \"--remotePath=/etc/app/config.cfg\")",
+        "sshUpload(\"--host=10.0.0.1\", \"--user=root\", \"--key=/home/u/.ssh/id\", \"--localPath=C:\\\\data.zip\", \"--remotePath=/tmp/data.zip\")",
+    ],
+    errors: &[
+        "读取本地文件失败：路径不存在 / 权限不足",
+        "SFTP 创建 / 写入失败：远程路径父目录不存在 / 权限不足",
+        "缺少 --localPath 或 --remotePath 参数",
+    ],
+};
+
+static DOC_SSH_DOWNLOAD: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshDownload(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=...\", \"--localPath=...\") -> undefined",
+    summary: "用 SFTP 将远程文件下载到本地。",
+    params: &[
+        ("--host/--user/--password", "认证参数"),
+        ("--remotePath", "远程源文件路径（必填）"),
+        ("--localPath", "本地目标文件路径（必填）"),
+    ],
+    returns: "undefined：下载成功；失败返回 error",
+    examples: &[
+        "sshDownload(\"--host=10.0.0.1\", \"--user=app\", \"--password=secret\", \"--remotePath=/var/log/app.log\", \"--localPath=./app.log\")",
+    ],
+    errors: &[
+        "SFTP 读取失败：远程文件不存在 / 权限不足",
+        "写入本地文件失败：路径不可写 / 磁盘满",
+        "缺少 --remotePath 或 --localPath 参数",
+    ],
+};
+
+static DOC_SSH_MKDIR: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshMkdir(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/dir\") -> undefined",
+    summary: "用 SFTP 在远程创建单个目录（父目录必须存在，非递归）。",
+    params: &[
+        ("--host/--user/--password", "认证参数"),
+        ("--remotePath", "要创建的远程目录路径（必填）"),
+    ],
+    returns: "undefined：创建成功；失败返回 error",
+    examples: &[
+        "sshMkdir(\"--host=10.0.0.1\", \"--user=root\", \"--password=secret\", \"--remotePath=/opt/newapp\")",
+    ],
+    errors: &[
+        "SFTP 创建目录失败：父目录不存在（如需递归用 sshEnsureMakeDirs）/ 权限不足 / 目录已存在",
+        "缺少 --remotePath 参数",
+    ],
+};
+
+static DOC_SSH_REMOVE: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshRemove(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/path\") -> undefined",
+    summary: "删除远程文件或目录（自动尝试先删文件再删目录）。",
+    params: &[
+        ("--host/--user/--password", "认证参数"),
+        ("--remotePath", "要删除的远程文件或目录路径（必填）"),
+    ],
+    returns: "undefined：删除成功；失败返回 error",
+    examples: &[
+        "sshRemove(\"--host=10.0.0.1\", \"--user=root\", \"--password=secret\", \"--remotePath=/tmp/old.log\")",
+        "sshRemove(\"--host=10.0.0.1\", \"--user=root\", \"--password=secret\", \"--remotePath=/opt/emptydir\")",
+    ],
+    errors: &[
+        "SFTP 删除失败：路径不存在 / 权限不足 / 目录非空",
+        "内部先尝试 remove_file 再 remove_dir，两者都失败才报错",
+    ],
+};
+
+static DOC_SSH_MOVE: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshMove(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/a\", \"--targetPath=/b\") -> undefined",
+    summary: "移动或重命名远程文件 / 目录（SFTP rename）。",
+    params: &[
+        ("--host/--user/--password", "认证参数"),
+        ("--remotePath", "源路径（必填）"),
+        ("--targetPath", "目标路径（必填）"),
+    ],
+    returns: "undefined：移动成功；失败返回 error",
+    examples: &[
+        "sshMove(\"--host=10.0.0.1\", \"--user=root\", \"--password=secret\", \"--remotePath=/tmp/a.log\", \"--targetPath=/var/log/a.log\")",
+        "sshMove(\"--host=10.0.0.1\", \"--user=u\", \"--password=p\", \"--remotePath=/old/name\", \"--targetPath=/new/name\")  // 重命名",
+    ],
+    errors: &[
+        "SFTP 移动失败：源路径不存在 / 目标路径已存在 / 跨文件系统 / 权限不足",
+        "缺少 --remotePath 或 --targetPath 参数",
+    ],
+};
+
+static DOC_SSH_SYNC: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshSync(\"--host=...\", \"--localPath=...\", \"--remotePath=...\", \"--direction=push|pull\", opts...) -> array<string>",
+    summary: "在本地与远程之间同步目录（push 本地→远程，pull 远程→本地）。",
+    params: &[
+        ("--host/--user/--password", "认证参数"),
+        ("--localPath", "本地目录（必填）"),
+        ("--remotePath", "远程目录（必填）"),
+        ("--direction", "方向：push（默认）或 pull"),
+        ("--recursive", "开关：递归同步子目录"),
+        ("--delete", "开关：删除目标侧多余的文件（镜像同步）"),
+        ("--dryRun", "开关：只输出将执行的操作，不实际写入"),
+    ],
+    returns: "array<string>：同步操作日志（如 PUT local → remote (N bytes)、DEL path）",
+    examples: &[
+        "sshSync(\"--host=10.0.0.1\", \"--user=app\", \"--password=secret\", \"--localPath=./www\", \"--remotePath=/var/www\", \"--direction=push\", \"--recursive\", \"--delete\")",
+        "sshSync(\"--host=h\", \"--user=u\", \"--password=p\", \"--localPath=./bak\", \"--remotePath=/data\", \"--direction=pull\", \"--dryRun\")  // 预演",
+    ],
+    errors: &[
+        "--direction 只支持 push 或 pull，其他值返回 error",
+        "读取本地 / 远程目录失败：路径不存在 / 权限不足",
+        "缺少 --localPath 或 --remotePath 参数",
+    ],
+};
+
+static DOC_SSH_CREATE_FILE: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshCreateFile(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/f\", \"--content=...\") -> undefined",
+    summary: "在远程创建文件并写入指定内容（通过 SFTP）。",
+    params: &[
+        ("--host/--user/--password", "认证参数"),
+        ("--remotePath", "远程目标文件路径（必填）"),
+        ("--content", "文件内容字符串（默认空串）"),
+    ],
+    returns: "undefined：创建成功；失败返回 error",
+    examples: &[
+        "sshCreateFile(\"--host=10.0.0.1\", \"--user=root\", \"--password=secret\", \"--remotePath=/etc/myapp.conf\", \"--content=port=8080\\nlog=info\")",
+        "sshCreateFile(\"--host=h\", \"--user=u\", \"--password=p\", \"--remotePath=/tmp/empty.txt\", \"--content=\")  // 创建空文件",
+    ],
+    errors: &[
+        "SFTP 创建 / 写入失败：远程父目录不存在 / 权限不足",
+        "缺少 --remotePath 参数",
+    ],
+};
+
+static DOC_SSH_UPLOAD_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshUploadBytes(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/f\", dataBytes) -> undefined",
+    summary: "用 SFTP 将 bytes/byteArray 内存数据上传到远程文件。",
+    params: &[
+        ("--host/--user/--password", "认证参数"),
+        ("--remotePath", "远程目标文件路径（必填）"),
+        ("dataBytes", "要上传的 bytes 或 byteArray（最后一个非 -- 开头的参数）"),
+    ],
+    returns: "undefined：上传成功；失败返回 error",
+    examples: &[
+        "sshUploadBytes(\"--host=10.0.0.1\", \"--user=app\", \"--password=secret\", \"--remotePath=/tmp/data.bin\", fileReadBytes(\"./local.bin\"))",
+    ],
+    errors: &[
+        "缺少 bytes/byteArray 参数（最后一个非 -- 开头的参数）",
+        "SFTP 创建 / 写入失败：远程路径无效 / 权限不足",
+        "缺少 --remotePath 参数",
+    ],
+};
+
+static DOC_SSH_DOWNLOAD_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshDownloadBytes(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/f\") -> bytes",
+    summary: "用 SFTP 下载远程文件到内存 bytes（不落本地磁盘）。",
+    params: &[
+        ("--host/--user/--password", "认证参数"),
+        ("--remotePath", "远程源文件路径（必填）"),
+    ],
+    returns: "bytes：文件全部内容的字节串；失败返回 error",
+    examples: &[
+        "var data = sshDownloadBytes(\"--host=10.0.0.1\", \"--user=app\", \"--password=secret\", \"--remotePath=/tmp/data.bin\")",
+        "fileWriteBytes(\"./local.bin\", sshDownloadBytes(\"--host=h\", \"--user=u\", \"--password=p\", \"--remotePath=/tmp/x\"))",
+    ],
+    errors: &[
+        "SFTP 读取失败：远程文件不存在 / 权限不足",
+        "缺少 --remotePath 参数",
+    ],
+};
+
+static DOC_SSH_IF_FILE_EXISTS: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshIfFileExists(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/path\") -> bool",
+    summary: "检查远程文件或目录是否存在（通过 SFTP stat）。",
+    params: &[
+        ("--host/--user/--password", "认证参数"),
+        ("--remotePath", "要检查的远程路径（必填）"),
+    ],
+    returns: "bool：true 存在（文件或目录），false 不存在；连接失败返回 error",
+    examples: &[
+        "if (sshIfFileExists(\"--host=10.0.0.1\", \"--user=u\", \"--password=p\", \"--remotePath=/etc/myapp.conf\")) { ... }",
+    ],
+    errors: &[
+        "连接 / 认证失败返回 error（与文件不存在的 false 区分）",
+        "缺少 --remotePath 参数",
+    ],
+};
+
+static DOC_SSH_GET_FILE_INFO: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshGetFileInfo(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/path\") -> map",
+    summary: "获取远程文件信息（大小、修改时间、是否目录等）。",
+    params: &[
+        ("--host/--user/--password", "认证参数"),
+        ("--remotePath", "远程文件或目录路径（必填）"),
+    ],
+    returns: "map：{size:int, mtime:int, atime:int, isDir:bool, isFile:bool, isSymlink:bool}；文件不存在返回 error",
+    examples: &[
+        "var info = sshGetFileInfo(\"--host=10.0.0.1\", \"--user=u\", \"--password=p\", \"--remotePath=/var/log/syslog\")",
+        "if (info[\"isDir\"]) { ... }",
+        "println(info[\"size\"])  // 文件字节数",
+    ],
+    errors: &[
+        "SFTP 获取文件信息失败：文件不存在 / 权限不足",
+        "size/mtime/atime 可能为 0（服务器未返回时）",
+        "缺少 --remotePath 参数",
+    ],
+};
+
+static DOC_SSH_ENSURE_MAKE_DIRS: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshEnsureMakeDirs(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/a/b/c\") -> undefined",
+    summary: "递归创建远程目录（类似 mkdir -p），已存在的目录跳过。",
+    params: &[
+        ("--host/--user/--password", "认证参数"),
+        ("--remotePath", "要递归创建的远程目录路径（必填）"),
+    ],
+    returns: "undefined：创建成功；失败返回 error",
+    examples: &[
+        "sshEnsureMakeDirs(\"--host=10.0.0.1\", \"--user=root\", \"--password=secret\", \"--remotePath=/opt/myapp/logs/2024\")",
+        "sshEnsureMakeDirs(\"--host=h\", \"--user=u\", \"--password=p\", \"--remotePath=/a/b/c\")  // 逐级创建",
+    ],
+    errors: &[
+        "与 sshMkdir 区别：本函数递归创建父目录（mkdir -p 语义）",
+        "中间某级创建失败：权限不足 / 已存在同名文件（非目录）",
+        "缺少 --remotePath 参数",
+    ],
+};
+
+static DOC_SSH_JOIN_PATH: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshJoinPath(base, sub) -> string",
+    summary: "拼接远程路径（固定用 / 分隔符，自动处理重复或缺失的斜杠）。",
+    params: &[
+        ("base", "基础路径（字符串）"),
+        ("sub", "要拼接的子路径（字符串）"),
+    ],
+    returns: "string：拼接后的路径（智能处理首尾斜杠）",
+    examples: &[
+        "sshJoinPath(\"/home/user\", \"data\")        // → \"/home/user/data\"",
+        "sshJoinPath(\"/home/user/\", \"/data\")      // → \"/home/user/data\"",
+        "sshJoinPath(\"/home/user\", \"sub/dir/\")    // → \"/home/user/sub/dir/\"",
+    ],
+    errors: &[
+        "纯字符串操作，不需要 SSH 连接（速度极快）",
+        "参数应为 string 类型，类型不符返回 error",
+        "需要 2 个参数 (base, sub)",
+    ],
+};
+
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("sshRun", bi_ssh_run);
-    vm.register_builtin("sshList", bi_ssh_list);
-    vm.register_builtin("sshUpload", ssh_upload_impl);
-    vm.register_builtin("sshDownload", ssh_download_impl);
-    vm.register_builtin("sshMkdir", bi_ssh_mkdir);
-    vm.register_builtin("sshRemove", bi_ssh_remove);
-    vm.register_builtin("sshMove", bi_ssh_move);
-    vm.register_builtin("sshSync", bi_ssh_sync);
-    vm.register_builtin("sshCreateFile", bi_ssh_create_file);
-    vm.register_builtin("sshUploadBytes", bi_ssh_upload_bytes);
-    vm.register_builtin("sshDownloadBytes", bi_ssh_download_bytes);
-    vm.register_builtin("sshIfFileExists", bi_ssh_if_file_exists);
-    vm.register_builtin("sshGetFileInfo", bi_ssh_get_file_info);
-    vm.register_builtin("sshEnsureMakeDirs", bi_ssh_ensure_make_dirs);
-    vm.register_builtin("sshJoinPath", bi_ssh_join_path);
+    vm.register_builtin_doc("sshRun", bi_ssh_run, &DOC_SSH_RUN);
+    vm.register_builtin_doc("sshList", bi_ssh_list, &DOC_SSH_LIST);
+    vm.register_builtin_doc("sshUpload", ssh_upload_impl, &DOC_SSH_UPLOAD);
+    vm.register_builtin_doc("sshDownload", ssh_download_impl, &DOC_SSH_DOWNLOAD);
+    vm.register_builtin_doc("sshMkdir", bi_ssh_mkdir, &DOC_SSH_MKDIR);
+    vm.register_builtin_doc("sshRemove", bi_ssh_remove, &DOC_SSH_REMOVE);
+    vm.register_builtin_doc("sshMove", bi_ssh_move, &DOC_SSH_MOVE);
+    vm.register_builtin_doc("sshSync", bi_ssh_sync, &DOC_SSH_SYNC);
+    vm.register_builtin_doc("sshCreateFile", bi_ssh_create_file, &DOC_SSH_CREATE_FILE);
+    vm.register_builtin_doc("sshUploadBytes", bi_ssh_upload_bytes, &DOC_SSH_UPLOAD_BYTES);
+    vm.register_builtin_doc("sshDownloadBytes", bi_ssh_download_bytes, &DOC_SSH_DOWNLOAD_BYTES);
+    vm.register_builtin_doc("sshIfFileExists", bi_ssh_if_file_exists, &DOC_SSH_IF_FILE_EXISTS);
+    vm.register_builtin_doc("sshGetFileInfo", bi_ssh_get_file_info, &DOC_SSH_GET_FILE_INFO);
+    vm.register_builtin_doc("sshEnsureMakeDirs", bi_ssh_ensure_make_dirs, &DOC_SSH_ENSURE_MAKE_DIRS);
+    vm.register_builtin_doc("sshJoinPath", bi_ssh_join_path, &DOC_SSH_JOIN_PATH);
 }
 
 fn get_switch(args: &[Value], key: &str, default: &str) -> String {

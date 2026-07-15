@@ -37,46 +37,468 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::builtins_helpers as bh;
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 use crate::vm::VM;
 
+// ---- 文件 IO 函数文档 ----
+
+static DOC_READ_FILE: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "readFile(path) -> string",
+    summary: "读取整个文件为 UTF-8 字符串。适合小文件一次性读取。",
+    params: &[("path", "文件路径（相对/绝对）")],
+    returns: "string 文件内容（UTF-8 解码）",
+    examples: &[
+        "readFile(\"data.txt\")   → \"hello\\nworld\"",
+        "// 大文件或二进制文件请用 readFileBytes / openFile",
+    ],
+    errors: &[
+        "文件不存在或权限不足返回 error（错误信息含可能原因）",
+        "非 UTF-8 文件解码会替换非法字节，二进制请用 readFileBytes",
+    ],
+};
+
+static DOC_WRITE_FILE: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "writeFile(path, content) -> undefined",
+    summary: "将字符串覆盖写入文件（不存在则创建，存在则清空重写）。",
+    params: &[
+        ("path", "文件路径"),
+        ("content", "要写入的字符串（按 UTF-8 编码）"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "writeFile(\"out.txt\", \"hello\")",
+        "writeFile(\"log\", data)   // 清空后写入",
+    ],
+    errors: &[
+        "参数顺序：path 在前，content 在后",
+        "目录不存在或权限不足返回 error；会清空旧内容",
+    ],
+};
+
+static DOC_APPEND_FILE: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "appendFile(path, content) -> undefined",
+    summary: "将字符串追加到文件末尾（不存在则创建）。",
+    params: &[
+        ("path", "文件路径"),
+        ("content", "要追加的字符串"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "appendFile(\"log.txt\", \"new line\\n\")",
+        "// 多次追加累积内容，不会清空已有数据",
+    ],
+    errors: &[
+        "参数顺序：path 在前，content 在后",
+        "目录不存在或权限不足返回 error",
+    ],
+};
+
+static DOC_FILE_EXISTS: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "fileExists(path) -> bool",
+    summary: "判断路径是否存在（文件或目录均可）。",
+    params: &[("path", "待检查路径")],
+    returns: "bool 路径存在返回 true",
+    examples: &[
+        "fileExists(\"data.txt\")  → true",
+        "fileExists(\"/no/such\")    → false",
+    ],
+    errors: &[
+        "不区分文件/目录；需明确类型请用 isFile / isDir",
+        "权限不足无法访问时返回 false（与不存在难以区分）",
+    ],
+};
+
+static DOC_IS_FILE: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "isFile(path) -> bool",
+    summary: "判断路径是否为文件（不存在返回 false）。",
+    params: &[("path", "待检查路径")],
+    returns: "bool 路径存在且为文件返回 true",
+    examples: &[
+        "isFile(\"data.txt\")   → true",
+        "isFile(\"/some/dir\")    → false",
+    ],
+    errors: &[],
+};
+
+static DOC_IS_DIR: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "isDir(path) -> bool",
+    summary: "判断路径是否为目录（不存在返回 false）。",
+    params: &[("path", "待检查路径")],
+    returns: "bool 路径存在且为目录返回 true",
+    examples: &[
+        "isDir(\"/tmp\")        → true",
+        "isDir(\"data.txt\")    → false",
+    ],
+    errors: &[],
+};
+
+static DOC_GET_FILE_INFO: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "getFileInfo(path) -> map",
+    summary: "获取文件元信息，返回含 size/modified/isDir/isFile/isReadOnly 的 map。",
+    params: &[("path", "文件或目录路径")],
+    returns: "map：size(字节) / modified(Unix秒) / isDir(bool) / isFile(bool) / isReadOnly(bool)",
+    examples: &[
+        "var info = getFileInfo(\"a.txt\")",
+        "info.size    // 文件字节数",
+        "info.modified // 修改时间戳（秒）",
+    ],
+    errors: &[
+        "文件不存在或权限不足返回 error",
+    ],
+};
+
+static DOC_GET_FILE_SIZE: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "getFileSize(path) -> int",
+    summary: "获取文件大小（字节数）。",
+    params: &[("path", "文件路径")],
+    returns: "int 文件字节数",
+    examples: &[
+        "getFileSize(\"a.txt\")  → 1024",
+    ],
+    errors: &[
+        "文件不存在或权限不足返回 error",
+    ],
+};
+
+static DOC_COPY_FILE: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "copyFile(src, dst) -> undefined",
+    summary: "复制文件（覆盖目标，目标目录须存在）。",
+    params: &[
+        ("src", "源文件路径（须为文件）"),
+        ("dst", "目标路径（目录须存在，存在同名文件会被覆盖）"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "copyFile(\"a.txt\", \"backup/a.txt\")",
+    ],
+    errors: &[
+        "参数顺序：src 在前，dst 在后",
+        "源文件不存在或目标目录不存在返回 error；不支持复制目录",
+    ],
+};
+
+static DOC_DELETE_FILE: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "deleteFile(path) -> undefined",
+    summary: "删除文件（不存在则报错）。删除目录请用 removeDir。",
+    params: &[("path", "要删除的文件路径")],
+    returns: "undefined",
+    examples: &[
+        "deleteFile(\"tmp.txt\")",
+    ],
+    errors: &[
+        "文件不存在返回 error（不静默成功）",
+        "删除目录会失败，目录请用 removeDir",
+    ],
+};
+
+static DOC_READ_LINES: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "readLines(path) -> array<string>",
+    summary: "按行读取文件为数组（兼容 \\n 与 \\r\\n，去掉每行换行符）。",
+    params: &[("path", "文本文件路径")],
+    returns: "array<string> 行数组（空文件返回空数组）",
+    examples: &[
+        "readLines(\"a.txt\")    → [\"line1\", \"line2\"]",
+        "var xs = readLines(f)  // 逐行处理",
+    ],
+    errors: &[
+        "文件不存在返回 error",
+        "末尾换行不产生额外空行；\\n 单独成行视为一个空串",
+    ],
+};
+
+static DOC_READ_FILE_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "readFileBytes(path) -> bytes",
+    summary: "读取整个文件为 bytes（不经 UTF-8 解码，适合二进制文件）。",
+    params: &[("path", "文件路径")],
+    returns: "bytes 文件全部字节",
+    examples: &[
+        "var b = readFileBytes(\"img.png\")",
+        "// 与 readFile 区别：本函数返回 bytes，可读任意二进制",
+    ],
+    errors: &[
+        "文件不存在返回 error",
+        "需要可变字节用 byteArrayFromBytes 转换",
+    ],
+};
+
+static DOC_OPEN_FILE: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "openFile(path, mode=\"r\") -> file",
+    summary: "打开文件返回 file 句柄。mode：r(只读) / w(只写,创建覆盖) / a(追加) / r+(读写)。",
+    params: &[
+        ("path", "文件路径"),
+        ("mode", "打开模式，可选，默认 \"r\"：r/w/a/r+"),
+    ],
+    returns: "file 句柄，配合 readLine/readAll/writeStr/seek 等使用",
+    examples: &[
+        "var f = openFile(\"a.txt\", \"r\")",
+        "var g = openFile(\"out.log\", \"w\")",
+    ],
+    errors: &[
+        "mode 必须为 r/w/a/r+ 之一，其他值报错",
+        "r 模式打开不存在文件返回 error；用完应 closeFile",
+    ],
+};
+
+static DOC_CLOSE_FILE: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "closeFile(f) -> undefined",
+    summary: "关闭 file 句柄（建议用 defer closeFile(f) 保证释放）。",
+    params: &[("f", "openFile 返回的 file 句柄")],
+    returns: "undefined",
+    examples: &[
+        "defer closeFile(f)",
+        "// 通用关闭：close(f) 可关 file/mutex/ticker 等",
+    ],
+    errors: &[
+        "参数须为 file 句柄，其他类型报错",
+    ],
+};
+
+static DOC_READ_LINE: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "readLine(f) -> string|undefined",
+    summary: "从 file 句柄读一行（到 \\n，不含换行符；兼容 \\r\\n）。",
+    params: &[("f", "openFile 返回的 file 句柄（须可读）")],
+    returns: "string 当前行；EOF 返回 undefined",
+    examples: &[
+        "var f = openFile(\"a.txt\")",
+        "defer closeFile(f)",
+        "var line = readLine(f)  // 读一行",
+    ],
+    errors: &[
+        "参数须为 file 句柄；EOF 时返回 undefined（需判空）",
+        "mode 为 w/a 时读取会失败",
+    ],
+};
+
+static DOC_READ_ALL: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "readAll(f) -> bytes",
+    summary: "从当前位置读取 file 句柄剩余全部内容为 bytes。",
+    params: &[("f", "openFile 返回的 file 句柄（须可读）")],
+    returns: "bytes 从当前位置到末尾的字节",
+    examples: &[
+        "var f = openFile(\"a.bin\")",
+        "defer closeFile(f)",
+        "var b = readAll(f)   // 一次读完",
+    ],
+    errors: &[
+        "参数须为 file 句柄",
+        "返回 bytes，需要 string 请 readStr(f) 或自行 UTF-8 解码",
+    ],
+};
+
+static DOC_CREATETEMPFILE: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "createTempFile([dir]) -> file",
+    summary: "创建临时文件。",
+    params: &[("dir", "可选。目录")],
+    returns: "file 句柄",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_CREATETEMPDIR: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "createTempDir([dir]) -> string",
+    summary: "创建临时目录，返回路径。",
+    params: &[("dir", "可选。父目录")],
+    returns: "string 临时目录路径",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_WRITEFILEBYTES: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "writeFileBytes(path, b) -> error|undefined",
+    summary: "写入字节数据到文件。",
+    params: &[("path", "文件路径"), ("b", "bytes/byteArray")],
+    returns: "undefined；失败返回 error",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_CLOSE: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "close(f) -> undefined",
+    summary: "关闭文件句柄。",
+    params: &[("f", "file 对象")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_READN: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "readN(f, n) -> string",
+    summary: "从文件读取 n 个字符。",
+    params: &[("f", "file 对象"), ("n", "字符数")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_WRITESTR: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "writeStr(f, s) -> error|undefined",
+    summary: "向文件写入字符串。",
+    params: &[("f", "file 对象"), ("s", "字符串")],
+    returns: "undefined；失败返回 error",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_WRITEBYTES: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "writeBytes(f, b) -> error|undefined",
+    summary: "向文件写入字节。",
+    params: &[("f", "file 对象"), ("b", "bytes")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_WRITELINE: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "writeLine(f, s) -> error|undefined",
+    summary: "写入一行（追加换行）。",
+    params: &[("f", "file 对象"), ("s", "字符串")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_SEEK: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "seek(f, pos[, whence]) -> error|undefined",
+    summary: "移动文件读写位置。",
+    params: &[("f", "file 对象"), ("pos", "位置"), ("whence", "可选。0=起/1=当前/2=末")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_TELL: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "tell(f) -> int",
+    summary: "返回当前读写位置。",
+    params: &[("f", "file 对象")],
+    returns: "int",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_READSTR: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "readStr(f) -> string",
+    summary: "读取文件全部内容为字符串。",
+    params: &[("f", "file 对象")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_READBYTES: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "readBytes(f) -> bytes",
+    summary: "读取文件全部内容为字节。",
+    params: &[("f", "file 对象")],
+    returns: "bytes",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_READCHARS: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "readChars(f, n) -> string",
+    summary: "读取 n 个字符（同 readN）。",
+    params: &[("f", "file 对象"), ("n", "字符数")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_GETFILELIST: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "getFileList(dir, pattern) -> array<string>",
+    summary: "按通配符列出文件。",
+    params: &[("dir", "目录"), ("pattern", "通配符，如 *.txt")],
+    returns: "array<string> 匹配的文件路径",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_GETFILEREL: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "getFileRel(base, target) -> string",
+    summary: "计算从 base 到 target 的相对路径。",
+    params: &[("base", "基准路径"), ("target", "目标路径")],
+    returns: "string 相对路径",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LOADBYTESFROMFILELIMIT: BuiltinDoc = BuiltinDoc {
+    category: "file",
+    signature: "loadBytesFromFileLimit(path, maxLen) -> bytes|error",
+    summary: "读取文件前 maxLen 字节。",
+    params: &[("path", "文件路径"), ("maxLen", "最大字节数")],
+    returns: "bytes；超过限制返回 error",
+    examples: &[],
+    errors: &[],
+};
+
 /// register 注册所有文件 IO 内置函数到 VM。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("readFile", bi_read_file);
-    vm.register_builtin("writeFile", bi_write_file);
-    vm.register_builtin("appendFile", bi_append_file);
-    vm.register_builtin("fileExists", bi_file_exists);
-    vm.register_builtin("isFile", bi_is_file);
-    vm.register_builtin("isDir", bi_is_dir);
-    vm.register_builtin("getFileInfo", bi_get_file_info);
-    vm.register_builtin("getFileSize", bi_get_file_size);
-    vm.register_builtin("copyFile", bi_copy_file);
-    vm.register_builtin("createTempFile", bi_create_temp_file);
-    vm.register_builtin("createTempDir", bi_create_temp_dir);
-    vm.register_builtin("deleteFile", bi_delete_file);
-    vm.register_builtin("readLines", bi_read_lines);
-    // 二进制 IO（读取/写入原始字节，不经过 UTF-8 解码）
-    vm.register_builtin("readFileBytes", bi_read_file_bytes);
-    vm.register_builtin("writeFileBytes", bi_write_file_bytes);
+    vm.register_builtin_doc("readFile", bi_read_file, &DOC_READ_FILE);
+    vm.register_builtin_doc("writeFile", bi_write_file, &DOC_WRITE_FILE);
+    vm.register_builtin_doc("appendFile", bi_append_file, &DOC_APPEND_FILE);
+    vm.register_builtin_doc("fileExists", bi_file_exists, &DOC_FILE_EXISTS);
+    vm.register_builtin_doc("isFile", bi_is_file, &DOC_IS_FILE);
+    vm.register_builtin_doc("isDir", bi_is_dir, &DOC_IS_DIR);
+    vm.register_builtin_doc("getFileInfo", bi_get_file_info, &DOC_GET_FILE_INFO);
+    vm.register_builtin_doc("getFileSize", bi_get_file_size, &DOC_GET_FILE_SIZE);
+    vm.register_builtin_doc("copyFile", bi_copy_file, &DOC_COPY_FILE);
+    vm.register_builtin_doc("createTempFile", bi_create_temp_file, &DOC_CREATETEMPFILE);
+    vm.register_builtin_doc("createTempDir", bi_create_temp_dir, &DOC_CREATETEMPDIR);
+    vm.register_builtin_doc("deleteFile", bi_delete_file, &DOC_DELETE_FILE);
+    vm.register_builtin_doc("readLines", bi_read_lines, &DOC_READ_LINES);
+    // 二进制IO（读取/写入原始字节，不经过 UTF-8 解码）
+    vm.register_builtin_doc("readFileBytes", bi_read_file_bytes, &DOC_READ_FILE_BYTES);
+    vm.register_builtin_doc("writeFileBytes", bi_write_file_bytes, &DOC_WRITEFILEBYTES);
     // file 句柄（流式/随机访问）
-    vm.register_builtin("openFile", bi_open_file);
-    vm.register_builtin("closeFile", bi_close_file);
-    vm.register_builtin("close", bi_close_generic);
-    vm.register_builtin("readLine", bi_read_line);
-    vm.register_builtin("readAll", bi_read_all);
-    vm.register_builtin("readN", bi_read_n);
-    vm.register_builtin("writeStr", bi_write_str);
-    vm.register_builtin("writeBytes", bi_write_bytes);
-    vm.register_builtin("writeLine", bi_write_line);
-    vm.register_builtin("seek", bi_seek);
-    vm.register_builtin("tell", bi_tell);
+    vm.register_builtin_doc("openFile", bi_open_file, &DOC_OPEN_FILE);
+    vm.register_builtin_doc("closeFile", bi_close_file, &DOC_CLOSE_FILE);
+    vm.register_builtin_doc("close", bi_close_generic, &DOC_CLOSE);
+    vm.register_builtin_doc("readLine", bi_read_line, &DOC_READ_LINE);
+    vm.register_builtin_doc("readAll", bi_read_all, &DOC_READ_ALL);
+    vm.register_builtin_doc("readN", bi_read_n, &DOC_READN);
+    vm.register_builtin_doc("writeStr", bi_write_str, &DOC_WRITESTR);
+    vm.register_builtin_doc("writeBytes", bi_write_bytes, &DOC_WRITEBYTES);
+    vm.register_builtin_doc("writeLine", bi_write_line, &DOC_WRITELINE);
+    vm.register_builtin_doc("seek", bi_seek, &DOC_SEEK);
+    vm.register_builtin_doc("tell", bi_tell, &DOC_TELL);
     // 通用读取（file 句柄或基础类型）
-    vm.register_builtin("readStr", bi_read_str);
-    vm.register_builtin("readBytes", bi_read_bytes);
-    vm.register_builtin("readChars", bi_read_chars);
-    vm.register_builtin("getFileList", bi_get_file_list);
-    vm.register_builtin("getFileRel", bi_get_file_rel);
-    vm.register_builtin("loadBytesFromFileLimit", bi_load_bytes_from_file_limit);
+    vm.register_builtin_doc("readStr", bi_read_str, &DOC_READSTR);
+    vm.register_builtin_doc("readBytes", bi_read_bytes, &DOC_READBYTES);
+    vm.register_builtin_doc("readChars", bi_read_chars, &DOC_READCHARS);
+    vm.register_builtin_doc("getFileList", bi_get_file_list, &DOC_GETFILELIST);
+    vm.register_builtin_doc("getFileRel", bi_get_file_rel, &DOC_GETFILEREL);
+    vm.register_builtin_doc("loadBytesFromFileLimit", bi_load_bytes_from_file_limit, &DOC_LOADBYTESFROMFILELIMIT);
 }
 
 /// io_err 将 std::io::Error 转为 AI 友好错误值，附加常见原因提示。

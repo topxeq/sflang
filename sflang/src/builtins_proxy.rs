@@ -22,15 +22,78 @@ use std::time::Duration;
 
 use crate::builtins_helpers as bh;
 use crate::builtins_tcp::{pipe_connections, TcpConn};
+use crate::function::BuiltinDoc;
 use crate::value::{error_value, Value};
 use crate::vm::VM;
 
+static DOC_PROXY_LISTEN: BuiltinDoc = BuiltinDoc {
+    category: "proxy",
+    signature: "proxyListen(addr [, handler]) -> proxyServer",
+    summary: "启动 SOCKS5/HTTP 二合一代理服务器，自动识别客户端协议。",
+    params: &[
+        ("addr", "监听地址，如 \"0.0.0.0:1080\" 或 \"127.0.0.1:1080\""),
+        ("handler", "可选 func(targetAddr, proto, clientAddr) -> bool，返回 true 允许、false 拒绝连接；省略则允许全部"),
+    ],
+    returns: "proxyServer 对象，传给 proxyStop 停止",
+    examples: &[
+        "s := proxyListen(\"127.0.0.1:1080\")  // 启动代理，允许所有连接",
+        "s := proxyListen(\"0.0.0.0:1080\", func(t, p, c) { return !contains(t, \"blocked.host\") })  // 自定义访问控制",
+    ],
+    errors: &[
+        "proxyListen() 绑定 'xxx' 失败（可能原因：地址被占用或权限不足）",
+        "proxyListen() 第 2 个参数应为 function，得到 X（可能原因：参数顺序错误）",
+        "协议处理错误：未知协议 / 不支持的 SOCKS5 命令（仅支持 CONNECT=1）",
+    ],
+};
+
+static DOC_PROXY_STOP: BuiltinDoc = BuiltinDoc {
+    category: "proxy",
+    signature: "proxyStop(server) -> undefined",
+    summary: "停止 proxyListen 启动的代理服务器。",
+    params: &[("server", "proxyListen 返回的 proxyServer 对象")],
+    returns: "undefined",
+    examples: &["proxyStop(s)  // 停止代理"],
+    errors: &[
+        "proxyStop() 参数不是代理服务器（可能原因：传入了错误类型，应使用 proxyListen 的返回值）",
+        "proxyStop() 参数应为代理服务器，得到 X（可能原因：参数类型不匹配）",
+    ],
+};
+
+static DOC_PORT_FORWARD: BuiltinDoc = BuiltinDoc {
+    category: "proxy",
+    signature: "portForward(listenAddr, targetAddr) -> forwardServer",
+    summary: "启动端口转发，将监听端口收到的连接全部透传到目标地址。",
+    params: &[
+        ("listenAddr", "监听地址，如 \"0.0.0.0:8080\""),
+        ("targetAddr", "目标地址，如 \"127.0.0.1:80\""),
+    ],
+    returns: "forwardServer 对象，传给 portForwardStop 停止",
+    examples: &["pf := portForward(\"0.0.0.0:8080\", \"127.0.0.1:80\")  // 转发 8080 到本地 80 端口"],
+    errors: &[
+        "portForward() 绑定 'xxx' 失败（可能原因：地址被占用或权限不足）",
+        "连接目标 xxx 失败（目标未启动或防火墙拦截，仅记录日志不中断转发器）",
+    ],
+};
+
+static DOC_PORT_FORWARD_STOP: BuiltinDoc = BuiltinDoc {
+    category: "proxy",
+    signature: "portForwardStop(server) -> undefined",
+    summary: "停止 portForward 启动的端口转发。",
+    params: &[("server", "portForward 返回的 forwardServer 对象")],
+    returns: "undefined",
+    examples: &["portForwardStop(pf)  // 停止转发"],
+    errors: &[
+        "portForwardStop() 参数不是转发服务器（可能原因：传入了错误类型，应使用 portForward 的返回值）",
+        "portForwardStop() 参数应为转发服务器，得到 X（可能原因：参数类型不匹配）",
+    ],
+};
+
 /// register 注册所有代理相关内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("proxyListen", bi_proxy_listen);
-    vm.register_builtin("proxyStop", bi_proxy_stop);
-    vm.register_builtin("portForward", bi_port_forward);
-    vm.register_builtin("portForwardStop", bi_port_forward_stop);
+    vm.register_builtin_doc("proxyListen", bi_proxy_listen, &DOC_PROXY_LISTEN);
+    vm.register_builtin_doc("proxyStop", bi_proxy_stop, &DOC_PROXY_STOP);
+    vm.register_builtin_doc("portForward", bi_port_forward, &DOC_PORT_FORWARD);
+    vm.register_builtin_doc("portForwardStop", bi_port_forward_stop, &DOC_PORT_FORWARD_STOP);
 }
 
 // ============ 类型定义 ============

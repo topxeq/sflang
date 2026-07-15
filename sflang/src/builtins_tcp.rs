@@ -28,23 +28,215 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::builtins_helpers as bh;
+use crate::function::BuiltinDoc;
 use crate::value::{error_value, Value};
 use crate::vm::VM;
 
+static DOC_TCP_LISTEN: BuiltinDoc = BuiltinDoc {
+    category: "tcp",
+    signature: "tcpListen(addr, handler) -> server",
+    summary: "启动 TCP 服务器，每个新连接在独立线程调用 handler(conn)。",
+    params: &[
+        ("addr", "监听地址，如 \"0.0.0.0:8080\" 或 \":8080\""),
+        ("handler", "func(conn) { ... }，每个连接在独立线程中调用"),
+    ],
+    returns: "TcpServer 对象，传给 tcpStopServer 停止",
+    examples: &[
+        "srv := tcpListen(\"127.0.0.1:0\", func(conn) { tcpWriteLine(conn, \"hi\"); tcpClose(conn) })  // 启动回显式服务",
+    ],
+    errors: &[
+        "tcpListen() 绑定 'xxx' 失败（可能原因：地址被占用或权限不足）",
+        "tcpListen() 设置非阻塞模式失败（可能原因：系统不支持非阻塞 IO）",
+    ],
+};
+
+static DOC_TCP_CONNECT: BuiltinDoc = BuiltinDoc {
+    category: "tcp",
+    signature: "tcpConnect(host, port [, timeoutMs]) -> conn",
+    summary: "连接到 TCP 服务器，返回连接对象（默认禁用 Nagle 以降低延迟）。",
+    params: &[
+        ("host", "主机名或 IP，如 \"127.0.0.1\""),
+        ("port", "端口号（int）"),
+        ("timeoutMs", "可选连接超时毫秒，省略则阻塞等待直到成功或失败"),
+    ],
+    returns: "TcpConn 连接对象",
+    examples: &[
+        "conn := tcpConnect(\"127.0.0.1\", 8080)  // 阻塞连接",
+        "conn := tcpConnect(\"example.com\", 443, 3000)  // 3 秒超时",
+    ],
+    errors: &[
+        "tcpConnect() 解析地址 'xxx' 失败（可能原因：主机名无法解析）",
+        "tcpConnect() 连接 'xxx' 失败（可能原因：目标未启动或防火墙拦截 / 目标不可达或超时 Nms）",
+    ],
+};
+
+static DOC_TCP_READ: BuiltinDoc = BuiltinDoc {
+    category: "tcp",
+    signature: "tcpRead(conn, n) -> bytes|undefined",
+    summary: "从连接读取最多 n 字节，连接关闭且无数据时返回 undefined。",
+    params: &[
+        ("conn", "tcpConnect 或 tcpListen 回调中的连接对象"),
+        ("n", "期望读取的字节数（实际可能更少）"),
+    ],
+    returns: "bytes（可能少于 n），完全无数据时为 undefined",
+    examples: &["data := tcpRead(conn, 1024)  // 读最多 1024 字节"],
+    errors: &[
+        "tcpRead() 读取失败（可能原因：连接已关闭或网络中断）",
+        "tcpRead() 参数不是 TCP 连接（可能原因：传入错误类型或 undefined）",
+    ],
+};
+
+static DOC_TCP_READ_LINE: BuiltinDoc = BuiltinDoc {
+    category: "tcp",
+    signature: "tcpReadLine(conn) -> string|undefined",
+    summary: "逐字节读取直到遇到 \\n，返回不含换行符的一行（自动去掉尾 \\r）。",
+    params: &[("conn", "连接对象")],
+    returns: "string（不含 \\n），连接关闭且无数据时为 undefined",
+    examples: &["line := tcpReadLine(conn)  // 读一行"],
+    errors: &[
+        "tcpReadLine() 读取失败（可能原因：连接已关闭或网络中断）",
+        "tcpReadLine() 参数不是 TCP 连接（可能原因：传入错误类型或 undefined）",
+    ],
+};
+
+static DOC_TCP_WRITE: BuiltinDoc = BuiltinDoc {
+    category: "tcp",
+    signature: "tcpWrite(conn, data) -> int",
+    summary: "向连接写入数据（string/bytes/byteArray），返回写入字节数。",
+    params: &[
+        ("conn", "连接对象"),
+        ("data", "要写入的数据，可为 string / bytes / byteArray"),
+    ],
+    returns: "int 实际写入的字节数",
+    examples: &["n := tcpWrite(conn, \"hello\")  // 写 5 字节"],
+    errors: &[
+        "tcpWrite() 写入失败（可能原因：连接已关闭或对端拒绝）",
+        "tcpWrite() 数据参数应为 string/bytes/byteArray（可能原因：参数类型不匹配）",
+    ],
+};
+
+static DOC_TCP_WRITE_LINE: BuiltinDoc = BuiltinDoc {
+    category: "tcp",
+    signature: "tcpWriteLine(conn, data) -> int",
+    summary: "向连接写入一行，自动在末尾追加 \\n。",
+    params: &[
+        ("conn", "连接对象"),
+        ("data", "要写入的数据，可为 string / bytes / byteArray"),
+    ],
+    returns: "int 实际写入的字节数（含追加的 \\n）",
+    examples: &["tcpWriteLine(conn, \"ping\")  // 对端收到 \"ping\\n\""],
+    errors: &[
+        "tcpWriteLine() 写入失败（可能原因：连接已关闭或对端拒绝）",
+        "tcpWriteLine() 数据参数应为 string/bytes/byteArray（可能原因：参数类型不匹配）",
+    ],
+};
+
+static DOC_TCP_CLOSE: BuiltinDoc = BuiltinDoc {
+    category: "tcp",
+    signature: "tcpClose(conn [, how]) -> undefined",
+    summary: "关闭连接，可选只关闭读端/写端/双向（默认双向 both）。",
+    params: &[
+        ("conn", "连接对象"),
+        ("how", "可选：\"read\" / \"write\" / \"both\"，默认 \"both\""),
+    ],
+    returns: "undefined",
+    examples: &[
+        "tcpClose(conn)  // 双向关闭",
+        "tcpClose(conn, \"write\")  // 仅关闭写端（半关闭）",
+    ],
+    errors: &[
+        "tcpClose() 第二参数应为 'read'/'write'/'both'（可能原因：拼写错误）",
+        "tcpClose() 关闭失败（可能原因：连接已关闭）",
+    ],
+};
+
+static DOC_TCP_SET_TIMEOUT: BuiltinDoc = BuiltinDoc {
+    category: "tcp",
+    signature: "tcpSetTimeout(conn, readMs, writeMs) -> undefined",
+    summary: "设置连接的读写超时，毫秒数为 0 表示无超时（阻塞）。",
+    params: &[
+        ("conn", "连接对象"),
+        ("readMs", "读超时毫秒，0 表示无超时"),
+        ("writeMs", "写超时毫秒，0 表示无超时"),
+    ],
+    returns: "undefined",
+    examples: &["tcpSetTimeout(conn, 5000, 5000)  // 读写各 5 秒超时"],
+    errors: &[
+        "tcpSetTimeout() 设置读超时失败",
+        "tcpSetTimeout() 设置写超时失败",
+        "tcpSetTimeout() 参数不是 TCP 连接",
+    ],
+};
+
+static DOC_TCP_REMOTE_ADDR: BuiltinDoc = BuiltinDoc {
+    category: "tcp",
+    signature: "tcpRemoteAddr(conn) -> string",
+    summary: "获取连接对端地址，返回 \"ip:port\" 字符串。",
+    params: &[("conn", "连接对象")],
+    returns: "string \"ip:port\"",
+    examples: &["remote := tcpRemoteAddr(conn)  // 如 \"127.0.0.1:54321\""],
+    errors: &[
+        "tcpRemoteAddr() 获取对端地址失败（可能原因：连接已关闭）",
+        "tcpRemoteAddr() 参数不是 TCP 连接",
+    ],
+};
+
+static DOC_TCP_LOCAL_ADDR: BuiltinDoc = BuiltinDoc {
+    category: "tcp",
+    signature: "tcpLocalAddr(conn) -> string",
+    summary: "获取连接本端地址，返回 \"ip:port\" 字符串。",
+    params: &[("conn", "连接对象")],
+    returns: "string \"ip:port\"",
+    examples: &["local := tcpLocalAddr(conn)  // 如 \"127.0.0.1:8080\""],
+    errors: &[
+        "tcpLocalAddr() 获取本端地址失败（可能原因：连接已关闭）",
+        "tcpLocalAddr() 参数不是 TCP 连接",
+    ],
+};
+
+static DOC_TCP_STOP_SERVER: BuiltinDoc = BuiltinDoc {
+    category: "tcp",
+    signature: "tcpStopServer(server) -> undefined",
+    summary: "停止 tcpListen 启动的 accept 循环（已在处理的连接会继续执行直到完成）。",
+    params: &[("server", "tcpListen 返回的 TcpServer 对象")],
+    returns: "undefined",
+    examples: &["tcpStopServer(srv)  // 停止监听"],
+    errors: &[
+        "tcpStopServer() 参数不是 TCP 服务器（可能原因：传入错误类型，应先用 tcpListen 获取）",
+        "tcpStopServer() 参数为 undefined（可能原因：变量未初始化）",
+    ],
+};
+
+static DOC_TCP_PIPE: BuiltinDoc = BuiltinDoc {
+    category: "tcp",
+    signature: "tcpPipe(conn1, conn2) -> undefined",
+    summary: "双向转发两个连接的数据，阻塞直到任一方关闭（常用于代理转发）。",
+    params: &[
+        ("conn1", "连接对象 A"),
+        ("conn2", "连接对象 B"),
+    ],
+    returns: "undefined（任一方关闭后返回）",
+    examples: &["tcpPipe(client, backend)  // client 与 backend 间双向透传"],
+    errors: &[
+        "tcpPipe() 参数不是 TCP 连接（可能原因：传入错误类型或 undefined）",
+        "tcpPipe() 参数应为 TCP 连接，得到 X（可能原因：参数顺序错误）",
+    ],
+};
+
 /// register 注册所有 TCP 内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("tcpListen", bi_tcp_listen);
-    vm.register_builtin("tcpConnect", bi_tcp_connect);
-    vm.register_builtin("tcpRead", bi_tcp_read);
-    vm.register_builtin("tcpReadLine", bi_tcp_read_line);
-    vm.register_builtin("tcpWrite", bi_tcp_write);
-    vm.register_builtin("tcpWriteLine", bi_tcp_write_line);
-    vm.register_builtin("tcpClose", bi_tcp_close);
-    vm.register_builtin("tcpSetTimeout", bi_tcp_set_timeout);
-    vm.register_builtin("tcpRemoteAddr", bi_tcp_remote_addr);
-    vm.register_builtin("tcpLocalAddr", bi_tcp_local_addr);
-    vm.register_builtin("tcpStopServer", bi_tcp_stop_server);
-    vm.register_builtin("tcpPipe", bi_tcp_pipe);
+    vm.register_builtin_doc("tcpListen", bi_tcp_listen, &DOC_TCP_LISTEN);
+    vm.register_builtin_doc("tcpConnect", bi_tcp_connect, &DOC_TCP_CONNECT);
+    vm.register_builtin_doc("tcpRead", bi_tcp_read, &DOC_TCP_READ);
+    vm.register_builtin_doc("tcpReadLine", bi_tcp_read_line, &DOC_TCP_READ_LINE);
+    vm.register_builtin_doc("tcpWrite", bi_tcp_write, &DOC_TCP_WRITE);
+    vm.register_builtin_doc("tcpWriteLine", bi_tcp_write_line, &DOC_TCP_WRITE_LINE);
+    vm.register_builtin_doc("tcpClose", bi_tcp_close, &DOC_TCP_CLOSE);
+    vm.register_builtin_doc("tcpSetTimeout", bi_tcp_set_timeout, &DOC_TCP_SET_TIMEOUT);
+    vm.register_builtin_doc("tcpRemoteAddr", bi_tcp_remote_addr, &DOC_TCP_REMOTE_ADDR);
+    vm.register_builtin_doc("tcpLocalAddr", bi_tcp_local_addr, &DOC_TCP_LOCAL_ADDR);
+    vm.register_builtin_doc("tcpStopServer", bi_tcp_stop_server, &DOC_TCP_STOP_SERVER);
+    vm.register_builtin_doc("tcpPipe", bi_tcp_pipe, &DOC_TCP_PIPE);
 }
 
 // ============ 类型定义 ============

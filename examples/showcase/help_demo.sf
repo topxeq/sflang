@@ -1,0 +1,60 @@
+// 示例：Help 系统演示
+// ==================================
+// Sflang 内置 help() 函数与 sf --list-builtins 命令，可在运行时自省所有内置函数。
+// 这是 Sflang "特别适合 AI 使用" 设计原则的体现——AI 无需查阅外部文档即可了解每个函数。
+
+// ==================
+// help() 无参：列出所有内置函数分类
+// ==================
+pln("--- help() 全部分类（前 15 行）---")
+var all = help()
+var lines = strSplit("\n", all)
+for i := 0; i < 15 && i < len(lines); i++ {
+    pln("  ", lines[i])
+}
+
+// ==================
+// help("函数名")：查看函数详细文档
+// ==================
+pln("\n--- help(\"regFind\") 函数文档 ---")
+pln(help("regFind"))
+
+// ==================
+// help("分类名")：查看某分类下所有函数
+// ==================
+pln("\n--- help(\"json\") 分类函数 ---")
+pln(help("json"))
+
+// ==================
+// help("core")：核心函数
+// ==================
+pln("\n--- help(\"core\") 核心函数 ---")
+pln(help("core"))
+
+// ==================
+// 拼写容错：help 自动给出相似建议
+// ==================
+pln("\n--- help(\"regfind\") 模糊匹配 ---")
+pln(help("regfind"))
+
+// ==================
+// 实用：用 help 动态学习函数
+// ==================
+pln("\n--- 动态学习：strReplace 用法 ---")
+var doc = help("strReplace")
+// 提取签名行（第一行）
+var firstLine = strSplit("\n", doc)[0]
+pln("签名:", firstLine)
+
+// 然后直接用这个函数
+var result = strReplace("hello world", "world", "Sflang")
+pln("结果:", result)
+
+// ==================
+// help 也适用于 string 分类
+// ==================
+pln("\n--- help(\"string\") 字符串函数 ---")
+pln(help("string"))
+
+// 提示：命令行也可用 sf --list-builtins [分类] 列出函数
+// 例如：sf --list-builtins regex

@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::value::Value;
 use crate::vm::VM;
+use crate::function::BuiltinDoc;
 
 /// map! 宏快速构造 Object。
 macro_rules! map {
@@ -22,37 +23,327 @@ macro_rules! map {
 /// LE_LINES 全局行数组（线程安全）。
 static LE_LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+static DOC_LELOADFROMSTR: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leLoadFromStr(s) -> le",
+    summary: "从字符串创建行编辑器。",
+    params: &[("s", "多行文本")],
+    returns: "le 行编辑器对象",
+    examples: &["var e = leLoadFromStr(text)"],
+    errors: &[],
+};
+
+static DOC_LELOADFROMFILE: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leLoadFromFile(path) -> le|error",
+    summary: "从文件创建行编辑器。",
+    params: &[("path", "文件路径")],
+    returns: "le 对象；失败返回 error",
+    examples: &["var e = leLoadFromFile(\"data.txt\")"],
+    errors: &["文件不存在返回 error"],
+};
+
+static DOC_LELOADFROMSSH: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leLoadFromSsh(sshConn, path) -> le|error",
+    summary: "从 SSH 远程文件创建行编辑器。",
+    params: &[("sshConn", "SSH 连接"), ("path", "远程文件路径")],
+    returns: "le 对象；失败返回 error",
+    examples: &["var e = leLoadFromSsh(conn, \"/etc/hosts\")"],
+    errors: &[],
+};
+
+static DOC_LESAVETOSTR: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leSaveToStr(e) -> string",
+    summary: "将行编辑器内容转为字符串。",
+    params: &[("e", "le 对象")],
+    returns: "string",
+    examples: &["var s = leSaveToStr(e)"],
+    errors: &[],
+};
+
+static DOC_LESAVETOFILE: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leSaveToFile(e, path) -> error|undefined",
+    summary: "保存到本地文件。",
+    params: &[("e", "le 对象"), ("path", "文件路径")],
+    returns: "undefined；失败返回 error",
+    examples: &["leSaveToFile(e, \"out.txt\")"],
+    errors: &[],
+};
+
+static DOC_LESAVETOSSH: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leSaveToSsh(e, sshConn, path) -> error|undefined",
+    summary: "保存到 SSH 远程文件。",
+    params: &[("e", "le 对象"), ("sshConn", "SSH 连接"), ("path", "远程路径")],
+    returns: "undefined；失败返回 error",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LETOSTR: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leToStr(e) -> string",
+    summary: "leSaveToStr 的别名。",
+    params: &[("e", "le 对象")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEPRINT: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "lePrint(e) -> undefined",
+    summary: "打印行编辑器内容。",
+    params: &[("e", "le 对象")],
+    returns: "undefined",
+    examples: &["lePrint(e)"],
+    errors: &[],
+};
+
+static DOC_LEINFO: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leInfo(e) -> string",
+    summary: "返回行编辑器统计信息。",
+    params: &[("e", "le 对象")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LECLEAR: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leClear(e) -> undefined",
+    summary: "清空所有行。",
+    params: &[("e", "le 对象")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEAPPENDLINE: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leAppendLine(e, line) -> undefined",
+    summary: "追加一行。",
+    params: &[("e", "le 对象"), ("line", "要追加的行")],
+    returns: "undefined",
+    examples: &["leAppendLine(e, \"new line\")"],
+    errors: &[],
+};
+
+static DOC_LEAPPENDFROMFILE: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leAppendFromFile(e, path) -> error|undefined",
+    summary: "追加文件内容。",
+    params: &[("e", "le 对象"), ("path", "文件路径")],
+    returns: "undefined；失败返回 error",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEAPPENDFROMSTR: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leAppendFromStr(e, s) -> undefined",
+    summary: "追加字符串内容（按行拆分）。",
+    params: &[("e", "le 对象"), ("s", "文本")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEAPPENDTOFILE: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leAppendToFile(e, path) -> error|undefined",
+    summary: "将内容追加到文件末尾。",
+    params: &[("e", "le 对象"), ("path", "文件路径")],
+    returns: "undefined；失败返回 error",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEINSERTLINE: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leInsertLine(e, idx, line) -> undefined",
+    summary: "在指定行号插入一行。",
+    params: &[("e", "le 对象"), ("idx", "行号（0-based）"), ("line", "内容")],
+    returns: "undefined",
+    examples: &["leInsertLine(e, 0, \"first\")"],
+    errors: &[],
+};
+
+static DOC_LEREMOVELINE: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leRemoveLine(e, idx) -> undefined",
+    summary: "删除指定行。",
+    params: &[("e", "le 对象"), ("idx", "行号")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEREMOVELINES: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leRemoveLines(e, start, end) -> undefined",
+    summary: "删除指定范围的行。",
+    params: &[("e", "le 对象"), ("start", "起始行号"), ("end", "结束行号")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LESETLINE: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leSetLine(e, idx, line) -> undefined",
+    summary: "替换指定行。",
+    params: &[("e", "le 对象"), ("idx", "行号"), ("line", "新内容")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEGETLINE: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leGetLine(e, idx) -> string",
+    summary: "获取指定行内容。",
+    params: &[("e", "le 对象"), ("idx", "行号")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEGETLIST: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leGetList(e) -> array<string>",
+    summary: "获取所有行为数组。",
+    params: &[("e", "le 对象")],
+    returns: "array<string>",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LESETLINES: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leSetLines(e, lines) -> undefined",
+    summary: "用数组替换所有行。",
+    params: &[("e", "le 对象"), ("lines", "字符串数组")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEVIEWLINE: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leViewLine(e, idx) -> string",
+    summary: "查看指定行（带行号前缀）。",
+    params: &[("e", "le 对象"), ("idx", "行号")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEVIEWLINES: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leViewLines(e, start, end) -> string",
+    summary: "查看指定范围（带行号）。",
+    params: &[("e", "le 对象"), ("start", "起始"), ("end", "结束")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEVIEWALL: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leViewAll(e) -> string",
+    summary: "查看全部（带行号）。",
+    params: &[("e", "le 对象")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LESORT: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leSort(e[, byFunc]) -> undefined",
+    summary: "对所有行排序（可选自定义比较函数）。",
+    params: &[("e", "le 对象"), ("byFunc", "可选。比较函数")],
+    returns: "undefined",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEFIND: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leFind(e, sub) -> int",
+    summary: "查找包含子串的行号。",
+    params: &[("e", "le 对象"), ("sub", "搜索子串")],
+    returns: "int 行号；未找到返回 -1",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEFINDALL: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leFindAll(e, sub) -> array<int>",
+    summary: "查找所有匹配行号。",
+    params: &[("e", "le 对象"), ("sub", "搜索子串")],
+    returns: "array<int>",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEFINDLINES: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leFindLines(e, sub) -> array<string>",
+    summary: "查找所有匹配行内容。",
+    params: &[("e", "le 对象"), ("sub", "搜索子串")],
+    returns: "array<string>",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LEREPLACE: BuiltinDoc = BuiltinDoc {
+    category: "le",
+    signature: "leReplace(e, old, new) -> int",
+    summary: "全局替换子串，返回替换次数。",
+    params: &[("e", "le 对象"), ("old", "旧子串"), ("new", "新子串")],
+    returns: "int 替换次数",
+    examples: &[],
+    errors: &[],
+};
+
 /// register 注册所有 le 内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("leLoadFromStr", bi_le_load_from_str);
-    vm.register_builtin("leLoadFromFile", bi_le_load_from_file);
-    vm.register_builtin("leLoadFromSsh", bi_le_load_from_ssh);
-    vm.register_builtin("leSaveToStr", bi_le_save_to_str);
-    vm.register_builtin("leSaveToFile", bi_le_save_to_file);
-    vm.register_builtin("leSaveToSsh", bi_le_save_to_ssh);
-    vm.register_builtin("leToStr", bi_le_save_to_str); // 别名
-    vm.register_builtin("lePrint", bi_le_print);
-    vm.register_builtin("leInfo", bi_le_info);
-    vm.register_builtin("leClear", bi_le_clear);
-    vm.register_builtin("leAppendLine", bi_le_append_line);
-    vm.register_builtin("leAppendFromFile", bi_le_append_from_file);
-    vm.register_builtin("leAppendFromStr", bi_le_append_from_str);
-    vm.register_builtin("leAppendToFile", bi_le_append_to_file);
-    vm.register_builtin("leInsertLine", bi_le_insert_line);
-    vm.register_builtin("leRemoveLine", bi_le_remove_line);
-    vm.register_builtin("leRemoveLines", bi_le_remove_lines);
-    vm.register_builtin("leSetLine", bi_le_set_line);
-    vm.register_builtin("leGetLine", bi_le_get_line);
-    vm.register_builtin("leGetList", bi_le_get_list);
-    vm.register_builtin("leSetLines", bi_le_set_lines);
-    vm.register_builtin("leViewLine", bi_le_view_line);
-    vm.register_builtin("leViewLines", bi_le_view_lines);
-    vm.register_builtin("leViewAll", bi_le_view_all);
-    vm.register_builtin("leSort", bi_le_sort);
-    vm.register_builtin("leFind", bi_le_find);
-    vm.register_builtin("leFindAll", bi_le_find_all);
-    vm.register_builtin("leFindLines", bi_le_find_lines);
-    vm.register_builtin("leReplace", bi_le_replace);
+    vm.register_builtin_doc("leLoadFromStr", bi_le_load_from_str, &DOC_LELOADFROMSTR);
+    vm.register_builtin_doc("leLoadFromFile", bi_le_load_from_file, &DOC_LELOADFROMFILE);
+    vm.register_builtin_doc("leLoadFromSsh", bi_le_load_from_ssh, &DOC_LELOADFROMSSH);
+    vm.register_builtin_doc("leSaveToStr", bi_le_save_to_str, &DOC_LESAVETOSTR);
+    vm.register_builtin_doc("leSaveToFile", bi_le_save_to_file, &DOC_LESAVETOFILE);
+    vm.register_builtin_doc("leSaveToSsh", bi_le_save_to_ssh, &DOC_LESAVETOSSH);
+    vm.register_builtin_doc("leToStr", bi_le_save_to_str, &DOC_LETOSTR); // 别名
+    vm.register_builtin_doc("lePrint", bi_le_print, &DOC_LEPRINT);
+    vm.register_builtin_doc("leInfo", bi_le_info, &DOC_LEINFO);
+    vm.register_builtin_doc("leClear", bi_le_clear, &DOC_LECLEAR);
+    vm.register_builtin_doc("leAppendLine", bi_le_append_line, &DOC_LEAPPENDLINE);
+    vm.register_builtin_doc("leAppendFromFile", bi_le_append_from_file, &DOC_LEAPPENDFROMFILE);
+    vm.register_builtin_doc("leAppendFromStr", bi_le_append_from_str, &DOC_LEAPPENDFROMSTR);
+    vm.register_builtin_doc("leAppendToFile", bi_le_append_to_file, &DOC_LEAPPENDTOFILE);
+    vm.register_builtin_doc("leInsertLine", bi_le_insert_line, &DOC_LEINSERTLINE);
+    vm.register_builtin_doc("leRemoveLine", bi_le_remove_line, &DOC_LEREMOVELINE);
+    vm.register_builtin_doc("leRemoveLines", bi_le_remove_lines, &DOC_LEREMOVELINES);
+    vm.register_builtin_doc("leSetLine", bi_le_set_line, &DOC_LESETLINE);
+    vm.register_builtin_doc("leGetLine", bi_le_get_line, &DOC_LEGETLINE);
+    vm.register_builtin_doc("leGetList", bi_le_get_list, &DOC_LEGETLIST);
+    vm.register_builtin_doc("leSetLines", bi_le_set_lines, &DOC_LESETLINES);
+    vm.register_builtin_doc("leViewLine", bi_le_view_line, &DOC_LEVIEWLINE);
+    vm.register_builtin_doc("leViewLines", bi_le_view_lines, &DOC_LEVIEWLINES);
+    vm.register_builtin_doc("leViewAll", bi_le_view_all, &DOC_LEVIEWALL);
+    vm.register_builtin_doc("leSort", bi_le_sort, &DOC_LESORT);
+    vm.register_builtin_doc("leFind", bi_le_find, &DOC_LEFIND);
+    vm.register_builtin_doc("leFindAll", bi_le_find_all, &DOC_LEFINDALL);
+    vm.register_builtin_doc("leFindLines", bi_le_find_lines, &DOC_LEFINDLINES);
+    vm.register_builtin_doc("leReplace", bi_le_replace, &DOC_LEREPLACE);
 }
 
 // ---- 辅助 ----

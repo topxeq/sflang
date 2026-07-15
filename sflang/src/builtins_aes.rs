@@ -12,15 +12,90 @@
 use std::sync::Arc;
 
 use crate::builtins_helpers as bh;
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 use crate::vm::VM;
 
+// ---- AES 函数文档 ----
+
+static DOC_AES_ENCRYPT: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "aesEncrypt(data, key) -> bytes",
+    summary: "AES-CBC 加密（PKCS7 填充），返回 [16 字节 IV][密文] 的 bytes。",
+    params: &[
+        ("data", "string/bytes/byteArray：明文"),
+        ("key", "string/bytes：密钥，长度 16/24/32（对应 AES-128/192/256）"),
+    ],
+    returns: "bytes：[16 字节随机 IV][密文]，每次调用 IV 不同",
+    examples: &[
+        "ct := aesEncrypt(\"hello\", \"0123456789abcdef\")  → 32 字节 bytes（16 IV + 16 密文）",
+    ],
+    errors: &[
+        "key 长度必须为 16/24/32（对应 AES-128/192/256）",
+        "输出含随机 IV，每次结果不同；用 aesDecrypt 解密",
+    ],
+};
+
+static DOC_AES_DECRYPT: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "aesDecrypt(data, key) -> bytes",
+    summary: "AES-CBC 解密，输入须为 [16 字节 IV][密文] 格式。",
+    params: &[
+        ("data", "string/bytes/byteArray：[16 字节 IV][密文]（即 aesEncrypt 的输出）"),
+        ("key", "string/bytes：密钥（须与加密时相同，长度 16/24/32）"),
+    ],
+    returns: "bytes：解密后的明文字节；密钥错误或数据损坏返回 error",
+    examples: &[
+        "pt := aesDecrypt(aesEncrypt(\"hello\", \"0123456789abcdef\"), \"0123456789abcdef\") → bytes(\"hello\")",
+    ],
+    errors: &[
+        "data 至少 16 字节（IV 段），否则返回 error",
+        "key 与加密时不一致或填充损坏时返回 error（不 panic）",
+    ],
+};
+
+static DOC_AES_ENCRYPT_STR: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "aesEncryptStr(text, key) -> string",
+    summary: "便捷字符串加密：UTF-8 字节加密后输出 base64 字符串。",
+    params: &[
+        ("text", "string：明文（UTF-8 编码）"),
+        ("key", "string/bytes：密钥，长度 16/24/32"),
+    ],
+    returns: "string：标准 base64（含 IV），可直接传输/存储",
+    examples: &[
+        "ct := aesEncryptStr(\"hello\", \"0123456789abcdef\")  → base64 字符串",
+    ],
+    errors: &[
+        "输出含随机 IV，每次结果不同",
+        "等价于 base64(aesEncrypt(text, key))",
+    ],
+};
+
+static DOC_AES_DECRYPT_STR: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "aesDecryptStr(base64, key) -> string",
+    summary: "便捷字符串解密：输入 aesEncryptStr 产生的 base64，返回 UTF-8 字符串。",
+    params: &[
+        ("base64", "string：aesEncryptStr 的输出（base64）"),
+        ("key", "string/bytes：密钥（须与加密时相同）"),
+    ],
+    returns: "string：解密后的明文（按 UTF-8 解释）；失败返回 error",
+    examples: &[
+        "aesDecryptStr(aesEncryptStr(\"hello\", \"0123456789abcdef\"), \"0123456789abcdef\") → \"hello\"",
+    ],
+    errors: &[
+        "base64 解码后数据短于 16 字节返回 error",
+        "密钥错误或填充损坏返回 error（不 panic）",
+    ],
+};
+
 /// register 注册 AES 内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("aesEncrypt", bi_aes_encrypt);
-    vm.register_builtin("aesDecrypt", bi_aes_decrypt);
-    vm.register_builtin("aesEncryptStr", bi_aes_encrypt_str);
-    vm.register_builtin("aesDecryptStr", bi_aes_decrypt_str);
+    vm.register_builtin_doc("aesEncrypt", bi_aes_encrypt, &DOC_AES_ENCRYPT);
+    vm.register_builtin_doc("aesDecrypt", bi_aes_decrypt, &DOC_AES_DECRYPT);
+    vm.register_builtin_doc("aesEncryptStr", bi_aes_encrypt_str, &DOC_AES_ENCRYPT_STR);
+    vm.register_builtin_doc("aesDecryptStr", bi_aes_decrypt_str, &DOC_AES_DECRYPT_STR);
 }
 
 /// to_bytes 将参数转为字节 Vec。

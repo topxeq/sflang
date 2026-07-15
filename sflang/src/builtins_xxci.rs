@@ -20,15 +20,77 @@ use std::sync::Arc;
 
 use crate::builtins_helpers as bh;
 use crate::des::CtrStream;
+use crate::function::BuiltinDoc;
 use crate::value::{error_value, Value};
 use crate::vm::VM;
 
+static DOC_XXCI_SERVER: BuiltinDoc = BuiltinDoc {
+    category: "xxci",
+    signature: "xxciServer(addr, password, encryptMethod) -> server",
+    summary: "启动加密代理服务器，接收加密 SOCKS5 连接（与 Go 版 goconnectit 协议兼容）。",
+    params: &[
+        ("addr", "监听地址，如 \"0.0.0.0:8888\""),
+        ("password", "加密密码，空串时使用默认 \"topxeq\""),
+        ("encryptMethod", "加密方法：\"des\" / \"txdef\" / \"txdee\" / \"txde\""),
+    ],
+    returns: "XxciServer 对象，传给 xxciServerStop 停止",
+    examples: &["s := xxciServer(\"0.0.0.0:8888\", \"mypassword\", \"txde\")  // 启动 txde 加密的服务器"],
+    errors: &[
+        "xxciServer() 绑定 'xxx' 失败（可能原因：地址被占用或权限不足）",
+        "不支持的加密方法（可能原因：拼写错误，支持 des/txdef/txdee/txde）",
+    ],
+};
+
+static DOC_XXCI_SERVER_STOP: BuiltinDoc = BuiltinDoc {
+    category: "xxci",
+    signature: "xxciServerStop(server) -> undefined",
+    summary: "停止 xxciServer 启动的服务器。",
+    params: &[("server", "xxciServer 返回的对象")],
+    returns: "undefined",
+    examples: &["xxciServerStop(s)  // 停止服务器"],
+    errors: &[
+        "xxciServerStop() 参数不是服务器对象（可能原因：传入了错误类型，应使用 xxciServer 的返回值）",
+        "xxciServerStop() 参数应为服务器，得到 X（可能原因：参数类型不匹配）",
+    ],
+};
+
+static DOC_XXCI_CLIENT: BuiltinDoc = BuiltinDoc {
+    category: "xxci",
+    signature: "xxciClient(serverAddr, localAddr, password, encryptMethod) -> client",
+    summary: "启动加密代理客户端，本地暴露 SOCKS5 代理，经加密通道转发到 xxciServer。",
+    params: &[
+        ("serverAddr", "远程 xxciServer 地址，如 \"your-host:8888\""),
+        ("localAddr", "本地 SOCKS5 监听地址，如 \"127.0.0.1:1080\""),
+        ("password", "加密密码，需与服务器一致"),
+        ("encryptMethod", "加密方法，需与服务器一致：des/txdef/txdee/txde"),
+    ],
+    returns: "XxciClient 对象，传给 xxciClientStop 停止",
+    examples: &["c := xxciClient(\"my-server:8888\", \"127.0.0.1:1080\", \"mypassword\", \"txde\")  // 本地 1080 提供加密代理"],
+    errors: &[
+        "xxciClient() 绑定 'xxx' 失败（可能原因：地址被占用或权限不足）",
+        "[xxciClient] 连接服务器 xxx 失败（可能原因：服务器未启动或网络不通）",
+    ],
+};
+
+static DOC_XXCI_CLIENT_STOP: BuiltinDoc = BuiltinDoc {
+    category: "xxci",
+    signature: "xxciClientStop(client) -> undefined",
+    summary: "停止 xxciClient 启动的客户端。",
+    params: &[("client", "xxciClient 返回的对象")],
+    returns: "undefined",
+    examples: &["xxciClientStop(c)  // 停止客户端"],
+    errors: &[
+        "xxciClientStop() 参数不是客户端对象（可能原因：传入了错误类型，应使用 xxciClient 的返回值）",
+        "xxciClientStop() 参数应为客户端，得到 X（可能原因：参数类型不匹配）",
+    ],
+};
+
 /// register 注册所有 goconnectit 内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("xxciServer", bi_xxci_server);
-    vm.register_builtin("xxciServerStop", bi_xxci_server_stop);
-    vm.register_builtin("xxciClient", bi_xxci_client);
-    vm.register_builtin("xxciClientStop", bi_xxci_client_stop);
+    vm.register_builtin_doc("xxciServer", bi_xxci_server, &DOC_XXCI_SERVER);
+    vm.register_builtin_doc("xxciServerStop", bi_xxci_server_stop, &DOC_XXCI_SERVER_STOP);
+    vm.register_builtin_doc("xxciClient", bi_xxci_client, &DOC_XXCI_CLIENT);
+    vm.register_builtin_doc("xxciClientStop", bi_xxci_client_stop, &DOC_XXCI_CLIENT_STOP);
 }
 
 // ============ 类型定义 ============

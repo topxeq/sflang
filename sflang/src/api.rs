@@ -85,25 +85,14 @@ impl Sflang {
     }
 
     /// call_func 调用已定义的全局函数。
+    ///
+    /// 直接通过 VM 调用栈执行（零编译开销，不污染全局命名空间）。
+    /// name 为脚本中定义的全局函数名，args 为实参列表。
     pub fn call_func(&mut self, name: &str, args: &[Value]) -> Result<Value, Value> {
-        let _f = self.vm.get_global(name).ok_or_else(|| {
+        let callee = self.vm.get_global(name).ok_or_else(|| {
             crate::value::error_value(format!("function not found: {}", name))
         })?;
-        // 通过构造调用栈执行
-        // 简化：编译 "name(args)" 并执行
-        let arg_exprs: Vec<String> = args.iter().enumerate()
-            .map(|(i, _)| format!("__arg{}", i))
-            .collect();
-        let call_src = if arg_exprs.is_empty() {
-            format!("{}()", name)
-        } else {
-            format!("{}({})", name, arg_exprs.join(", "))
-        };
-        // 设置参数为全局变量
-        for (i, arg) in args.iter().enumerate() {
-            self.vm.set_global(&format!("__arg{}", i), arg.clone());
-        }
-        self.run_string(&call_src)
+        self.vm.call_function_value(callee, args.to_vec())
     }
 }
 

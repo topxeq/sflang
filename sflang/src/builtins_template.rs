@@ -13,11 +13,32 @@
 use crate::builtins_helpers as bh;
 use crate::value::Value;
 use crate::vm::VM;
+use crate::function::BuiltinDoc;
+
+static DOC_RENDERMARKDOWN: BuiltinDoc = BuiltinDoc {
+    category: "template",
+    signature: "renderMarkdown(md) -> string",
+    summary: "将 Markdown 转为 HTML。",
+    params: &[("md", "Markdown 文本")],
+    returns: "string HTML",
+    examples: &["renderMarkdown(mdText)"],
+    errors: &[],
+};
+
+static DOC_REPLACEHTMLBYMAP: BuiltinDoc = BuiltinDoc {
+    category: "template",
+    signature: "replaceHtmlByMap(tmpl, m) -> string",
+    summary: "用 map 替换模板中的 {{key}} 占位符。",
+    params: &[("tmpl", "含 {{key}} 占位符的模板"), ("m", "键值映射（object/map）")],
+    returns: "string 替换后的字符串",
+    examples: &["replaceHtmlByMap(tmpl, {\"name\": \"Alice\"})  // Hi Alice"],
+    errors: &[],
+};
 
 /// register 注册所有模板内置函数到 VM。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("renderMarkdown", bi_render_markdown);
-    vm.register_builtin("replaceHtmlByMap", bi_replace_html_by_map);
+    vm.register_builtin_doc("renderMarkdown", bi_render_markdown, &DOC_RENDERMARKDOWN);
+    vm.register_builtin_doc("replaceHtmlByMap", bi_replace_html_by_map, &DOC_REPLACEHTMLBYMAP);
 }
 
 // ---- HTML 转义辅助 ----

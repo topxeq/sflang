@@ -27,34 +27,302 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::datetime::DateTime;
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 use crate::vm::VM;
 
+// ---- 时间函数文档 ----
+
+static DOC_NOW: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "now() -> int",
+    summary: "返回自 Unix epoch（1970-01-01 UTC）以来的毫秒数。",
+    params: &[],
+    returns: "int 当前时间毫秒时间戳",
+    examples: &[
+        "now()   → 1720000000000",
+        "// 计算耗时：var t = now(); ...; println(now() - t)",
+    ],
+    errors: &[
+        "本函数返回毫秒；需要秒请用 nowSec",
+    ],
+};
+
+static DOC_NOW_DT: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "nowDT() -> datetime",
+    summary: "返回当前本地时间的 datetime 对象。",
+    params: &[],
+    returns: "datetime 当前时间",
+    examples: &[
+        "var dt = nowDT()",
+        "dtFormat(dt, \"2006-01-02 15:04:05\")",
+    ],
+    errors: &[],
+};
+
+static DOC_DATETIME: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "datetime(millis) | datetime(y,m,d[,tz]) | datetime(y,m,d,H,M,S[,tz]) -> datetime",
+    summary: "构造 datetime。1 参=毫秒(UTC)；3/4 参=年月日[+时区]；6/7 参=年月日时分秒[+时区]。",
+    params: &[
+        ("millis | y", "1参为 Unix 毫秒；否则为年份（如 2026）"),
+        ("m", "月份 1-12（多参形式）"),
+        ("d", "日 1-31"),
+        ("H/M/S", "时分秒，可选（6/7 参形式）"),
+        ("tz", "最后可选参数：时区偏移分钟（int）"),
+    ],
+    returns: "datetime；非法日期返回 error",
+    examples: &[
+        "datetime(1720000000000)",
+        "datetime(2026, 7, 14)",
+        "datetime(2026, 7, 14, 12, 30, 0)",
+    ],
+    errors: &[
+        "参数数须为 1/3/4/6/7，其他数量报错",
+        "非法日期（如 2 月 30 日、月份越界）返回 error",
+    ],
+};
+
+static DOC_DATETIME_FROM_MILLIS: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "datetimeFromMillis(ms) -> datetime",
+    summary: "将 Unix 毫秒时间戳转为 datetime（UTC 时区）。",
+    params: &[("ms", "Unix 毫秒时间戳（int）")],
+    returns: "datetime UTC 时间",
+    examples: &[
+        "datetimeFromMillis(now())",
+        "datetimeFromMillis(0)   // 1970-01-01 UTC",
+    ],
+    errors: &[],
+};
+
+static DOC_DATETIME_PARSE: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "datetimeParse(s, fmt) -> datetime",
+    summary: "按 Go 风格参考时间格式 fmt 解析字符串为 datetime。",
+    params: &[
+        ("s", "待解析的时间字符串"),
+        ("fmt", "Go 风格布局，如 \"2006-01-02 15:04:05\""),
+    ],
+    returns: "datetime；解析失败返回 error",
+    examples: &[
+        "datetimeParse(\"2026-07-14\", \"2006-01-02\")",
+        "datetimeParse(\"2026-07-14 12:00:00\", \"2006-01-02 15:04:05\")",
+    ],
+    errors: &[
+        "参数顺序：s 在前，fmt 在后（最易搞反）",
+        "fmt 用 Go 风格参考时间（2006/01/02/15/04/05），不是 strftime 的 %Y%m%d",
+        "字符串与格式不匹配返回 error",
+    ],
+};
+
+static DOC_DT_FORMAT: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "dtFormat(dt, fmt) -> string",
+    summary: "按 Go 风格参考时间格式 fmt 格式化 datetime 为字符串。",
+    params: &[
+        ("dt", "datetime 对象"),
+        ("fmt", "Go 风格布局，如 \"2006-01-02 15:04:05\""),
+    ],
+    returns: "string 格式化结果",
+    examples: &[
+        "dtFormat(nowDT(), \"2006-01-02\")     → \"2026-07-14\"",
+        "dtFormat(dt, \"15:04:05\")           → \"12:30:00\"",
+    ],
+    errors: &[
+        "参数顺序：dt 在前，fmt 在后",
+        "第 1 个参数须为 datetime；fmt 为 Go 风格布局（非 strftime）",
+    ],
+};
+
+static DOC_DT_ADD_DAYS: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "dtAddDays(dt, n) -> datetime",
+    summary: "datetime 加 n 天，返回新 datetime（原对象不可变）。",
+    params: &[
+        ("dt", "datetime 对象"),
+        ("n", "天数（int，可为负）"),
+    ],
+    returns: "datetime 加减天数后的新对象",
+    examples: &[
+        "dtAddDays(nowDT(), 7)   // 一周后",
+        "dtAddDays(dt, -1)       // 昨天",
+    ],
+    errors: &[
+        "第 1 个参数须为 datetime，类型不匹配报错",
+    ],
+};
+
+static DOC_FORMAT_TIME: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "formatTime(dt, fmt) -> string",
+    summary: "格式化 datetime 为字符串（dtFormat 的语义化别名，行为完全相同）。",
+    params: &[
+        ("dt", "datetime 对象"),
+        ("fmt", "Go 风格布局，如 \"2006-01-02 15:04:05\""),
+    ],
+    returns: "string 格式化结果",
+    examples: &[
+        "formatTime(nowDT(), \"2006-01-02 15:04:05\")",
+    ],
+    errors: &[
+        "与 dtFormat 完全等价；fmt 用 Go 风格参考时间",
+    ],
+};
+
+static DOC_RUN_TICKER: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "runTicker(fn, intervalMs) -> ticker",
+    summary: "启动独立线程，每 intervalMs 毫秒调用一次 fn()，返回 ticker 句柄。",
+    params: &[
+        ("fn", "无参函数（func 定义或内置函数），每周期调用一次"),
+        ("intervalMs", "周期毫秒数（正整数）"),
+    ],
+    returns: "ticker 句柄（传给 stopTicker 停止）",
+    examples: &[
+        "var t = runTicker(func() { println(now()) }, 1000)",
+        "// 1 秒打印一次时间",
+    ],
+    errors: &[
+        "第 1 个参数须为 function（func/Builtin），其他类型报错",
+        "intervalMs 必须为正整数，否则报错",
+        "子线程异常静默打印不中断；共享主线程 globals/output",
+    ],
+};
+
+static DOC_STOP_TICKER: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "stopTicker(handle) -> undefined",
+    summary: "停止 runTicker 启动的周期任务（子线程在当前周期结束后退出，最长 intervalMs）。",
+    params: &[("handle", "runTicker 返回的 ticker 句柄")],
+    returns: "undefined",
+    examples: &[
+        "var t = runTicker(fn, 1000)",
+        "// ...",
+        "stopTicker(t)   // 停止周期任务",
+    ],
+    errors: &[
+        "参数须为 runTicker 返回的 ticker 句柄，其他类型报错",
+        "幂等：对已停止的 ticker 调用无副作用",
+    ],
+};
+
+static DOC_NOWSEC: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "nowSec() -> int",
+    summary: "返回当前 Unix 时间戳（秒）。",
+    params: &[],
+    returns: "int",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_CLOCK: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "clock() -> float",
+    summary: "返回程序运行时间（秒）。",
+    params: &[],
+    returns: "float",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_ISDATETIME: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "isDatetime(v) -> bool",
+    summary: "判断是否为 datetime 类型。",
+    params: &[("v", "任意值")],
+    returns: "bool",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_DTADDSECONDS: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "dtAddSeconds(dt, n) -> datetime",
+    summary: "日期时间加 n 秒。",
+    params: &[("dt", "datetime"), ("n", "秒数")],
+    returns: "datetime",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_DTADDMILLIS: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "dtAddMillis(dt, n) -> datetime",
+    summary: "日期时间加 n 毫秒。",
+    params: &[("dt", "datetime"), ("n", "毫秒数")],
+    returns: "datetime",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_DTTOMILLIS: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "dtToMillis(dt) -> int",
+    summary: "datetime 转 Unix 毫秒时间戳。",
+    params: &[("dt", "datetime")],
+    returns: "int",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_GETNOWSTR: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "getNowStr([fmt]) -> string",
+    summary: "返回当前时间格式化字符串。",
+    params: &[("fmt", "可选。Go 风格格式")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_GETNOWTIMESTAMP: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "getNowTimeStamp() -> int",
+    summary: "返回当前 Unix 毫秒时间戳。",
+    params: &[],
+    returns: "int",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_TIMEADDDATE: BuiltinDoc = BuiltinDoc {
+    category: "datetime",
+    signature: "timeAddDate(dt, years, months, days) -> datetime",
+    summary: "日期加减年月日。",
+    params: &[("dt", "datetime"), ("years", "年"), ("months", "月"), ("days", "日")],
+    returns: "datetime",
+    examples: &[],
+    errors: &[],
+};
+
 /// register 注册所有时间内置函数到 VM。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("now", bi_now);
-    vm.register_builtin("nowSec", bi_now_sec);
-    vm.register_builtin("clock", bi_clock);
+    vm.register_builtin_doc("now", bi_now, &DOC_NOW);
+    vm.register_builtin_doc("nowSec", bi_now_sec, &DOC_NOWSEC);
+    vm.register_builtin_doc("clock", bi_clock, &DOC_CLOCK);
     // datetime 类型函数
-    vm.register_builtin("nowDT", bi_now_dt);
-    vm.register_builtin("datetime", bi_datetime);
-    vm.register_builtin("datetimeFromMillis", bi_datetime_from_millis);
-    vm.register_builtin("datetimeParse", bi_datetime_parse);
-    vm.register_builtin("isDatetime", bi_is_datetime);
+    vm.register_builtin_doc("nowDT", bi_now_dt, &DOC_NOW_DT);
+    vm.register_builtin_doc("datetime", bi_datetime, &DOC_DATETIME);
+    vm.register_builtin_doc("datetimeFromMillis", bi_datetime_from_millis, &DOC_DATETIME_FROM_MILLIS);
+    vm.register_builtin_doc("datetimeParse", bi_datetime_parse, &DOC_DATETIME_PARSE);
+    vm.register_builtin_doc("isDatetime", bi_is_datetime, &DOC_ISDATETIME);
     // datetime 运算函数（datetime 不可变，运算返回新值）
-    vm.register_builtin("dtFormat", bi_dt_format);
-    vm.register_builtin("dtAddDays", bi_dt_add_days);
-    vm.register_builtin("dtAddSeconds", bi_dt_add_seconds);
-    vm.register_builtin("dtAddMillis", bi_dt_add_millis);
-    vm.register_builtin("dtToMillis", bi_dt_to_millis);
+    vm.register_builtin_doc("dtFormat", bi_dt_format, &DOC_DT_FORMAT);
+    vm.register_builtin_doc("dtAddDays", bi_dt_add_days, &DOC_DT_ADD_DAYS);
+    vm.register_builtin_doc("dtAddSeconds", bi_dt_add_seconds, &DOC_DTADDSECONDS);
+    vm.register_builtin_doc("dtAddMillis", bi_dt_add_millis, &DOC_DTADDMILLIS);
+    vm.register_builtin_doc("dtToMillis", bi_dt_to_millis, &DOC_DTTOMILLIS);
     // 便捷函数
-    vm.register_builtin("getNowStr", bi_get_now_str);
+    vm.register_builtin_doc("getNowStr", bi_get_now_str, &DOC_GETNOWSTR);
     // 扩展函数
-    vm.register_builtin("getNowTimeStamp", bi_get_now_timestamp);
-    vm.register_builtin("timeAddDate", bi_time_add_date);
-    vm.register_builtin("runTicker", bi_run_ticker);
-    vm.register_builtin("stopTicker", bi_stop_ticker);
-    vm.register_builtin("formatTime", bi_format_time);
+    vm.register_builtin_doc("getNowTimeStamp", bi_get_now_timestamp, &DOC_GETNOWTIMESTAMP);
+    vm.register_builtin_doc("timeAddDate", bi_time_add_date, &DOC_TIMEADDDATE);
+    vm.register_builtin_doc("runTicker", bi_run_ticker, &DOC_RUN_TICKER);
+    vm.register_builtin_doc("stopTicker", bi_stop_ticker, &DOC_STOP_TICKER);
+    vm.register_builtin_doc("formatTime", bi_format_time, &DOC_FORMAT_TIME);
 }
 
 /// MONOTONIC_BASE 进程级单调时钟基准（懒初始化）。

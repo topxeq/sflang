@@ -13,8 +13,463 @@
 use std::sync::{Arc, Mutex};
 
 use crate::builtins_helpers as bh;
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 use crate::vm::VM;
+
+// ---- 字符串函数文档 ----
+
+static DOC_STR_TO_UPPER: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strToUpper(s) -> string",
+    summary: "将字符串转为大写（Unicode 感知）。",
+    params: &[("s", "原字符串")],
+    returns: "string 大写形式",
+    examples: &["strToUpper(\"hello\")  → \"HELLO\"", "strToUpper(\"你好\")    → \"你好\""],
+    errors: &[],
+};
+
+static DOC_STR_TO_LOWER: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strToLower(s) -> string",
+    summary: "将字符串转为小写（Unicode 感知）。",
+    params: &[("s", "原字符串")],
+    returns: "string 小写形式",
+    examples: &["strToLower(\"HELLO\")  → \"hello\""],
+    errors: &[],
+};
+
+static DOC_STR_TRIM: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "trim(s) -> string",
+    summary: "去除字符串首尾空白字符（空格/制表/换行）。别名 strTrim。",
+    params: &[("s", "原字符串；undefined 视为空串")],
+    returns: "string 去除首尾空白后的字符串",
+    examples: &["trim(\"  hi  \")  → \"hi\""],
+    errors: &[],
+};
+
+static DOC_STR_REPLACE: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strReplace(s, old, new) / strReplace(s, old1, new1, old2, new2, ...) -> string",
+    summary: "替换字符串中的子串（全部替换）。支持多对替换依次执行。",
+    params: &[
+        ("s", "原字符串"),
+        ("old", "要替换的子串"),
+        ("new", "替换为的子串"),
+    ],
+    returns: "string 替换后的字符串",
+    examples: &[
+        "strReplace(\"a-b-c\", \"-\", \"+\")        → \"a+b+c\"",
+        "strReplace(\"abc\", \"a\", \"x\", \"b\", \"y\")  → \"xyc\"",
+    ],
+    errors: &[],
+};
+
+static DOC_STR_SPLIT: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strSplit(sep, s) -> array<string>",
+    summary: "按分隔符 sep 分割字符串 s。",
+    params: &[
+        ("sep", "分隔符字符串（非正则）"),
+        ("s", "被分割的字符串"),
+    ],
+    returns: "array<string> 分割后的片段",
+    examples: &[
+        "strSplit(\",\", \"a,b,c\")    → [\"a\", \"b\", \"c\"]",
+        "strSplit(\"\", \"abc\")       → [\"a\", \"b\", \"c\"]（空分隔符按字符分割）",
+    ],
+    errors: &["参数顺序：sep 在前，s 在后"],
+};
+
+static DOC_STR_JOIN: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strJoin(sep, arr) -> string",
+    summary: "用分隔符 sep 连接字符串数组的各元素。",
+    params: &[
+        ("sep", "分隔符字符串"),
+        ("arr", "待连接的字符串数组（非字符串元素自动转换）"),
+    ],
+    returns: "string 连接后的字符串",
+    examples: &[
+        "strJoin(\",\", [\"a\",\"b\",\"c\"])   → \"a,b,c\"",
+        "strJoin(\"\", [\"a\",\"b\"])         → \"ab\"",
+    ],
+    errors: &["参数顺序：sep 在前，arr 在后"],
+};
+
+static DOC_STR_SUB: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strSub(s, start[, end]) -> string",
+    summary: "截取子串。索引基于字符（Unicode scalar），负数表示从末尾倒数。",
+    params: &[
+        ("s", "原字符串"),
+        ("start", "起始字符索引（含），负数从末尾倒数"),
+        ("end", "可选。结束字符索引（不含）；省略则到末尾"),
+    ],
+    returns: "string 截取的子串",
+    examples: &[
+        "strSub(\"hello\", 1, 3)    → \"el\"",
+        "strSub(\"hello\", 2)       → \"llo\"",
+        "strSub(\"hello\", -2)      → \"lo\"",
+    ],
+    errors: &[],
+};
+
+static DOC_STR_REPEAT: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strRepeat(s, n) -> string",
+    summary: "将字符串重复 n 次。",
+    params: &[
+        ("s", "原字符串"),
+        ("n", "重复次数（int，≥0）"),
+    ],
+    returns: "string 重复后的字符串",
+    examples: &["strRepeat(\"ab\", 3)  → \"ababab\""],
+    errors: &[],
+};
+
+static DOC_STR_STARTS_WITH: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strStartsWith(s, prefix) -> bool",
+    summary: "判断字符串 s 是否以 prefix 开头。",
+    params: &[
+        ("s", "原字符串"),
+        ("prefix", "前缀字符串"),
+    ],
+    returns: "bool",
+    examples: &["strStartsWith(\"hello\", \"he\")  → true"],
+    errors: &[],
+};
+
+static DOC_STR_ENDS_WITH: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strEndsWith(s, suffix) -> bool",
+    summary: "判断字符串 s 是否以 suffix 结尾。",
+    params: &[
+        ("s", "原字符串"),
+        ("suffix", "后缀字符串"),
+    ],
+    returns: "bool",
+    examples: &["strEndsWith(\"hello\", \"lo\")  → true"],
+    errors: &[],
+};
+
+static DOC_STR_FIND: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strFind(sub, s) -> int",
+    summary: "查找子串 sub 在 s 中首次出现的字符索引。",
+    params: &[
+        ("sub", "要查找的子串"),
+        ("s", "被搜索的字符串"),
+    ],
+    returns: "int 首次出现的索引（0-based）；未找到返回 -1",
+    examples: &[
+        "strFind(\"lo\", \"hello\")   → 3",
+        "strFind(\"x\", \"hello\")    → -1",
+    ],
+    errors: &["参数顺序：sub 在前，s 在后"],
+};
+
+static DOC_BYTESAT: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "bytesAt(b, idx) -> int",
+    summary: "获取字节值（0-255）。",
+    params: &[("b", "bytes/string"), ("idx", "字节索引")],
+    returns: "int",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_BYTESGBTOUTF8STR: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "bytesGbToUtf8Str(b) -> string",
+    summary: "GBK 字节转 UTF-8。",
+    params: &[("b", "GBK bytes")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_BYTESSLICE: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "bytesSlice(b, start[, end]) -> bytes",
+    summary: "按字节切片。",
+    params: &[("b", "bytes/string"), ("start", "起始"), ("end", "可选")],
+    returns: "bytes",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_CHARFROMCODE: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "charFromCode(code) -> string",
+    summary: "Unicode 码点转字符。",
+    params: &[("code", "码点")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_CODEOF: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "codeOf(s) -> int",
+    summary: "字符转 Unicode 码点。",
+    params: &[("s", "单字符")],
+    returns: "int",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_ISUTF8: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "isUtf8(b) -> bool",
+    summary: "是否有效 UTF-8。",
+    params: &[("b", "bytes")],
+    returns: "bool",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_LENBYTES: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "lenBytes(b) -> int",
+    summary: "返回字节长度。",
+    params: &[("b", "bytes/string")],
+    returns: "int",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_REVERSEMAP: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "reverseMap(m) -> object",
+    summary: "反转 map 键值。",
+    params: &[("m", "object/map")],
+    returns: "object",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_SIMPLESTRTOMAP: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "simpleStrToMap(s[, sep1[, sep2]]) -> object",
+    summary: "解析 key=val 为 map。",
+    params: &[("s", "字符串"), ("sep1", "可选"), ("sep2", "可选")],
+    returns: "object",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRCONTAINSANY: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strContainsAny(s, chars) -> bool",
+    summary: "是否包含任意指定字符。",
+    params: &[("s", "字符串"), ("chars", "字符集")],
+    returns: "bool",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRCONTAINSIN: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strContainsIn(s, arr) -> bool",
+    summary: "是否包含数组中任意子串。",
+    params: &[("s", "字符串"), ("arr", "子串数组")],
+    returns: "bool",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRCOUNT: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strCount(s, sub) -> int",
+    summary: "统计子串出现次数。",
+    params: &[("s", "字符串"), ("sub", "子串")],
+    returns: "int",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRFINDDIFFPOS: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strFindDiffPos(a, b) -> int",
+    summary: "首个不同位置。",
+    params: &[("a", "字符串1"), ("b", "字符串2")],
+    returns: "int；相同返回 -1",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRLIMIT: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strLimit(s, maxLen[, suffix]) -> string",
+    summary: "截断到 maxLen 字符。",
+    params: &[("s", "字符串"), ("maxLen", "最大长度"), ("suffix", "可选。默认 ...")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRPAD: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strPad(s, len[, pad[, align]]) -> string",
+    summary: "填充到指定长度。",
+    params: &[("s", "字符串"), ("len", "目标长度"), ("pad", "可选"), ("align", "可选。left/right/center")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRQUOTE: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strQuote(s) -> string",
+    summary: "用双引号包裹并转义。",
+    params: &[("s", "字符串")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRREMOVEBOMHEAD: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strRemoveBomHead(s) -> string",
+    summary: "去除 UTF-8 BOM。",
+    params: &[("s", "字符串")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRREPLACEN: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strReplaceN(s, old, new, n) -> string",
+    summary: "替换前 n 个匹配。",
+    params: &[("s", "字符串"), ("old", "旧子串"), ("new", "新子串"), ("n", "次数")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRSPLITLINES: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strSplitLines(s) -> array<string>",
+    summary: "按行分割。",
+    params: &[("s", "多行文本")],
+    returns: "array<string>",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRSPLITN: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strSplitN(sep, s, n) -> array<string>",
+    summary: "分割，最多 n 段。",
+    params: &[("sep", "分隔符"), ("s", "字符串"), ("n", "最大段数")],
+    returns: "array<string>",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRSUBBYTES: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strSubBytes(s, start[, end]) -> string",
+    summary: "按字节截取子串。",
+    params: &[("s", "字符串"), ("start", "字节起始"), ("end", "可选")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRTOFLOAT: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strToFloat(s) -> float|error",
+    summary: "字符串转浮点。",
+    params: &[("s", "数字字符串")],
+    returns: "float；失败 error",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRTOGBKBYTES: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strToGbkBytes(s) -> bytes",
+    summary: "UTF-8 转 GBK 字节。",
+    params: &[("s", "字符串")],
+    returns: "bytes",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRTOINT: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strToInt(s) -> int|error",
+    summary: "字符串转整数。",
+    params: &[("s", "数字字符串")],
+    returns: "int；失败 error",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRTOUTF8: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strToUtf8(b) -> string",
+    summary: "字节转 UTF-8 字符串。",
+    params: &[("b", "bytes")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRTRIMLEFT: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strTrimLeft(s, cutset) -> string",
+    summary: "去除左侧指定字符集。",
+    params: &[("s", "字符串"), ("cutset", "字符集")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRTRIMPREFIX: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strTrimPrefix(s, prefix) -> string",
+    summary: "去除头部子串（如有）。",
+    params: &[("s", "字符串"), ("prefix", "前缀")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRTRIMRIGHT: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strTrimRight(s, cutset) -> string",
+    summary: "去除右侧指定字符集。",
+    params: &[("s", "字符串"), ("cutset", "字符集")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRTRIMSUFFIX: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strTrimSuffix(s, suffix) -> string",
+    summary: "去除尾部子串（如有）。",
+    params: &[("s", "字符串"), ("suffix", "后缀")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
+
+static DOC_STRUNQUOTE: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "strUnquote(s) -> string",
+    summary: "去除引号并反转义。",
+    params: &[("s", "带引号字符串")],
+    returns: "string",
+    examples: &[],
+    errors: &[],
+};
 
 /// register 注册所有字符串内置函数到 VM。
 ///
@@ -22,55 +477,55 @@ use crate::vm::VM;
 /// （同时支持 string 与 array），此处不重复注册。
 pub fn register(vm: &mut VM) {
     // 字符串专有函数（加 str 前缀，对标 Charlang）
-    vm.register_builtin("strToUpper", bi_upper);
-    vm.register_builtin("strToLower", bi_lower);
-    vm.register_builtin("strTrim", bi_trim);             // 去两侧空白（跨类型：undefined→空串）
-    vm.register_builtin("trim", bi_trim);                // trim 是跨类型函数，保留无前缀
-    vm.register_builtin("strTrimPrefix", bi_trim_start); // 去头部子串
-    vm.register_builtin("strTrimSuffix", bi_trim_end);   // 去尾部子串
-    vm.register_builtin("strStartsWith", bi_starts_with);
-    vm.register_builtin("strEndsWith", bi_ends_with);
-    vm.register_builtin("strFind", bi_find);
-    vm.register_builtin("strReplace", bi_str_replace);   // 支持多对替换
-    vm.register_builtin("strSplit", bi_split);
-    vm.register_builtin("strJoin", bi_join);
-    vm.register_builtin("strSub", bi_substring);
-    vm.register_builtin("strSubBytes", bi_str_sub_bytes);
-    vm.register_builtin("strRepeat", bi_repeat);
+    vm.register_builtin_doc("strToUpper", bi_upper, &DOC_STR_TO_UPPER);
+    vm.register_builtin_doc("strToLower", bi_lower, &DOC_STR_TO_LOWER);
+    vm.register_builtin_doc("strTrim", bi_trim, &DOC_STR_TRIM);
+    vm.register_builtin_doc("trim", bi_trim, &DOC_STR_TRIM);
+    vm.register_builtin_doc("strTrimPrefix", bi_trim_start, &DOC_STRTRIMPREFIX); // 去头部子串
+    vm.register_builtin_doc("strTrimSuffix", bi_trim_end, &DOC_STRTRIMSUFFIX);   // 去尾部子串
+    vm.register_builtin_doc("strStartsWith", bi_starts_with, &DOC_STR_STARTS_WITH);
+    vm.register_builtin_doc("strEndsWith", bi_ends_with, &DOC_STR_ENDS_WITH);
+    vm.register_builtin_doc("strFind", bi_find, &DOC_STR_FIND);
+    vm.register_builtin_doc("strReplace", bi_str_replace, &DOC_STR_REPLACE);
+    vm.register_builtin_doc("strSplit", bi_split, &DOC_STR_SPLIT);
+    vm.register_builtin_doc("strJoin", bi_join, &DOC_STR_JOIN);
+    vm.register_builtin_doc("strSub", bi_substring, &DOC_STR_SUB);
+    vm.register_builtin_doc("strSubBytes", bi_str_sub_bytes, &DOC_STRSUBBYTES);
+    vm.register_builtin_doc("strRepeat", bi_repeat, &DOC_STR_REPEAT);
     // 按字符集裁剪
-    vm.register_builtin("strTrimLeft", bi_str_trim_left);
-    vm.register_builtin("strTrimRight", bi_str_trim_right);
+    vm.register_builtin_doc("strTrimLeft", bi_str_trim_left, &DOC_STRTRIMLEFT);
+    vm.register_builtin_doc("strTrimRight", bi_str_trim_right, &DOC_STRTRIMRIGHT);
     // 其他字符串函数
-    vm.register_builtin("strCount", bi_str_count);
-    vm.register_builtin("strLimit", bi_limit_str);
-    vm.register_builtin("strPad", bi_str_pad);
-    vm.register_builtin("strSplitN", bi_str_split_n);
-    vm.register_builtin("strReplaceN", bi_str_replace_n);
-    vm.register_builtin("strSplitLines", bi_str_split_lines);
-    vm.register_builtin("strQuote", bi_str_quote);
-    vm.register_builtin("strUnquote", bi_str_unquote);
+    vm.register_builtin_doc("strCount", bi_str_count, &DOC_STRCOUNT);
+    vm.register_builtin_doc("strLimit", bi_limit_str, &DOC_STRLIMIT);
+    vm.register_builtin_doc("strPad", bi_str_pad, &DOC_STRPAD);
+    vm.register_builtin_doc("strSplitN", bi_str_split_n, &DOC_STRSPLITN);
+    vm.register_builtin_doc("strReplaceN", bi_str_replace_n, &DOC_STRREPLACEN);
+    vm.register_builtin_doc("strSplitLines", bi_str_split_lines, &DOC_STRSPLITLINES);
+    vm.register_builtin_doc("strQuote", bi_str_quote, &DOC_STRQUOTE);
+    vm.register_builtin_doc("strUnquote", bi_str_unquote, &DOC_STRUNQUOTE);
     // string 字节级访问
-    vm.register_builtin("bytesSlice", bi_bytes_slice);
-    vm.register_builtin("bytesAt", bi_bytes_at);
-    vm.register_builtin("lenBytes", bi_len_bytes);
+    vm.register_builtin_doc("bytesSlice", bi_bytes_slice, &DOC_BYTESSLICE);
+    vm.register_builtin_doc("bytesAt", bi_bytes_at, &DOC_BYTESAT);
+    vm.register_builtin_doc("lenBytes", bi_len_bytes, &DOC_LENBYTES);
     // 码点 ↔ 字符转换
-    vm.register_builtin("charFromCode", bi_char_from_code);
-    vm.register_builtin("codeOf", bi_code_of);
+    vm.register_builtin_doc("charFromCode", bi_char_from_code, &DOC_CHARFROMCODE);
+    vm.register_builtin_doc("codeOf", bi_code_of, &DOC_CODEOF);
     // contains / reverse 由 builtins_arr 多态实现（同时支持 string 与 array）
     // 对标 Charlang 补充
-    vm.register_builtin("strToInt", bi_str_to_int);
-    vm.register_builtin("strToFloat", bi_str_to_float);
-    vm.register_builtin("strContainsAny", bi_str_contains_any);
-    vm.register_builtin("strContainsIn", bi_str_contains_in);
+    vm.register_builtin_doc("strToInt", bi_str_to_int, &DOC_STRTOINT);
+    vm.register_builtin_doc("strToFloat", bi_str_to_float, &DOC_STRTOFLOAT);
+    vm.register_builtin_doc("strContainsAny", bi_str_contains_any, &DOC_STRCONTAINSANY);
+    vm.register_builtin_doc("strContainsIn", bi_str_contains_in, &DOC_STRCONTAINSIN);
     // 编码与字符串分析
-    vm.register_builtin("strFindDiffPos", bi_str_find_diff_pos);
-    vm.register_builtin("strRemoveBomHead", bi_str_remove_bom_head);
-    vm.register_builtin("strToUtf8", bi_str_to_utf8);
-    vm.register_builtin("bytesGbToUtf8Str", bi_bytes_gb_to_utf8_str);
-    vm.register_builtin("strToGbkBytes", bi_str_to_gbk_bytes);
-    vm.register_builtin("isUtf8", bi_is_utf8);
-    vm.register_builtin("simpleStrToMap", bi_simple_str_to_map);
-    vm.register_builtin("reverseMap", bi_reverse_map);
+    vm.register_builtin_doc("strFindDiffPos", bi_str_find_diff_pos, &DOC_STRFINDDIFFPOS);
+    vm.register_builtin_doc("strRemoveBomHead", bi_str_remove_bom_head, &DOC_STRREMOVEBOMHEAD);
+    vm.register_builtin_doc("strToUtf8", bi_str_to_utf8, &DOC_STRTOUTF8);
+    vm.register_builtin_doc("bytesGbToUtf8Str", bi_bytes_gb_to_utf8_str, &DOC_BYTESGBTOUTF8STR);
+    vm.register_builtin_doc("strToGbkBytes", bi_str_to_gbk_bytes, &DOC_STRTOGBKBYTES);
+    vm.register_builtin_doc("isUtf8", bi_is_utf8, &DOC_ISUTF8);
+    vm.register_builtin_doc("simpleStrToMap", bi_simple_str_to_map, &DOC_SIMPLESTRTOMAP);
+    vm.register_builtin_doc("reverseMap", bi_reverse_map, &DOC_REVERSEMAP);
 }
 
 fn s_owned(t: String) -> Value {

@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::types::ValueRef;
 
 use crate::builtins_helpers as bh;
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 
 /// DatabaseConn 统一的数据库连接（支持多种数据库后端）。
@@ -45,6 +46,9 @@ pub enum DatabaseConn {
     Mssql(Mutex<tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>>, tokio::runtime::Runtime),
     /// Oracle 连接（oracle-rs crate，异步 Connection + tokio runtime 桥接同步）。
     Oracle(Mutex<oracle_rs::Connection>, tokio::runtime::Runtime),
+    /// MemSql 内存表数据库（csv/excel 导入），用内置 SQL 子集引擎查询。
+    /// 只读：支持 dbQuery 系列，不支持 dbExec 写操作。
+    MemSql(Mutex<Vec<crate::sql_engine::MemTable>>),
 }
 
 /// parse_mysql_conn_str 手动解析 MySQL 连接字符串。
@@ -96,21 +100,285 @@ fn parse_mysql_conn_str(s: &str) -> Option<mysql::OptsBuilder> {
     Some(builder)
 }
 
+// ---- 数据库函数文档 ----
+
+static DOC_DB_CONNECT: BuiltinDoc = BuiltinDoc {
+    category: "db",
+    signature: "dbConnect(driver, connStr) -> dbConn",
+    summary: "连接数据库，返回连接对象（连接失败返回 error）。",
+    params: &[
+        ("driver", "驱动名：\"sqlite3\"/\"sqlite\"、\"mysql\"、\"postgres\"/\"postgresql\"/\"pg\"、\"mssql\"/\"sqlserver\"、\"oracle\""),
+        ("connStr", "连接字符串（格式因驱动而异，见 examples）"),
+    ],
+    returns: "dbConn 数据库连接对象；失败返回 error 对象（用 isErr 检查）",
+    examples: &[
+        "dbConnect(\"sqlite3\", \"test.db\")                              // 打开本地 SQLite 文件",
+        "dbConnect(\"sqlite3\", \":memory:\")                              // 内存数据库",
+        "dbConnect(\"mysql\", \"mysql://user:pass@host:3306/db\")         // MySQL",
+        "dbConnect(\"postgres\", \"postgresql://user:pass@host:5432/db\") // PostgreSQL",
+        "dbConnect(\"mssql\", \"mssql://sa:pass@host:1433/db\")           // SQL Server",
+        "dbConnect(\"oracle\", \"oracle://user:pass@host:1521/ORCL\")     // Oracle",
+    ],
+    errors: &[
+        "连接失败：网络不通 / 认证失败 / 数据库不存在（返回 error 而非抛异常）",
+        "不支持的 driver 名称（检查拼写）",
+        "MySQL 密码含特殊字符时连接串解析失败，已自动回退手动解析",
+    ],
+};
+
+static DOC_DB_EXEC: BuiltinDoc = BuiltinDoc {
+    category: "db",
+    signature: "dbExec(db, sql, params...) -> int",
+    summary: "执行非查询 SQL（INSERT/UPDATE/DELETE/CREATE/DROP 等），返回影响行数。",
+    params: &[
+        ("db", "dbConnect 返回的连接对象"),
+        ("sql", "SQL 语句，参数用 ? 占位（PostgreSQL 也用 ?，内部自动转 $N）"),
+        ("params...", "可选的可变参数，按顺序绑定到 SQL 的 ? 占位符"),
+    ],
+    returns: "int 影响的行数；执行失败返回 error",
+    examples: &[
+        "dbExec(db, \"CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)\")  // → 0",
+        "dbExec(db, \"INSERT INTO users (id, name) VALUES (?, ?)\", 1, \"Alice\") // → 1",
+        "dbExec(db, \"UPDATE users SET name = ? WHERE id = ?\", \"Bob\", 1)        // → 1",
+    ],
+    errors: &[
+        "第一个参数不是 db 连接对象（未用 dbConnect 创建 / 参数顺序错误）",
+        "SQL 执行失败：语法错误 / 表不存在 / 约束冲突",
+        "占位符数量与参数不匹配",
+    ],
+};
+
+static DOC_DB_QUERY: BuiltinDoc = BuiltinDoc {
+    category: "db",
+    signature: "dbQuery(db, sql, params...) -> array<map>",
+    summary: "执行查询，返回行数组（每行为列名→值的 map）。",
+    params: &[
+        ("db", "dbConnect 返回的连接对象"),
+        ("sql", "SELECT 查询语句，参数用 ? 占位"),
+        ("params...", "可选的可变参数，按顺序绑定到 ? 占位符"),
+    ],
+    returns: "array<map>：每行为 {列名: 值}；NULL 列值为 undefined；失败返回 error",
+    examples: &[
+        "dbQuery(db, \"SELECT id, name FROM users\")                          // → [{\"id\":1,\"name\":\"Alice\"}, ...]",
+        "dbQuery(db, \"SELECT * FROM users WHERE age > ?\", 18)               // 带参数",
+        "dbQuery(db, \"SELECT id, name FROM users\")[0][\"name\"]              // 取第一行 name",
+    ],
+    errors: &[
+        "第一个参数不是 db 连接对象",
+        "SQL 查询失败：语法错误 / 表或列不存在",
+        "NULL 值统一转为 undefined（而非 nil/null 字符串）",
+    ],
+};
+
+static DOC_DB_QUERY_RECS: BuiltinDoc = BuiltinDoc {
+    category: "db",
+    signature: "dbQueryRecs(db, sql, params...) -> array<array>",
+    summary: "执行查询，返回二维数组（第一行为列名，后续为数据行）。",
+    params: &[
+        ("db", "dbConnect 返回的连接对象"),
+        ("sql", "SELECT 查询语句，参数用 ? 占位"),
+        ("params...", "可选的可变参数"),
+    ],
+    returns: "array<array>：第一行是列名数组，其后每行是按列序的值数组；空结果仅返回 []",
+    examples: &[
+        "dbQueryRecs(db, \"SELECT id, name FROM users\")  // → [[\"id\",\"name\"],[1,\"Alice\"],[2,\"Bob\"]]",
+        "dbQueryRecs(db, \"SELECT * FROM t WHERE id=?\", 5)[1][0]  // 取第一数据行的第一列",
+    ],
+    errors: &[
+        "与 dbQuery 的区别：dbQuery 返回 map 数组，dbQueryRecs 返回二维数组（首行列名）",
+        "第一个参数不是 db 连接对象",
+        "SQL 查询失败",
+    ],
+};
+
+static DOC_DB_QUERY_COUNT: BuiltinDoc = BuiltinDoc {
+    category: "db",
+    signature: "dbQueryCount(db, sql, params...) -> int",
+    summary: "查询单值并转为 int（典型用于 COUNT），空结果返回 0。",
+    params: &[
+        ("db", "dbConnect 返回的连接对象"),
+        ("sql", "返回单个数值的查询，如 SELECT COUNT(*) FROM ..."),
+        ("params...", "可选的可变参数"),
+    ],
+    returns: "int：取第一行第一列的值转为整数；空结果返回 0",
+    examples: &[
+        "dbQueryCount(db, \"SELECT COUNT(*) FROM users WHERE age > ?\", 18)  // → 3",
+        "dbQueryCount(db, \"SELECT COUNT(*) FROM orders\")                  // → 1520",
+    ],
+    errors: &[
+        "第一个参数不是 db 连接对象",
+        "结果非数值时会回退为 0（无法解析的字符串）",
+        "SQL 查询失败返回 error",
+    ],
+};
+
+static DOC_DB_QUERY_FLOAT: BuiltinDoc = BuiltinDoc {
+    category: "db",
+    signature: "dbQueryFloat(db, sql, params...) -> float",
+    summary: "查询单值并转为 float（典型用于 AVG/SUM），空结果返回 0.0。",
+    params: &[
+        ("db", "dbConnect 返回的连接对象"),
+        ("sql", "返回单个数值的查询，如 SELECT AVG(score) FROM ..."),
+        ("params...", "可选的可变参数"),
+    ],
+    returns: "float：取第一行第一列的值转为浮点数；空结果返回 0.0",
+    examples: &[
+        "dbQueryFloat(db, \"SELECT AVG(score) FROM students WHERE class = ?\", \"A\")  // → 87.5",
+        "dbQueryFloat(db, \"SELECT SUM(amount) FROM orders\")                          // → 12345.67",
+    ],
+    errors: &[
+        "第一个参数不是 db 连接对象",
+        "整数结果会自动转为浮点数（如 5 → 5.0）",
+        "SQL 查询失败返回 error",
+    ],
+};
+
+static DOC_DB_QUERY_STRING: BuiltinDoc = BuiltinDoc {
+    category: "db",
+    signature: "dbQueryString(db, sql, params...) -> string",
+    summary: "查询单值并转为字符串（典型用于取名称），空结果返回空串。",
+    params: &[
+        ("db", "dbConnect 返回的连接对象"),
+        ("sql", "返回单个值的查询，如 SELECT name FROM ... WHERE id = ?"),
+        ("params...", "可选的可变参数"),
+    ],
+    returns: "string：取第一行第一列的值转为字符串；空结果返回空串 \"\"",
+    examples: &[
+        "dbQueryString(db, \"SELECT name FROM users WHERE id = ?\", 1)  // → \"Alice\"",
+        "dbQueryString(db, \"SELECT title FROM articles LIMIT 1\")      // → \"Hello\"",
+    ],
+    errors: &[
+        "dbQueryStr 是 dbQueryString 的兼容别名（同一函数）",
+        "第一个参数不是 db 连接对象",
+        "NULL 值会转为 \"undefined\" 字符串，空结果返回空串",
+    ],
+};
+
+static DOC_DB_QUERY_MAP: BuiltinDoc = BuiltinDoc {
+    category: "db",
+    signature: "dbQueryMap(db, keyColumn, sql, params...) -> map",
+    summary: "查询并按 keyColumn 的值组织成 map（一对一，后行覆盖前行）。",
+    params: &[
+        ("db", "dbConnect 返回的连接对象"),
+        ("keyColumn", "用作 key 的列名（字符串）"),
+        ("sql", "SELECT 查询语句，参数用 ? 占位"),
+        ("params...", "可选的可变参数（绑定到 sql 的占位符）"),
+    ],
+    returns: "map：{keyValue: rowMap, ...}，每行为完整记录；keyColumn 重复时后者覆盖前者",
+    examples: &[
+        "dbQueryMap(db, \"id\", \"SELECT id, name, age FROM users\")",
+        "// → {\"1\": {\"id\":1,\"name\":\"Alice\",\"age\":30}, \"2\": {\"id\":2,\"name\":\"Bob\",\"age\":25}}",
+        "dbQueryMap(db, \"dept\", \"SELECT dept, name FROM emp WHERE dept=?\", \"销售\")[\"销售\"]",
+    ],
+    errors: &[
+        "参数顺序：dbQueryMap(db, keyColumn, sql, ...) — keyColumn 在 sql 之前",
+        "keyColumn 必须在 SELECT 列表中，否则对应行被跳过",
+        "第一个参数不是 db 连接对象",
+    ],
+};
+
+static DOC_DB_QUERY_MAP_ARRAY: BuiltinDoc = BuiltinDoc {
+    category: "db",
+    signature: "dbQueryMapArray(db, keyColumn, sql, params...) -> map<string, array>",
+    summary: "查询并按 keyColumn 分组组织成 map（一对多，值为行数组）。",
+    params: &[
+        ("db", "dbConnect 返回的连接对象"),
+        ("keyColumn", "用作分组 key 的列名"),
+        ("sql", "SELECT 查询语句，参数用 ? 占位"),
+        ("params...", "可选的可变参数"),
+    ],
+    returns: "map<string, array>：{keyValue: [row1, row2, ...], ...}",
+    examples: &[
+        "dbQueryMapArray(db, \"dept\", \"SELECT dept, name FROM employees\")",
+        "// → {\"销售部\": [{\"dept\":\"销售部\",\"name\":\"张三\"}], \"技术部\": [...]}",
+    ],
+    errors: &[
+        "与 dbQueryMap 区别：MapArray 值为数组（一对多），Map 值为单个记录（一对一）",
+        "keyColumn 必须在 SELECT 列表中，否则对应行被跳过",
+        "第一个参数不是 db 连接对象",
+    ],
+};
+
+static DOC_DB_QUERY_ORDERED: BuiltinDoc = BuiltinDoc {
+    category: "db",
+    signature: "dbQueryOrdered(db, sql, orderByCol, order, params...) -> array<map>",
+    summary: "查询并追加 ORDER BY 子句（返回与 dbQuery 相同的 map 数组）。",
+    params: &[
+        ("db", "dbConnect 返回的连接对象"),
+        ("sql", "SELECT 查询语句（不带 ORDER BY）"),
+        ("orderByCol", "排序依据的列名（自动双引号包裹，内部 \" 转义防注入）"),
+        ("order", "排序方向：\"ASC\" 升序 或 \"DESC\" 降序（不区分大小写）"),
+        ("params...", "可选的可变参数（绑定到 sql 占位符）"),
+    ],
+    returns: "array<map>：与 dbQuery 同格式；order 非法时返回 error",
+    examples: &[
+        "dbQueryOrdered(db, \"SELECT id, name FROM users\", \"name\", \"ASC\")  // 按名升序",
+        "dbQueryOrdered(db, \"SELECT * FROM orders\", \"created_at\", \"DESC\") // 按时间倒序",
+        "dbQueryOrdered(db, \"SELECT * FROM t WHERE dept=?\", \"id\", \"ASC\", \"dev\")  // 带参数",
+    ],
+    errors: &[
+        "参数顺序：dbQueryOrdered(db, sql, orderByCol, order, ...) — 注意 order 在 orderByCol 之后",
+        "order 必须为 'ASC' 或 'DESC'（不区分大小写），其他值返回 error",
+        "orderByCol 含特殊字符会被双引号包裹并转义内部双引号",
+    ],
+};
+
+static DOC_DB_CLOSE: BuiltinDoc = BuiltinDoc {
+    category: "db",
+    signature: "dbClose(db) -> undefined",
+    summary: "关闭数据库连接（连接对象由 GC 自动释放，此函数为显式释放占位）。",
+    params: &[
+        ("db", "dbConnect 返回的连接对象"),
+    ],
+    returns: "undefined（连接对象的实际关闭由引用计数 / drop 管理）",
+    examples: &[
+        "var db = dbConnect(\"sqlite3\", \"test.db\")",
+        "dbExec(db, \"...\")",
+        "dbClose(db)  // 显式标记不再使用",
+    ],
+    errors: &[
+        "第一个参数不是 db 连接对象",
+        "重复关闭不会报错（幂等）",
+    ],
+};
+
+static DOC_FORMAT_SQL_VALUE: BuiltinDoc = BuiltinDoc {
+    category: "db",
+    signature: "formatSqlValue(v) -> string",
+    summary: "将 Sflang 值转为 SQL 字面量字符串（用于手工拼接 SQL）。",
+    params: &[
+        ("v", "要格式化的值：int/byte/float/bigint 直接转数字串，string 单引号包裹并转义，bool 转 TRUE/FALSE，undefined 转 NULL"),
+    ],
+    returns: "string：可直接拼入 SQL 的字面量（如 42、3.14、'O''Brien'、TRUE、NULL）",
+    examples: &[
+        "formatSqlValue(42)        // → \"42\"",
+        "formatSqlValue(3.14)      // → \"3.14\"",
+        "formatSqlValue(\"a'b\")     // → \"'a''b'\"（内部 ' 转义为 ''）",
+        "formatSqlValue(true)      // → \"TRUE\"",
+        "formatSqlValue(undefined) // → \"NULL\"",
+    ],
+    errors: &[
+        "直接拼接 SQL 字面量存在 SQL 注入风险，生产环境推荐用 dbExec/dbQuery 的参数化查询",
+        "string 内部单引号自动转义为两个单引号（SQL 标准）",
+        "主要用于 DDL 生成 / 调试场景",
+    ],
+};
+
 /// register 注册所有数据库内置函数。
 pub fn register(vm: &mut crate::vm::VM) {
-    vm.register_builtin("dbConnect", bi_db_connect);
-    vm.register_builtin("dbExec", bi_db_exec);
-    vm.register_builtin("dbQuery", bi_db_query);
-    vm.register_builtin("dbQueryRecs", bi_db_query_recs);
-    vm.register_builtin("dbQueryCount", bi_db_query_count);
-    vm.register_builtin("dbQueryFloat", bi_db_query_float);
-    vm.register_builtin("dbQueryString", bi_db_query_string);
-    vm.register_builtin("dbQueryStr", bi_db_query_string);  // Charlang 兼容别名
-    vm.register_builtin("dbQueryMap", bi_db_query_map);
-    vm.register_builtin("dbQueryMapArray", bi_db_query_map_array);
-    vm.register_builtin("dbQueryOrdered", bi_db_query_ordered);
-    vm.register_builtin("dbClose", bi_db_close);
-    vm.register_builtin("formatSqlValue", bi_format_sql_value);
+    vm.register_builtin_doc("dbConnect", bi_db_connect, &DOC_DB_CONNECT);
+    vm.register_builtin_doc("dbExec", bi_db_exec, &DOC_DB_EXEC);
+    vm.register_builtin_doc("dbQuery", bi_db_query, &DOC_DB_QUERY);
+    vm.register_builtin_doc("dbQueryRecs", bi_db_query_recs, &DOC_DB_QUERY_RECS);
+    vm.register_builtin_doc("dbQueryCount", bi_db_query_count, &DOC_DB_QUERY_COUNT);
+    vm.register_builtin_doc("dbQueryFloat", bi_db_query_float, &DOC_DB_QUERY_FLOAT);
+    vm.register_builtin_doc("dbQueryString", bi_db_query_string, &DOC_DB_QUERY_STRING);
+    vm.register_builtin_doc("dbQueryStr", bi_db_query_string, &DOC_DB_QUERY_STRING);  // Charlang 兼容别名
+    vm.register_builtin_doc("dbQueryMap", bi_db_query_map, &DOC_DB_QUERY_MAP);
+    vm.register_builtin_doc("dbQueryMapArray", bi_db_query_map_array, &DOC_DB_QUERY_MAP_ARRAY);
+    vm.register_builtin_doc("dbQueryOrdered", bi_db_query_ordered, &DOC_DB_QUERY_ORDERED);
+    vm.register_builtin_doc("dbClose", bi_db_close, &DOC_DB_CLOSE);
+    vm.register_builtin_doc("formatSqlValue", bi_format_sql_value, &DOC_FORMAT_SQL_VALUE);
 }
 
 // ---- 辅助：包装与提取 ----
@@ -606,8 +874,71 @@ fn bi_db_connect(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value
                 ))),
             }
         }
+        "csv" => {
+            // CSV 作为数据库：读取文件，首行作列名，数据行做类型推断。
+            // 表名=文件名（不含路径和扩展名）。
+            let content = match std::fs::read_to_string(conn_str) {
+                Ok(c) => c,
+                Err(e) => return Ok(crate::value::error_value(format!(
+                    "dbConnect() 读取 CSV 文件 '{}' 失败: {} (可能原因：文件不存在或权限不足)", conn_str, e,
+                ))),
+            };
+            let rows_str = crate::builtins_csv::csv_parse(&content);
+            if rows_str.len() < 1 {
+                return Ok(crate::value::error_value("dbConnect() CSV 文件为空或无有效行".to_string()));
+            }
+            // 首行列名
+            let columns: Vec<String> = rows_str[0].clone();
+            // 数据行做类型推断
+            let rows: Vec<Vec<Value>> = rows_str[1..].iter().map(|row| {
+                row.iter().map(|cell| crate::sql_engine::infer_cell(cell)).collect()
+            }).collect();
+            // 表名=文件名（不含路径和扩展名）
+            let table_name = std::path::Path::new(conn_str)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("data")
+                .to_string();
+            let table = crate::sql_engine::MemTable { name: table_name, columns, rows };
+            Ok(db_value(DatabaseConn::MemSql(Mutex::new(vec![table]))))
+        }
+        "excel" | "xlsx" => {
+            // Excel 作为数据库：每个 sheet 一张表，sheet 名=表名。
+            use calamine::{open_workbook_auto, Reader};
+            let mut workbook = match open_workbook_auto(conn_str) {
+                Ok(wb) => wb,
+                Err(e) => return Ok(crate::value::error_value(format!(
+                    "dbConnect() 打开 Excel '{}' 失败: {} (可能原因：文件不存在或格式不支持)", conn_str, e,
+                ))),
+            };
+            let sheet_names = workbook.sheet_names();
+            if sheet_names.is_empty() {
+                return Ok(crate::value::error_value("dbConnect() Excel 文件无 sheet".to_string()));
+            }
+            let mut tables = Vec::new();
+            for sheet_name in &sheet_names {
+                if let Ok(range) = workbook.worksheet_range(sheet_name) {
+                    let all_rows: Vec<Vec<Value>> = range.rows().map(|row| {
+                        row.iter().map(crate::builtins_xlsx::data_to_value_pub).collect()
+                    }).collect();
+                    if all_rows.is_empty() { continue; }
+                    // 首行列名
+                    let columns: Vec<String> = all_rows[0].iter().map(|v| v.to_str()).collect();
+                    let rows = all_rows[1..].to_vec();
+                    tables.push(crate::sql_engine::MemTable {
+                        name: sheet_name.clone(),
+                        columns,
+                        rows,
+                    });
+                }
+            }
+            if tables.is_empty() {
+                return Ok(crate::value::error_value("dbConnect() Excel 文件无有效数据".to_string()));
+            }
+            Ok(db_value(DatabaseConn::MemSql(Mutex::new(tables))))
+        }
         _ => Ok(crate::value::error_value(format!(
-            "dbConnect() 不支持的数据库类型 '{}' (当前支持: sqlite3, mysql, postgres, mssql, oracle)", driver,
+            "dbConnect() 不支持的数据库类型 '{}' (当前支持: sqlite3, mysql, postgres, mssql, oracle, csv, excel)", driver,
         ))),
     }
 }
@@ -709,6 +1040,12 @@ fn bi_db_exec(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
                     "dbExec() SQL 执行失败: {} (SQL: {})", e, sql,
                 ))),
             }
+        }
+        DatabaseConn::MemSql(_) => {
+            // csv/excel 数据库不支持写操作
+            Ok(crate::value::error_value(
+                "dbExec() csv/excel 数据库不支持写操作（INSERT/UPDATE/DELETE），请用 writeCsv/excelWriteSheet 写文件 (可能原因：尝试对只读数据源执行写操作)".to_string(),
+            ))
         }
     }
 }
@@ -875,6 +1212,29 @@ fn bi_db_query(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> 
                 }
                 Err(e) => Ok(crate::value::error_value(format!(
                     "dbQuery() 查询失败: {} (SQL: {})", e, sql,
+                ))),
+            }
+        }
+        DatabaseConn::MemSql(tables) => {
+            // 内置 SQL 引擎：解析 SQL 并在内存表上执行
+            let guard = tables.lock().map_err(|e| crate::value::error_value(format!(
+                "dbQuery() 数据库锁异常: {}", e,
+            )))?;
+            match crate::sql_engine::parse_and_execute(sql, &guard) {
+                Ok((col_names, rows)) => {
+                    // 转为 array<OrdMap> 格式（与真数据库一致）
+                    let mut result: Vec<Value> = Vec::new();
+                    for data_row in &rows {
+                        let mut m = crate::ord_map::OrdMap::new();
+                        for (i, name) in col_names.iter().enumerate() {
+                            m.set(name.clone(), data_row.get(i).cloned().unwrap_or(Value::Undefined));
+                        }
+                        result.push(Value::Map(Arc::new(Mutex::new(m))));
+                    }
+                    Ok(Value::Array(Arc::new(Mutex::new(result))))
+                }
+                Err(e) => Ok(crate::value::error_value(format!(
+                    "dbQuery() SQL 执行失败: {} (SQL: {})", e, sql,
                 ))),
             }
         }
@@ -1121,6 +1481,27 @@ fn bi_db_query_recs(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Va
                 ))),
             }
         }
+        DatabaseConn::MemSql(tables) => {
+            let guard = tables.lock().map_err(|e| crate::value::error_value(format!(
+                "dbQueryRecs() 数据库锁异常: {}", e,
+            )))?;
+            match crate::sql_engine::parse_and_execute(sql, &guard) {
+                Ok((col_names, rows)) => {
+                    let mut result: Vec<Value> = Vec::new();
+                    // 第一行：列名
+                    let col_row: Vec<Value> = col_names.iter().map(|n| Value::str_from(n.clone())).collect();
+                    result.push(Value::Array(Arc::new(Mutex::new(col_row))));
+                    // 数据行
+                    for data_row in &rows {
+                        result.push(Value::Array(Arc::new(Mutex::new(data_row.clone()))));
+                    }
+                    Ok(Value::Array(Arc::new(Mutex::new(result))))
+                }
+                Err(e) => Ok(crate::value::error_value(format!(
+                    "dbQueryRecs() SQL 执行失败: {} (SQL: {})", e, sql,
+                ))),
+            }
+        }
     }
 }
 
@@ -1139,6 +1520,7 @@ fn bi_db_close(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> 
         DatabaseConn::Postgres(_) => {}
         DatabaseConn::Mssql(_, _) => {}
         DatabaseConn::Oracle(_, _) => {}
+        DatabaseConn::MemSql(_) => {}
     }
     Ok(Value::Undefined)
 }

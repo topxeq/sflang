@@ -7,12 +7,280 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 use crate::vm::VM;
 
+// ---- 核心内置函数文档（help 系统第一批）----
+
+/// DOC_PRINTLN println 的文档。
+static DOC_PRINTLN: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "println(...) -> undefined",
+    summary: "打印参数（空格分隔）并换行，输出到标准输出。",
+    params: &[("...", "任意类型，自动转为字符串（多个用空格分隔）")],
+    returns: "undefined（无返回值）",
+    examples: &[
+        "println(\"hello\")              → hello",
+        "println(\"a\", 1, true)         → a 1 true",
+        "println(1 + 2)                 → 3",
+    ],
+    errors: &[],
+};
+
+/// DOC_LEN len 的文档。
+static DOC_LEN: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "len(x) -> int",
+    summary: "返回容器或字符串的长度/元素数。",
+    params: &[
+        ("x", "string（字符数）/ array / object / map / bytes（字节数）"),
+    ],
+    returns: "int 长度值",
+    examples: &[
+        "len(\"hello\")        → 5",
+        "len([1,2,3])         → 3",
+        "len({\"a\":1,\"b\":2}) → 2",
+    ],
+    errors: &[
+        "对不可计长度的类型（如 int）会返回错误",
+    ],
+};
+
+/// DOC_TYPECODE typeCode 的文档。
+static DOC_TYPECODE: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "typeCode(x) -> int",
+    summary: "返回值的固定类型编码（数字），用于快速类型判断。",
+    params: &[("x", "任意值")],
+    returns: "int 类型编码：0=undefined 1=int 2=float 3=bool 4=string 5=bytes 6=array 7=object 8=function 9=builtin 10=error 13=bigInt 14=bigFloat 15=datetime 16=file 17=byte 18=map 19=stringBuilder",
+    examples: &[
+        "typeCode(42)         → 1",
+        "typeCode(\"hi\")      → 4",
+        "typeCode(undefined)  → 0",
+    ],
+    errors: &[],
+};
+
+/// DOC_TYPENAME typeName 的文档。
+static DOC_TYPENAME: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "typeName(x) -> string",
+    summary: "返回值的类型名字符串（如 \"int\"、\"string\"、\"array\"）。",
+    params: &[("x", "任意值")],
+    returns: "string 类型名",
+    examples: &[
+        "typeName(42)         → int",
+        "typeName(\"hi\")      → string",
+        "typeName([1,2])      → array",
+    ],
+    errors: &[],
+};
+
+/// DOC_HELP help 自身的文档。
+static DOC_HELP: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "help([name]) -> string",
+    summary: "查阅内置函数文档。无参列出全部分类，有参返回函数详情或分类函数列表。",
+    params: &[
+        ("name", "可选。函数名（如 \"regFind\"）或分类名（如 \"regex\"）"),
+    ],
+    returns: "string 多行文档或分类列表",
+    examples: &[
+        "help()             → 列出所有内置函数分类",
+        "help(\"regFind\")    → regFind 的签名/参数/示例/常见错误",
+        "help(\"regex\")      → 列出 regex 分类下所有函数",
+    ],
+    errors: &[
+        "函数名拼写错误时返回错误；help() 会自动给出相似函数建议",
+    ],
+};
+
+static DOC_RANGE: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "range(start, end[, step]) -> array<int>",
+    summary: "生成整数数组（含 start 不含 end）。step 默认 1，可为负数。",
+    params: &[
+        ("start", "起始值（含）"),
+        ("end", "结束值（不含）"),
+        ("step", "可选。步长，默认 1；负数用于递减"),
+    ],
+    returns: "array<int> 整数数组",
+    examples: &[
+        "range(1, 5)          → [1, 2, 3, 4]",
+        "range(0, 10, 2)      → [0, 2, 4, 6, 8]",
+        "range(5, 0, -1)      → [5, 4, 3, 2, 1]",
+    ],
+    errors: &[],
+};
+
+static DOC_KEYS: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "keys(obj) -> array<string>",
+    summary: "返回 object/map 的所有键（无序）。",
+    params: &[("obj", "object 或 map")],
+    returns: "array<string> 键名数组",
+    examples: &[
+        "keys({\"a\":1, \"b\":2})  → [\"a\", \"b\"]（顺序不保证）",
+    ],
+    errors: &["对非 object/map 类型会返回错误"],
+};
+
+static DOC_VALUES: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "values(obj) -> array",
+    summary: "返回 object/map 的所有值（无序）。",
+    params: &[("obj", "object 或 map")],
+    returns: "array 值数组",
+    examples: &["values({\"a\":1, \"b\":2})  → [1, 2]"],
+    errors: &[],
+};
+
+static DOC_PUSH: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "push(arr, val) -> int",
+    summary: "向数组末尾添加元素，返回新长度。",
+    params: &[
+        ("arr", "目标数组（原地修改）"),
+        ("val", "要添加的值"),
+    ],
+    returns: "int 添加后的数组长度",
+    examples: &[
+        "var a = [1, 2]; push(a, 3)  → 3; a 变为 [1, 2, 3]",
+    ],
+    errors: &["第一个参数应为 array"],
+};
+
+static DOC_SPRINTF: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "sprintf(fmt, args...) -> string",
+    summary: "格式化字符串（Go 风格占位符：%v %d %s %f %t %x %%）。",
+    params: &[
+        ("fmt", "格式字符串，含 %v(通用) %d(整数) %s(字符串) %f(浮点) %t(布尔) %x(十六进制) %%(字面%)"),
+        ("args", "对应占位符的参数（可变）"),
+    ],
+    returns: "string 格式化后的字符串",
+    examples: &[
+        "sprintf(\"%s=%d\", \"count\", 42)   → \"count=42\"",
+        "sprintf(\"%.2f\", 3.14159)         → \"3.14\"",
+    ],
+    errors: &["占位符数量与参数数量不匹配会返回错误"],
+};
+
+static DOC_SLEEP: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "sleep(seconds) -> undefined",
+    summary: "休眠指定秒数（支持小数，如 0.5）。",
+    params: &[("seconds", "休眠时长（秒，float 或 int）")],
+    returns: "undefined",
+    examples: &[
+        "sleep(1)     // 休眠 1 秒",
+        "sleep(0.5)   // 休眠 500 毫秒",
+    ],
+    errors: &[],
+};
+
+static DOC_ERROR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "error(msg) -> error",
+    summary: "创建错误值（用于返回错误，不抛异常）。",
+    params: &[("msg", "错误信息字符串")],
+    returns: "error 错误值",
+    examples: &[
+        "func divide(a, b) { if b == 0 { return error(\"除零\") }; return a / b }",
+    ],
+    errors: &[],
+};
+
+static DOC_IS_ERROR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "isError(v) -> bool",
+    summary: "判断值是否为 error 类型。",
+    params: &[("v", "任意值")],
+    returns: "bool：是 error 返回 true",
+    examples: &[
+        "isError(error(\"x\"))   → true",
+        "isError(42)             → false",
+    ],
+    errors: &[],
+};
+
+static DOC_DEFAULT_VAL: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "defaultVal(x, d) -> value",
+    summary: "宽松兜底：x 为 falsy 时返回 d，否则返回 x（等价于 x || d）。",
+    params: &[
+        ("x", "原值"),
+        ("d", "兜底值"),
+    ],
+    returns: "x 为 truthy 时返回 x，否则返回 d",
+    examples: &[
+        "defaultVal(undefined, 99)  → 99",
+        "defaultVal(0, 99)          → 99（0 也是 falsy）",
+        "defaultVal(\"hi\", \"x\")     → \"hi\"",
+    ],
+    errors: &["若只需对 undefined 兜底（不触发 0/\"\"），用 defaultUndef 或 ?? 运算符"],
+};
+
+static DOC_DEFAULT_UNDEF: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "defaultUndef(x, d) -> value",
+    summary: "严格空合并：仅当 x 为 undefined 时返回 d，否则返回 x（等价于 x ?? d）。",
+    params: &[
+        ("x", "原值"),
+        ("d", "兜底值"),
+    ],
+    returns: "x 非 undefined 时返回 x，否则返回 d",
+    examples: &[
+        "defaultUndef(undefined, 99)  → 99",
+        "defaultUndef(0, 99)          → 0（0 不触发兜底）",
+        "defaultUndef(\"\", 99)         → \"\"（空串不触发兜底）",
+    ],
+    errors: &[],
+};
+
+static DOC_ASSERT: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "assert(cond[, msg]) -> undefined",
+    summary: "断言：cond 为 false 时抛异常。",
+    params: &[
+        ("cond", "条件（truthy 通过，falsy 抛异常）"),
+        ("msg", "可选。失败时的错误信息"),
+    ],
+    returns: "undefined（通过时）",
+    examples: &[
+        "assert(x > 0)",
+        "assert(x > 0, \"x 必须为正数\")",
+    ],
+    errors: &["断言失败时抛异常（不是返回 error 值）"],
+};
+
+static DOC_UUID: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "uuid() -> string",
+    summary: "生成随机 UUID 字符串（v4 格式，36 字符含连字符）。",
+    params: &[],
+    returns: "string UUID，如 \"550e8400-e29b-41d4-a716-446655440000\"",
+    examples: &["var id = uuid()   // 每次不同"],
+    errors: &[],
+};
+
+static DOC_DEEP_CLONE: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "deepClone(v) -> value",
+    summary: "深拷贝值（递归克隆 array/object/map 及其嵌套结构）。",
+    params: &[("v", "要拷贝的值")],
+    returns: "深拷贝后的新值（与原值不共享引用）",
+    examples: &[
+        "var a = [1, [2, 3]]",
+        "var b = deepClone(a)    // 修改 b 不影响 a",
+    ],
+    errors: &[],
+};
+
 /// register 注册所有内置函数到 VM。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin("println", bi_println);
+    vm.register_builtin_doc("println", bi_println, &DOC_PRINTLN);
     vm.register_builtin("print", bi_print);
     // 打印函数简称（别名）
     vm.register_builtin("pln", bi_println);
@@ -22,33 +290,33 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("prf", bi_printf);
     vm.register_builtin("printfln", bi_printfln);
     vm.register_builtin("pl", bi_printfln);
-    vm.register_builtin("len", bi_len);
-    vm.register_builtin("keys", bi_keys);
-    vm.register_builtin("push", bi_push);
+    vm.register_builtin_doc("len", bi_len, &DOC_LEN);
+    vm.register_builtin_doc("keys", bi_keys, &DOC_KEYS);
+    vm.register_builtin_doc("push", bi_push, &DOC_PUSH);
     vm.register_builtin("pop", bi_pop);
-    vm.register_builtin("typeCode", bi_type_code);
-    vm.register_builtin("typeName", bi_type_name);
+    vm.register_builtin_doc("typeCode", bi_type_code, &DOC_TYPECODE);
+    vm.register_builtin_doc("typeName", bi_type_name, &DOC_TYPENAME);
     vm.register_builtin("string", bi_string);
     vm.register_builtin("int", bi_int);
     vm.register_builtin("float", bi_float);
-    vm.register_builtin("range", bi_range);
-    vm.register_builtin("assert", bi_assert);
-    vm.register_builtin("sleep", bi_sleep);
+    vm.register_builtin_doc("range", bi_range, &DOC_RANGE);
+    vm.register_builtin_doc("assert", bi_assert, &DOC_ASSERT);
+    vm.register_builtin_doc("sleep", bi_sleep, &DOC_SLEEP);
     vm.register_builtin("sleepMs", bi_sleep_ms);
     vm.register_builtin("newStringBuilder", bi_new_string_builder);
     vm.register_builtin("clear", bi_clear);
     vm.register_builtin("reset", bi_reset);
     // ---- 实用函数（对标 charlang 常见编程任务）----
-    vm.register_builtin("uuid", bi_uuid);
+    vm.register_builtin_doc("uuid", bi_uuid, &DOC_UUID);
     vm.register_builtin("randomStr", bi_random_str);
-    vm.register_builtin("values", bi_values);
+    vm.register_builtin_doc("values", bi_values, &DOC_VALUES);
     vm.register_builtin("hasKey", bi_has_key);
-    vm.register_builtin("deepClone", bi_deep_clone);
+    vm.register_builtin_doc("deepClone", bi_deep_clone, &DOC_DEEP_CLONE);
     vm.register_builtin("newObject", bi_new_object);
     vm.register_builtin("filter", bi_filter);
     vm.register_builtin("map", bi_map);
     vm.register_builtin("find", bi_find);
-    vm.register_builtin("sprintf", bi_sprintf);
+    vm.register_builtin_doc("sprintf", bi_sprintf, &DOC_SPRINTF);
     vm.register_builtin("spr", bi_sprintf);
     vm.register_builtin("fpr", bi_printf);
     vm.register_builtin("adjustFloat", bi_adjust_float);
@@ -77,8 +345,8 @@ pub fn register(vm: &mut VM) {
     // 类型判断：isUndefined 保留（特殊语义：缺参返回 true，链式判空）
     vm.register_builtin("isUndefined", bi_is_undefined);
     // 错误处理：isError/isErr 保留（错误判断，非纯类型判断）
-    vm.register_builtin("error", bi_error);
-    vm.register_builtin("isError", bi_is_error);
+    vm.register_builtin_doc("error", bi_error, &DOC_ERROR);
+    vm.register_builtin_doc("isError", bi_is_error, &DOC_IS_ERROR);
     // ---- TXERROR 错误字符串机制（对标 Charlang isErrX/getErrStrX 等）----
     vm.register_builtin("isErr", bi_is_err);
     vm.register_builtin("isErrX", bi_is_err);      // Charlang 兼容别名
@@ -93,8 +361,10 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("trimErr", bi_trim_err);
     // ---- undefined 配套内置函数（对标 Charlang 的 nilToEmpty 等）----
     vm.register_builtin("undefToEmpty", bi_undef_to_empty);
-    vm.register_builtin("default", bi_default);
-    vm.register_builtin("defaultUndef", bi_default_undef);
+    // 注：原 "default" 改名为 "defaultVal"，因 "default" 已成为 switch 关键字。
+    // 语义不变（truthy 兜底，等价于 x || d 运算符）。
+    vm.register_builtin_doc("defaultVal", bi_default, &DOC_DEFAULT_VAL);
+    vm.register_builtin_doc("defaultUndef", bi_default_undef, &DOC_DEFAULT_UNDEF);
     vm.register_builtin("explainUndef", bi_explain_undef);
     // ---- 通用类型判断（取代零散的 isXxx 谓词）----
     vm.register_builtin("isType", bi_is_type);
@@ -109,6 +379,8 @@ pub fn register(vm: &mut VM) {
     // ---- 格式化辅助 ----
     vm.register_builtin("toKMG", bi_to_kmg);
     vm.register_builtin("showTable", bi_show_table);
+    // ---- Help 系统（AI 友好的文档自省）----
+    vm.register_builtin_doc("help", bi_help, &DOC_HELP);
 }
 
 /// bi_println 打印并换行。
@@ -988,8 +1260,9 @@ fn bi_undef_to_empty(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_default 宽松兜底：x 为 falsy（undefined/0/""/空容器）时返回 d，否则返回 x。
 ///
-/// 注意：0 和 "" 也会触发兜底（与 Python 的 `or` 一致）。若只想对 undefined 兜底，
-/// 请用 defaultUndef。d 缺省时按 undefined 处理。
+/// 注册名为 `defaultVal`（原 `default`，因 `default` 已成为 switch 关键字而改名）。
+/// 语义不变：0 和 "" 也会触发兜底（与 Python 的 `or` 一致），等价于 `x || d` 运算符。
+/// 若只想对 undefined 兜底，请用 defaultUndef（等价于 `x ?? d`）。
 fn bi_default(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let x = args.get(0).cloned().unwrap_or(Value::Undefined);
     let d = args.get(1).cloned().unwrap_or(Value::Undefined);
@@ -1796,4 +2069,134 @@ fn bi_call_method(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
     // 调用方法（self 作为第一个参数）
     vm.call_function_value(method, call_args)
+}
+
+/// bi_help Help 系统：查阅内置函数文档与分类列表。
+///
+/// 三种调用形式：
+///   help()          → 按分类列出所有内置函数（多行字符串）
+///   help("funcName")→ 该函数的完整文档（签名/参数/返回/示例/常见错误）
+///   help("category")→ 该分类下所有函数列表（如 help("regex")）
+///
+/// 设计目标：让 AI 和人类能自省内置函数，无需查阅外部文档。
+fn bi_help(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    // 无参：按分类列出所有函数
+    if args.is_empty() {
+        let cats = vm.builtin_categories();
+        let mut out = String::new();
+        out.push_str(&format!("Sflang 内置函数（共 {} 个，按分类列出）：\n", vm.builtin_names().len()));
+        out.push_str("用 help(\"函数名\") 查看详细文档，如 help(\"regFind\")。\n\n");
+        for (cat, names) in &cats {
+            out.push_str(&format!("== {}（{}）==\n", cat, names.len()));
+            // 每行最多 6 个函数名，避免过长
+            for chunk in names.chunks(6) {
+                out.push_str("  ");
+                out.push_str(&chunk.join(", "));
+                out.push('\n');
+            }
+        }
+        return Ok(Value::str_from(out));
+    }
+
+    // 有参：查询函数或分类
+    let key = match args.get(0) {
+        Some(v) => v.to_str(),
+        None => return Ok(Value::str("")),
+    };
+
+    // 1. 先尝试作为函数名查询文档
+    if let Some(doc) = vm.builtin_doc(&key) {
+        return Ok(Value::str_from(format_builtin_doc(&key, doc)));
+    }
+    // 2. 函数存在但无文档
+    if vm.builtin_exists(&key) {
+        let mut out = format!("{}\n（该函数暂无详细文档）\n\n", key);
+        out.push_str("提示：可用 help(\"分类\") 查看同类函数，例如 help(\"regex\")。\n");
+        out.push_str("     常见分类：string, regex, array, math, file, json, encode, datetime, system。\n");
+        return Ok(Value::str_from(out));
+    }
+    // 3. 尝试作为分类名
+    let cats = vm.builtin_categories();
+    let lower_key = key.to_lowercase();
+    if let Some((_, names)) = cats.iter().find(|(c, _)| c.to_lowercase() == lower_key) {
+        let mut out = format!("== {}（{} 个函数）==\n", key, names.len());
+        for name in names {
+            out.push_str("  ");
+            out.push_str(name);
+            // 若该函数有文档，标注简介首行
+            if let Some(doc) = vm.builtin_doc(name) {
+                out.push_str(" — ");
+                out.push_str(doc.summary);
+            }
+            out.push('\n');
+        }
+        return Ok(Value::str_from(out));
+    }
+    // 4. 模糊匹配：找名字包含 key 的函数
+    let all = vm.builtin_names();
+    let matches: Vec<&&str> = all.iter().filter(|n| n.to_lowercase().contains(&lower_key)).collect();
+    if !matches.is_empty() {
+        let mut out = format!("未找到函数或分类 '{}'，但找到以下相似的：\n", key);
+        for m in matches.iter().take(20) {
+            out.push_str("  ");
+            out.push_str(m);
+            out.push('\n');
+        }
+        if matches.len() > 20 {
+            out.push_str(&format!("  ...（共 {} 个匹配）\n", matches.len()));
+        }
+        return Ok(Value::str_from(out));
+    }
+
+    Err(crate::value::error_value(format!(
+        "help() 未找到函数或分类 '{}' (可能原因：名称拼写错误；用 help() 无参查看全部分类)",
+        key
+    )))
+}
+
+/// format_builtin_doc 将 BuiltinDoc 格式化为人类与 AI 友好的多行文档字符串。
+fn format_builtin_doc(name: &str, doc: &crate::function::BuiltinDoc) -> String {
+    let mut out = String::new();
+    out.push_str(doc.signature);
+    out.push_str("\n分类: ");
+    out.push_str(doc.category);
+    out.push_str("\n\n");
+    out.push_str(doc.summary);
+    out.push_str("\n\n");
+    if !doc.params.is_empty() {
+        out.push_str("参数:\n");
+        for (pname, pdesc) in doc.params {
+            out.push_str("  ");
+            out.push_str(pname);
+            out.push_str(" - ");
+            out.push_str(pdesc);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out.push_str("返回: ");
+    out.push_str(doc.returns);
+    out.push('\n');
+    if !doc.examples.is_empty() {
+        out.push_str("\n示例:\n");
+        for ex in doc.examples {
+            out.push_str("  ");
+            out.push_str(ex);
+            out.push('\n');
+        }
+    }
+    if !doc.errors.is_empty() {
+        out.push_str("\n常见错误:\n");
+        for e in doc.errors {
+            out.push_str("  - ");
+            out.push_str(e);
+            out.push('\n');
+        }
+    }
+    // 去掉末尾多余换行
+    let _ = name; // name 已在 signature 中体现
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
 }

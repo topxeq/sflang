@@ -19,6 +19,7 @@
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 
+use crate::function::BuiltinDoc;
 use crate::value::{Value, error_value};
 use crate::vm::VM;
 
@@ -44,24 +45,282 @@ pub struct ZipWriterState {
 // 注册内置函数
 // ===========================================================================
 
+// ---- 压缩与 ZIP 函数文档 ----
+
+static DOC_COMPRESS_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "zip",
+    signature: "compressBytes(data, level?) -> bytes",
+    summary: "用 zlib (deflate + zlib 头) 压缩数据。",
+    params: &[
+        ("data", "要压缩的数据：bytes / byteArray / string"),
+        ("level", "可选：压缩级别 1-9（默认 6），越高压缩率越大但越慢"),
+    ],
+    returns: "bytes：压缩后的数据（zlib 格式，含 2 字节头和 4 字节校验）",
+    examples: &[
+        "var c = compressBytes(\"hello world\")",
+        "var c = compressBytes(fileReadBytes(\"./data.bin\"), 9)  // 最高压缩率",
+    ],
+    errors: &[
+        "data 类型必须为 bytes/byteArray/string",
+        "level 自动 clamp 到 1-9",
+        "对应解压函数为 decompressBytes（与 gzipBytes 的 gzip 格式不同）",
+    ],
+};
+
+static DOC_DECOMPRESS_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "zip",
+    signature: "decompressBytes(data) -> bytes",
+    summary: "解压 zlib (deflate + zlib 头) 压缩的数据。",
+    params: &[
+        ("data", "compressBytes 返回的压缩数据：bytes / byteArray"),
+    ],
+    returns: "bytes：解压后的原始数据；失败返回 error",
+    examples: &[
+        "var data = decompressBytes(compressBytes(\"hello\"))  // → b\"hello\"",
+    ],
+    errors: &[
+        "解压失败：数据不是有效的 zlib 格式（被截断 / 头损坏）",
+        "data 类型必须为 bytes/byteArray",
+        "对应 gzip 格式请用 gunzipBytes",
+    ],
+};
+
+static DOC_GZIP_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "zip",
+    signature: "gzipBytes(data, level?) -> bytes",
+    summary: "用 gzip 格式压缩数据（含 gzip 文件头，兼容 .gz 文件）。",
+    params: &[
+        ("data", "要压缩的数据：bytes / byteArray / string"),
+        ("level", "可选：压缩级别 1-9（默认 6）"),
+    ],
+    returns: "bytes：gzip 格式压缩数据（含文件头，可写入 .gz 文件）",
+    examples: &[
+        "var g = gzipBytes(\"hello world\")",
+        "fileWriteBytes(\"./data.gz\", gzipBytes(fileReadBytes(\"./data\")))",
+    ],
+    errors: &[
+        "与 compressBytes 区别：gzipBytes 含 gzip 文件头（10 字节），compressBytes 是 zlib 头（2 字节）",
+        "level 自动 clamp 到 1-9",
+        "对应解压函数为 gunzipBytes",
+    ],
+};
+
+static DOC_GUNZIP_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "zip",
+    signature: "gunzipBytes(data) -> bytes",
+    summary: "解压 gzip 格式数据（兼容 .gz 文件内容）。",
+    params: &[
+        ("data", "gzip 格式压缩数据：bytes / byteArray"),
+    ],
+    returns: "bytes：解压后的原始数据；失败返回 error",
+    examples: &[
+        "var data = gunzipBytes(gzipBytes(\"hello\"))  // → b\"hello\"",
+        "var data = gunzipBytes(fileReadBytes(\"./data.gz\"))  // 读取 .gz 文件",
+    ],
+    errors: &[
+        "解压失败：数据不是有效的 gzip 格式（头损坏 / 不是 gzip）",
+        "data 类型必须为 bytes/byteArray",
+    ],
+};
+
+static DOC_ZIP_CREATE: BuiltinDoc = BuiltinDoc {
+    category: "zip",
+    signature: "zipCreate(zipPath) -> zipWriter",
+    summary: "创建 ZIP 文件写入器（后续用 zipAddFile/zipAddBytes/zipAddDir 添加内容，最后 zipClose 落盘）。",
+    params: &[
+        ("zipPath", "要生成的 ZIP 文件路径"),
+    ],
+    returns: "zipWriter 写入器对象（传入后续 zip* 函数）",
+    examples: &[
+        "var zw = zipCreate(\"./out.zip\")",
+        "zipAddFile(zw, \"./a.txt\", \"a.txt\")",
+        "zipAddBytes(zw, \"hello\", \"b.txt\")",
+        "zipClose(zw)  // 落盘",
+    ],
+    errors: &[
+        "zipPath 必须为 string",
+        "实际写入在 zipClose 时发生；未 close 不会生成文件",
+    ],
+};
+
+static DOC_ZIP_ADD_FILE: BuiltinDoc = BuiltinDoc {
+    category: "zip",
+    signature: "zipAddFile(zipWriter, srcPath, entryName) -> undefined",
+    summary: "将本地文件添加到 ZIP（entryName 为 zip 内路径，支持中文）。",
+    params: &[
+        ("zipWriter", "zipCreate 返回的写入器"),
+        ("srcPath", "本地源文件路径"),
+        ("entryName", "zip 内的文件名（路径，支持中文 UTF-8）"),
+    ],
+    returns: "undefined：添加成功；失败返回 error",
+    examples: &[
+        "zipAddFile(zw, \"./report.pdf\", \"reports/report.pdf\")",
+        "zipAddFile(zw, \"./配置.txt\", \"配置.txt\")  // 中文文件名",
+    ],
+    errors: &[
+        "打开源文件失败：路径不存在 / 权限不足",
+        "zipWriter 已关闭（zipClose 后不能再写）",
+        "使用 Deflated 压缩方法",
+    ],
+};
+
+static DOC_ZIP_ADD_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "zip",
+    signature: "zipAddBytes(zipWriter, data, entryName) -> undefined",
+    summary: "将内存数据（bytes/byteArray/string）添加到 ZIP。",
+    params: &[
+        ("zipWriter", "zipCreate 返回的写入器"),
+        ("data", "要写入的数据：bytes / byteArray / string"),
+        ("entryName", "zip 内的文件名（支持中文 UTF-8）"),
+    ],
+    returns: "undefined：添加成功；失败返回 error",
+    examples: &[
+        "zipAddBytes(zw, \"hello world\", \"hello.txt\")",
+        "zipAddBytes(zw, fileReadBytes(\"./data.bin\"), \"data.bin\")",
+    ],
+    errors: &[
+        "data 类型必须为 bytes/byteArray/string",
+        "zipWriter 已关闭后写入返回 error",
+    ],
+};
+
+static DOC_ZIP_ADD_DIR: BuiltinDoc = BuiltinDoc {
+    category: "zip",
+    signature: "zipAddDir(zipWriter, dirPath, basePath?) -> int",
+    summary: "递归添加整个目录到 ZIP（保留相对路径结构）。",
+    params: &[
+        ("zipWriter", "zipCreate 返回的写入器"),
+        ("dirPath", "要添加的本地目录路径"),
+        ("basePath", "可选：目录在 zip 内的根路径前缀（如 \"\" 或 \"subdir/\"，默认空）"),
+    ],
+    returns: "int：实际添加的文件数（不含目录条目）",
+    examples: &[
+        "var n = zipAddDir(zw, \"./project\", \"\")           // zip 内保留 project 下的相对路径",
+        "var n = zipAddDir(zw, \"C:\\\\www\", \"web/\")         // zip 内路径加 web/ 前缀",
+    ],
+    errors: &[
+        "目录不存在返回 error",
+        "zipWriter 已关闭后写入返回 error",
+        "目录条目用 Stored（不压缩），文件用 Deflated",
+    ],
+};
+
+static DOC_ZIP_CLOSE: BuiltinDoc = BuiltinDoc {
+    category: "zip",
+    signature: "zipClose(zipWriter) -> bool",
+    summary: "完成 ZIP 并写入磁盘（必须调用，否则不会生成文件）。",
+    params: &[
+        ("zipWriter", "zipCreate 返回的写入器"),
+    ],
+    returns: "bool：true 写入成功；失败返回 error",
+    examples: &[
+        "var zw = zipCreate(\"./out.zip\")",
+        "zipAddFile(zw, \"./a.txt\", \"a.txt\")",
+        "zipClose(zw)  // 此时才真正写入 out.zip",
+    ],
+    errors: &[
+        "重复 close 返回 error（已关闭）",
+        "写入磁盘失败：路径不可写 / 磁盘满",
+        "未调用 close 的写入器其内容会丢失（GC 时丢弃）",
+    ],
+};
+
+static DOC_ZIP_LIST: BuiltinDoc = BuiltinDoc {
+    category: "zip",
+    signature: "zipList(zipPath) -> array<object>",
+    summary: "列出 ZIP 文件中所有条目（文件名自动解码 UTF-8/GBK）。",
+    params: &[
+        ("zipPath", "ZIP 文件路径"),
+    ],
+    returns: "array<object>：每个元素 {name:string, size:int, compressedSize:int, isDir:bool}",
+    examples: &[
+        "var entries = zipList(\"./out.zip\")  // → [{\"name\":\"a.txt\",\"size\":100,\"compressedSize\":45,\"isDir\":false}]",
+        "for (var e in zipList(\"./out.zip\")) { println(e[\"name\"], e[\"size\"]) }",
+    ],
+    errors: &[
+        "打开文件失败：路径不存在 / 权限不足",
+        "读取 zip 失败：不是有效的 zip 文件",
+        "中文文件名优先 UTF-8 解码，失败回退 GBK（兼容 Windows 旧工具）",
+    ],
+};
+
+static DOC_ZIP_EXTRACT: BuiltinDoc = BuiltinDoc {
+    category: "zip",
+    signature: "zipExtract(zipPath, destDir) -> int",
+    summary: "解压整个 ZIP 到指定目录（自动创建目录，含 zip slip 安全防护）。",
+    params: &[
+        ("zipPath", "ZIP 文件路径"),
+        ("destDir", "目标目录（不存在则自动创建）"),
+    ],
+    returns: "int：解压出的文件数（不含目录条目）",
+    examples: &[
+        "var n = zipExtract(\"./out.zip\", \"./unzipped\")  // → 3",
+    ],
+    errors: &[
+        "zip slip 安全检查：条目含 .. 或绝对路径时拒绝解压（防路径穿越攻击）",
+        "打开 / 读取 zip 失败；创建目录 / 文件失败",
+        "中文文件名自动 UTF-8/GBK 解码",
+    ],
+};
+
+static DOC_ZIP_EXTRACT_FILE: BuiltinDoc = BuiltinDoc {
+    category: "zip",
+    signature: "zipExtractFile(zipPath, entryName, destPath) -> bool",
+    summary: "解压 ZIP 中的单个文件到指定路径。",
+    params: &[
+        ("zipPath", "ZIP 文件路径"),
+        ("entryName", "zip 内的条目名（支持中文，需精确匹配）"),
+        ("destPath", "本地目标文件路径"),
+    ],
+    returns: "bool：true 解压成功；未找到条目或失败返回 error",
+    examples: &[
+        "zipExtractFile(\"./out.zip\", \"reports/report.pdf\", \"./restored.pdf\")  // → true",
+    ],
+    errors: &[
+        "未找到条目：文件名不匹配或编码不一致（中文需 UTF-8）",
+        "打开 / 创建文件失败",
+        "与 zipExtract 区别：本函数只解压指定单个条目",
+    ],
+};
+
+static DOC_ZIP_READ_FILE: BuiltinDoc = BuiltinDoc {
+    category: "zip",
+    signature: "zipReadFile(zipPath, entryName) -> bytes",
+    summary: "读取 ZIP 中单个文件的内容到内存 bytes（不解压到磁盘）。",
+    params: &[
+        ("zipPath", "ZIP 文件路径"),
+        ("entryName", "zip 内的条目名（支持中文）"),
+    ],
+    returns: "bytes：条目解压后的原始内容；未找到或失败返回 error",
+    examples: &[
+        "var data = zipReadFile(\"./out.zip\", \"a.txt\")",
+        "println(toStr(data))  // 文本文件可转字符串查看",
+    ],
+    errors: &[
+        "未找到条目：文件名不匹配或编码不一致",
+        "打开 zip / 读取条目失败",
+        "适合不需要落盘的小文件读取",
+    ],
+};
+
 /// register 注册所有压缩与 ZIP 相关内置函数。
 pub fn register(vm: &mut VM) {
     // 数据压缩
-    vm.register_builtin("compressBytes", bi_compress_bytes);
-    vm.register_builtin("decompressBytes", bi_decompress_bytes);
-    vm.register_builtin("gzipBytes", bi_gzip_bytes);
-    vm.register_builtin("gunzipBytes", bi_gunzip_bytes);
+    vm.register_builtin_doc("compressBytes", bi_compress_bytes, &DOC_COMPRESS_BYTES);
+    vm.register_builtin_doc("decompressBytes", bi_decompress_bytes, &DOC_DECOMPRESS_BYTES);
+    vm.register_builtin_doc("gzipBytes", bi_gzip_bytes, &DOC_GZIP_BYTES);
+    vm.register_builtin_doc("gunzipBytes", bi_gunzip_bytes, &DOC_GUNZIP_BYTES);
 
     // ZIP 文件处理
-    vm.register_builtin("zipCreate", bi_zip_create);
-    vm.register_builtin("zipAddFile", bi_zip_add_file);
-    vm.register_builtin("zipAddBytes", bi_zip_add_bytes);
-    vm.register_builtin("zipAddDir", bi_zip_add_dir);
-    vm.register_builtin("zipClose", bi_zip_close);
-    vm.register_builtin("zipList", bi_zip_list);
-    vm.register_builtin("zipExtract", bi_zip_extract);
-    vm.register_builtin("zipExtractFile", bi_zip_extract_file);
-    vm.register_builtin("zipReadFile", bi_zip_read_file);
+    vm.register_builtin_doc("zipCreate", bi_zip_create, &DOC_ZIP_CREATE);
+    vm.register_builtin_doc("zipAddFile", bi_zip_add_file, &DOC_ZIP_ADD_FILE);
+    vm.register_builtin_doc("zipAddBytes", bi_zip_add_bytes, &DOC_ZIP_ADD_BYTES);
+    vm.register_builtin_doc("zipAddDir", bi_zip_add_dir, &DOC_ZIP_ADD_DIR);
+    vm.register_builtin_doc("zipClose", bi_zip_close, &DOC_ZIP_CLOSE);
+    vm.register_builtin_doc("zipList", bi_zip_list, &DOC_ZIP_LIST);
+    vm.register_builtin_doc("zipExtract", bi_zip_extract, &DOC_ZIP_EXTRACT);
+    vm.register_builtin_doc("zipExtractFile", bi_zip_extract_file, &DOC_ZIP_EXTRACT_FILE);
+    vm.register_builtin_doc("zipReadFile", bi_zip_read_file, &DOC_ZIP_READ_FILE);
 }
 
 // ===========================================================================

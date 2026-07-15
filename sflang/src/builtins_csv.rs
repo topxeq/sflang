@@ -12,14 +12,65 @@ use std::sync::{Arc, Mutex};
 
 use crate::builtins_helpers as bh;
 use crate::value::Value;
+use crate::function::BuiltinDoc;
+
+static DOC_READCSV: BuiltinDoc = BuiltinDoc {
+    category: "csv",
+    signature: "readCsv(path[, delim]) -> array",
+    summary: "从文件读取 CSV 为二维数组。",
+    params: &[("path", "CSV 文件路径"), ("delim", "可选。分隔符，默认逗号")],
+    returns: "array 行列数据",
+    examples: &["var rows = readCsv(\"data.csv\")"],
+    errors: &["文件不存在或格式错误返回 error"],
+};
+
+static DOC_CSVREAD: BuiltinDoc = BuiltinDoc {
+    category: "csv",
+    signature: "csvRead(path[, delim]) -> array",
+    summary: "readCsv 的别名。",
+    params: &[("path", "CSV 文件路径"), ("delim", "可选。分隔符")],
+    returns: "array",
+    examples: &["csvRead(\"data.csv\")"],
+    errors: &[],
+};
+
+static DOC_READCSVFROMSTR: BuiltinDoc = BuiltinDoc {
+    category: "csv",
+    signature: "readCsvFromStr(s[, delim]) -> array",
+    summary: "从字符串读取 CSV。",
+    params: &[("s", "CSV 格式字符串"), ("delim", "可选。分隔符")],
+    returns: "array",
+    examples: &["var rows = readCsvFromStr(\"a,b|n1,2\")"],
+    errors: &[],
+};
+
+static DOC_WRITECSV: BuiltinDoc = BuiltinDoc {
+    category: "csv",
+    signature: "writeCsv(path, rows[, delim]) -> undefined",
+    summary: "将二维数组写入 CSV 文件。",
+    params: &[("path", "输出路径"), ("rows", "二维数组"), ("delim", "可选。分隔符")],
+    returns: "undefined",
+    examples: &["writeCsv(\"out.csv\", rows)"],
+    errors: &[],
+};
+
+static DOC_CSVWRITE: BuiltinDoc = BuiltinDoc {
+    category: "csv",
+    signature: "csvWrite(path, rows[, delim]) -> undefined",
+    summary: "writeCsv 的别名。",
+    params: &[("path", "输出路径"), ("rows", "二维数组"), ("delim", "可选")],
+    returns: "undefined",
+    examples: &["csvWrite(\"out.csv\", rows)"],
+    errors: &[],
+};
 
 /// register 注册 CSV 内置函数。
 pub fn register(vm: &mut crate::vm::VM) {
-    vm.register_builtin("readCsv", bi_read_csv);
-    vm.register_builtin("csvRead", bi_read_csv); // Charlang 兼容别名
-    vm.register_builtin("readCsvFromStr", bi_read_csv_from_str);
-    vm.register_builtin("writeCsv", bi_write_csv);
-    vm.register_builtin("csvWrite", bi_write_csv); // Charlang 兼容别名
+    vm.register_builtin_doc("readCsv", bi_read_csv, &DOC_READCSV);
+    vm.register_builtin_doc("csvRead", bi_read_csv, &DOC_CSVREAD); // Charlang 兼容别名
+    vm.register_builtin_doc("readCsvFromStr", bi_read_csv_from_str, &DOC_READCSVFROMSTR);
+    vm.register_builtin_doc("writeCsv", bi_write_csv, &DOC_WRITECSV);
+    vm.register_builtin_doc("csvWrite", bi_write_csv, &DOC_CSVWRITE); // Charlang 兼容别名
 }
 
 // ---- RFC 4180 CSV 解析器 ----
@@ -32,7 +83,9 @@ pub fn register(vm: &mut crate::vm::VM) {
 /// - 引号内 "" 表示一个字面的双引号
 /// - 引号外的 \r\n 或 \n 为行分隔符
 /// - 最后一行可以无换行符
-fn csv_parse(text: &str) -> Vec<Vec<String>> {
+/// csv_parse 解析 CSV 文本为二维字符串数组（RFC 4180）。
+/// 公开供 builtins_db.rs 的 csv 数据库连接复用。
+pub fn csv_parse(text: &str) -> Vec<Vec<String>> {
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut current_row: Vec<String> = Vec::new();
     let mut current_field = String::new();

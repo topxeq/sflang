@@ -1,0 +1,193 @@
+// 示例 03.03：switch 语句
+// ==================================
+// Sflang 的 switch 采用等值匹配，默认不贯穿（命中即跳出，无需 break）。
+// 语法：switch 值 { case 值1 { ... } case 值2 { ... } default { ... } }
+
+// ==================
+// 基本匹配
+// ==================
+var day = 3
+switch day {
+    case 1 {
+        pln("星期一")
+    }
+    case 2 {
+        pln("星期二")
+    }
+    case 3 {
+        pln("星期三")    // 命中此分支
+    }
+    case 4 {
+        pln("星期四")    // 不会执行（不贯穿）
+    }
+    default {
+        pln("其他")
+    }
+}
+
+// ==================
+// default 分支（无匹配时执行）
+// ==================
+var code = 404
+switch code {
+    case 200 {
+        pln("OK")
+    }
+    case 301 {
+        pln("永久重定向")
+    }
+    case 404 {
+        pln("未找到")
+    }
+    default {
+        pln("未知状态码:", code)
+    }
+}
+
+// ==================
+// 无匹配且无 default：什么都不做
+// ==================
+var x = 999
+var hit = "no"
+switch x {
+    case 1 {
+        hit = "yes"
+    }
+}
+pln("是否命中:", hit)   // no
+
+// ==================
+// 字符串匹配
+// ==================
+var lang = "Sflang"
+switch lang {
+    case "Rust" {
+        pln("系统编程语言")
+    }
+    case "Sflang" {
+        pln("脚本语言")    // 命中
+    }
+    case "Go" {
+        pln("并发友好")
+    }
+}
+
+// ==================
+// 用 break 提前跳出（在 case 块中间）
+// ==================
+// 注：break 后面通常不写代码（break 即结束本 case）。
+//     若 break 后跟标识符开头的语句，需用分号分隔，否则会被当作 break label。
+var level = 2
+var actions = []
+switch level {
+    case 1 {
+        push(actions, "读")
+        break
+    }
+    case 2 {
+        push(actions, "读")
+        push(actions, "写")
+        // break 可在块中间提前结束（其后的代码不会执行）
+        break
+    }
+    case 3 {
+        push(actions, "读")
+        push(actions, "写")
+        push(actions, "执行")
+    }
+}
+pln("权限:", actions)   // [读 写]
+
+// ==================
+// switch 嵌套在循环里：break 只跳出 switch，不影响外层循环
+// ==================
+pln("\n--- switch 在循环内 ---")
+for i := 0; i < 4; i++ {
+    switch i {
+        case 1 {
+            pln("  跳过 1（switch 内 break）")
+            break              // 只跳出 switch，循环继续
+        }
+        default {
+            pln("  处理:", i)
+        }
+    }
+}
+
+// ==================
+// continue 在 switch 内：作用于外层循环（switch 不是循环）
+// ==================
+pln("\n--- switch 内 continue ---")
+var sum = 0
+for i := 0; i < 6; i++ {
+    switch i {
+        case 3 {
+            continue           // 跳过本次循环迭代（作用于 for）
+        }
+    }
+    sum = sum + i
+}
+pln("sum =", sum)   // 0+1+2+4+5 = 12
+
+// ==================
+// break label：从 switch 内直接跳出外层循环
+// ==================
+pln("\n--- break label ---")
+var total = 0
+outer: for i := 0; i < 10; i++ {
+    switch i {
+        case 5 {
+            break outer        // 直接跳出外层 for
+        }
+    }
+    total = total + i
+}
+pln("total =", total)   // 0+1+2+3+4 = 10
+
+// ==================
+// switch 匹配表达式（不只是字面量）
+// ==================
+var a = 10
+var b = 20
+switch a + b {
+    case 15 {
+        pln("和为 15")
+    }
+    case 30 {
+        pln("和为 30")    // 命中
+    }
+    default {
+        pln("其他和")
+    }
+}
+
+// ==================
+// 实用：用 switch 替代多重 if-elif
+// ==================
+pln("\n--- HTTP 状态码分类 ---")
+func httpCategory(code) {
+    var cat = ""
+    switch code / 100 {
+        case 2 {
+            cat = "成功（2xx）"
+        }
+        case 3 {
+            cat = "重定向（3xx）"
+        }
+        case 4 {
+            cat = "客户端错误（4xx）"
+        }
+        case 5 {
+            cat = "服务端错误（5xx）"
+        }
+        default {
+            cat = "未知分类"
+        }
+    }
+    return cat
+}
+pln("200 ->", httpCategory(200))
+pln("301 ->", httpCategory(301))
+pln("404 ->", httpCategory(404))
+pln("500 ->", httpCategory(500))
+pln("999 ->", httpCategory(999))
