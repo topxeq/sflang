@@ -285,7 +285,7 @@ fn bi_gui_close(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 fn bi_gui_show(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use tao::{
         event::{Event, WindowEvent},
-        event_loop::{ControlFlow, EventLoop},
+        event_loop::ControlFlow,
         window::WindowBuilder,
     };
     use wry::WebViewBuilder;
@@ -311,8 +311,18 @@ fn bi_gui_show(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         *ptr = vm_ptr;
     }
 
-    // 创建事件循环和窗口
-    let event_loop = EventLoop::new();
+    // 创建事件循环和窗口。
+    // 主程序在 32MB 栈子线程中运行（防递归溢出），tao 默认要求主线程创建 EventLoop。
+    // 用 any_thread 模式允许在子线程创建（Windows 平台）。
+    let event_loop = {
+        let mut builder = tao::event_loop::EventLoopBuilder::new();
+        #[cfg(target_os = "windows")]
+        {
+            use tao::platform::windows::EventLoopBuilderExtWindows;
+            builder.with_any_thread(true);
+        }
+        builder.build()
+    };
 
     let window = WindowBuilder::new()
         .with_title(&title)

@@ -1,0 +1,459 @@
+// Sflang GUI 代码编辑器
+// ==================================
+// 一个用 Sflang 自身实现的代码编辑器，支持语法高亮、运行、快速求值、打开/保存。
+// 用法：sf examples/showcase/sf_editor.sf [文件路径]
+
+// ---- 工具函数 ----
+
+/// escapeJS 转义字符串中的特殊字符，使其可安全嵌入 JS 字符串字面量
+func escapeJS(s) {
+    var r = ""
+    for i := 0; i < len(s); i++ {
+        var c = strSub(s, i, 1)
+        if c == "\\" { r = r + "\\\\" }
+        elif c == "'" { r = r + "\\'" }
+        elif c == "\n" { r = r + "\\n" }
+        elif c == "\r" { r = r + "" }
+        else { r = r + c }
+    }
+    return r
+}
+
+// ---- 临时文件和 sf.exe 路径 ----
+var tempFile = "temp/.sf_editor_tmp.sf"
+var sfExe = ""
+
+// 查找 sf 可执行文件路径
+func findSfExe() {
+    // 尝试常见位置
+    var candidates = [
+        "sf",
+        "./sf",
+        "./sf.exe",
+        "./target/release/sf",
+        "./target/release/sf.exe",
+    ]
+    for c in candidates {
+        var r = lookPath(c)
+        if r != undefined && r != "" {
+            sfExe = c
+            return
+        }
+    }
+    sfExe = "sf"
+}
+
+// ---- 确保临时目录存在 ----
+func ensureTempDir() {
+    if !fileExists("temp") {
+        makeDir("temp")
+    }
+}
+
+// ---- GUI handler：处理来自前端的消息 ----
+func onMessage(msg) {
+    // 解析消息类型（第一行是操作码，后面是数据）
+    var nlPos = strFind("\n", msg)
+    var op = ""
+    var data = ""
+    if nlPos >= 0 {
+        op = strSub(msg, 0, nlPos)
+        data = strSub(msg, nlPos + 1)
+    } else {
+        op = msg
+    }
+
+    if op == "RUN" {
+        // 子进程模式：写临时文件 + systemCmd 执行
+        ensureTempDir()
+        writeFile(tempFile, data)
+        var cmd = sfExe + " " + tempFile
+        var output = systemCmd(cmd)
+        // 检查是否有错误标记
+        var isError = strContains("错误", output) || strContains("error", output) || strContains("panic", output)
+        guiEval(win, "showOutput('" + escapeJS(output) + "', " + toStr(isError) + ")")
+        guiEval(win, "setStatus('运行完成')")
+    }
+    elif op == "EVAL" {
+        // 进程内模式：compile + runCode
+        var c = compile(data)
+        if isErr(c) {
+            guiEval(win, "showOutput('" + escapeJS(toStr(c)) + "', true)")
+            return
+        }
+        var result = runCode(c)
+        if isErr(result) {
+            guiEval(win, "showOutput('" + escapeJS(toStr(result)) + "', true)")
+        } else {
+            var out = "=> " + toStr(result)
+            guiEval(win, "showOutput('" + escapeJS(out) + "', false)")
+        }
+        guiEval(win, "setStatus('求值完成')")
+    }
+    elif op == "OPEN" {
+        // 读取文件
+        var path = data
+        if !fileExists(path) {
+            guiEval(win, "showOutput('文件不存在: " + escapeJS(path) + "', true)")
+            return
+        }
+        var content = readFile(path)
+        guiEval(win, "setEditorContent('" + escapeJS(content) + "')")
+        guiEval(win, "setFileName('" + escapeJS(path) + "')")
+        guiEval(win, "setStatus('已打开: " + escapeJS(path) + "')")
+    }
+    elif op == "SAVE" {
+        // 解析路径和内容（第二行是路径，第三行开始是内容）
+        var nl2 = strFind("\n", data)
+        var path = ""
+        var content = ""
+        if nl2 >= 0 {
+            path = strSub(data, 0, nl2)
+            content = strSub(data, nl2 + 1)
+        } else {
+            path = data
+        }
+        writeFile(path, content)
+        guiEval(win, "setFileName('" + escapeJS(path) + "')")
+        guiEval(win, "setStatus('已保存: " + escapeJS(path) + "')")
+    }
+    elif op == "INFO" {
+        // 返回编辑器信息
+        var info = "Sflang Editor v1.0 | sf路径: " + sfExe + " | 临时文件: " + tempFile
+        guiEval(win, "showOutput('" + escapeJS(info) + "', false)")
+    }
+}
+
+// ---- 初始化 ----
+findSfExe()
+ensureTempDir()
+
+// 如果命令行参数指定了文件，预加载
+var initFile = ""
+var args = argsG
+if len(args) > 0 {
+    initFile = args[0]
+}
+
+// ---- 构建 HTML ----
+var html = ""
+html = html + "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+html = html + "<style>"
+// CSS 样式
+html = html + "* { margin: 0; padding: 0; box-sizing: border-box; }"
+html = html + "body { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; background: #1e1e1e; color: #d4d4d4; height: 100vh; display: flex; flex-direction: column; }"
+// 工具栏
+html = html + ".toolbar { background: #252526; border-bottom: 1px solid #3c3c3c; padding: 6px 10px; display: flex; gap: 4px; align-items: center; flex-shrink: 0; }"
+html = html + ".toolbar button { background: #3c3c3c; color: #d4d4d4; border: 1px solid #505050; padding: 5px 14px; border-radius: 3px; cursor: pointer; font-size: 13px; font-family: inherit; transition: background 0.15s; }"
+html = html + ".toolbar button:hover { background: #505050; }"
+html = html + ".toolbar button:active { background: #264f78; }"
+html = html + ".toolbar button.run { background: #388e3c; border-color: #4caf50; color: #fff; }"
+html = html + ".toolbar button.run:hover { background: #4caf50; }"
+html = html + ".toolbar button.eval { background: #1565c0; border-color: #1976d2; color: #fff; }"
+html = html + ".toolbar button.eval:hover { background: #1976d2; }"
+html = html + ".toolbar .sep { width: 1px; height: 22px; background: #505050; margin: 0 4px; }"
+html = html + ".toolbar .title { margin-left: auto; color: #888; font-size: 12px; }"
+// 编辑器区
+html = html + ".editor-area { flex: 1; display: flex; overflow: hidden; position: relative; }"
+html = html + ".editor-wrap { flex: 1; position: relative; overflow: hidden; }"
+html = html + ".editor-wrap textarea, .editor-wrap pre { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 10px; font-family: inherit; font-size: 14px; line-height: 1.5; border: none; resize: none; outline: none; white-space: pre; overflow: auto; tab-size: 4; }"
+html = html + ".editor-wrap textarea { background: transparent; color: transparent; caret-color: #d4d4d4; z-index: 2; }"
+html = html + ".editor-wrap textarea::selection { background: #264f78; }"
+html = html + ".editor-wrap pre { background: #1e1e1e; color: #d4d4d4; z-index: 1; pointer-events: none; }"
+// 高亮颜色
+html = html + ".kw { color: #569cd6; }"       // 关键字 蓝
+html = html + ".str { color: #ce9178; }"       // 字符串 橙
+html = html + ".cmt { color: #6a9955; }"       // 注释 绿
+html = html + ".num { color: #b5cea8; }"       // 数字 浅绿
+html = html + ".fn { color: #dcdcaa; }"        // 函数名 黄
+html = html + ".op { color: #d4d4d4; }"        // 运算符
+html = html + ".bool { color: #569cd6; }"      // true/false
+html = html + ".builtin { color: #4ec9b0; }"   // 内置函数 青绿
+// 输出区
+html = html + ".output-area { height: 220px; min-height: 80px; border-top: 2px solid #3c3c3c; display: flex; flex-direction: column; flex-shrink: 0; }"
+html = html + ".output-header { background: #252526; padding: 4px 10px; font-size: 12px; color: #888; display: flex; align-items: center; }"
+html = html + ".output-header button { background: none; border: none; color: #888; cursor: pointer; font-size: 12px; margin-left: auto; padding: 2px 8px; }"
+html = html + ".output-header button:hover { color: #d4d4d4; }"
+html = html + ".output-content { flex: 1; overflow: auto; padding: 8px 10px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }"
+html = html + ".output-content.error { color: #f44747; }"
+html = html + ".output-content .err-line { color: #f44747; }"
+// 状态栏
+html = html + ".statusbar { background: #007acc; color: #fff; padding: 3px 10px; font-size: 12px; display: flex; gap: 16px; flex-shrink: 0; }"
+html = html + ".statusbar .spacer { flex: 1; }"
+// 滚动条
+html = html + "::-webkit-scrollbar { width: 10px; height: 10px; }"
+html = html + "::-webkit-scrollbar-track { background: #1e1e1e; }"
+html = html + "::-webkit-scrollbar-thumb { background: #424242; border-radius: 5px; }"
+html = html + "::-webkit-scrollbar-thumb:hover { background: #555; }"
+html = html + "</style>"
+
+html = html + "</head><body>"
+
+// 工具栏
+html = html + "<div class='toolbar'>"
+html = html + "<button class='run' onclick='doRun()' title='运行(F5)'>▶ 运行</button>"
+html = html + "<button class='eval' onclick='doEval()' title='快速求值(F6)'>⚡ 求值</button>"
+html = html + "<div class='sep'></div>"
+html = html + "<button onclick='doOpen()' title='打开(Ctrl+O)'>📂 打开</button>"
+html = html + "<button onclick='doSave()' title='保存(Ctrl+S)'>💾 保存</button>"
+html = html + "<div class='sep'></div>"
+html = html + "<button onclick='clearOutput()' title='清空输出'>🗑 清空</button>"
+html = html + "<button onclick=\'insertTemplate()\' title='插入示例代码'>📋 模板</button>"
+html = html + "<div class='sep'></div>"
+html = html + "<button onclick=\"toggleTheme()\" title='切换主题'>🎨 主题</button>"
+html = html + "<span class='title' id='filename'>未命名.sf</span>"
+html = html + "</div>"
+
+// 编辑器区
+html = html + "<div class='editor-area'>"
+html = html + "<div class='editor-wrap'>"
+html = html + "<pre id='highlight'></pre>"
+html = html + "<textarea id='editor' spellcheck='false' oninput='onEdit()' onscroll='onScroll()' onkeydown='onKey(event)'></textarea>"
+html = html + "</div>"
+html = html + "</div>"
+
+// 输出区
+html = html + "<div class='output-area' id='outputArea'>"
+html = html + "<div class='output-header'>输出"
+html = html + "<button onclick='clearOutput()'>清空</button>"
+html = html + "</div>"
+html = html + "<div class='output-content' id='output'></div>"
+html = html + "</div>"
+
+// 状态栏
+html = html + "<div class='statusbar'>"
+html = html + "<span id='status'>就绪</span>"
+html = html + "<span class='spacer'></span>"
+html = html + "<span id='cursor'>行 1, 列 1</span>"
+html = html + "<span id='mode'>Sflang</span>"
+html = html + "</div>"
+
+html = html + "</body>"
+
+// ---- JavaScript ----
+html = html + "<script>"
+
+// Sflang 关键字
+html = html + "var KEYWORDS = ['var','const','func','if','elif','else','for','while','switch','case','default','break','continue','return','try','catch','finally','defer','run','throw','import','in'];"
+html = html + "var BOOLS = ['true','false','undefined'];"
+
+// 语法高亮函数
+html = html + "function highlightCode(code) {"
+html = html + "  var html = '';"
+html = html + "  var i = 0;"
+html = html + "  while (i < code.length) {"
+html = html + "    var c = code[i];"
+// 注释 //
+html = html + "    if (c == '/' && code[i+1] == '/') {"
+html = html + "      var end = code.indexOf('\\n', i);"
+html = html + "      if (end < 0) end = code.length;"
+html = html + "      html += '<span class=\\'cmt\\'>' + esc(code.substring(i, end)) + '</span>';"
+html = html + "      i = end; continue;"
+html = html + "    }"
+// 注释 /* */
+html = html + "    if (c == '/' && code[i+1] == '*') {"
+html = html + "      var end = code.indexOf('*/', i+2);"
+html = html + "      if (end < 0) end = code.length; else end += 2;"
+html = html + "      html += '<span class=\\'cmt\\'>' + esc(code.substring(i, end)) + '</span>';"
+html = html + "      i = end; continue;"
+html = html + "    }"
+// 字符串 "..."（含三引号）
+html = html + "    if (c == '\"') {"
+html = html + "      if (code[i+1] == '\"' && code[i+2] == '\"') {"
+html = html + "        var end = code.indexOf('\\\"\\\"\\\"', i+3);"
+html = html + "        if (end < 0) end = code.length; else end += 3;"
+html = html + "      } else {"
+html = html + "        var end = i+1;"
+html = html + "        while (end < code.length && code[end] != '\\n') {"
+html = html + "          if (code[end] == '\\\\') { end += 2; } else if (code[end] == '\"') { end++; break; } else end++;"
+html = html + "        }"
+html = html + "      }"
+html = html + "      html += '<span class=\\'str\\'>' + esc(code.substring(i, end)) + '</span>';"
+html = html + "      i = end; continue;"
+html = html + "    }"
+// Raw string `...`
+html = html + "    if (c == '`') {"
+html = html + "      var end = code.indexOf('`', i+1);"
+html = html + "      if (end < 0) end = code.length; else end++;"
+html = html + "      html += '<span class=\\'str\\'>' + esc(code.substring(i, end)) + '</span>';"
+html = html + "      i = end; continue;"
+html = html + "    }"
+// 数字
+html = html + "    if (c >= '0' && c <= '9') {"
+html = html + "      var end = i;"
+html = html + "      while (end < code.length && /[0-9a-fA-FxXoObB._]/.test(code[end])) end++;"
+html = html + "      html += '<span class=\\'num\\'>' + code.substring(i, end) + '</span>';"
+html = html + "      i = end; continue;"
+html = html + "    }"
+// 标识符/关键字
+html = html + "    if (/[a-zA-Z_$]/.test(c)) {"
+html = html + "      var end = i;"
+html = html + "      while (end < code.length && /[a-zA-Z0-9_$]/.test(code[end])) end++;"
+html = html + "      var word = code.substring(i, end);"
+html = html + "      if (KEYWORDS.indexOf(word) >= 0) html += '<span class=\\'kw\\'>' + word + '</span>';"
+html = html + "      else if (BOOLS.indexOf(word) >= 0) html += '<span class=\\'bool\\'>' + word + '</span>';"
+html = html + "      else if (code[end] == '(') html += '<span class=\\'fn\\'>' + word + '</span>';"
+html = html + "      else html += esc(word);"
+html = html + "      i = end; continue;"
+html = html + "    }"
+// 换行
+html = html + "    if (c == '\\n') { html += '\\n'; i++; continue; }"
+html = html + "    if (c == '<') { html += '&lt;'; i++; continue; }"
+html = html + "    if (c == '>') { html += '&gt;'; i++; continue; }"
+html = html + "    if (c == '&') { html += '&amp;'; i++; continue; }"
+html = html + "    html += c; i++;"
+html = html + "  }"
+html = html + "  return html;"
+html = html + "}"
+
+// HTML 转义
+html = html + "function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }"
+
+// 编辑器事件
+html = html + "function onEdit() {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var code = ta.value;"
+html = html + "  if (code[code.length-1] == '\\n') code += ' ';"
+html = html + "  document.getElementById('highlight').innerHTML = highlightCode(code);"
+html = html + "  updateCursor();"
+html = html + "}"
+
+// 同步滚动
+html = html + "function onScroll() {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  document.getElementById('highlight').scrollTop = ta.scrollTop;"
+html = html + "  document.getElementById('highlight').scrollLeft = ta.scrollLeft;"
+html = html + "}"
+
+// 更新光标位置
+html = html + "function updateCursor() {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var pos = ta.selectionStart;"
+html = html + "  var lines = ta.value.substring(0, pos).split('\\n');"
+html = html + "  document.getElementById('cursor').textContent = '行 ' + lines.length + ', 列 ' + (lines[lines.length-1].length+1);"
+html = html + "}"
+
+// 键盘快捷键
+html = html + "function onKey(e) {"
+html = html + "  if (e.key == 'F5') { e.preventDefault(); doRun(); }"
+html = html + "  else if (e.key == 'F6') { e.preventDefault(); doEval(); }"
+html = html + "  else if (e.ctrlKey && e.key == 's') { e.preventDefault(); doSave(); }"
+html = html + "  else if (e.ctrlKey && e.key == 'o') { e.preventDefault(); doOpen(); }"
+html = html + "  else if (e.key == 'Tab') { e.preventDefault(); document.execCommand('insertText', false, '    '); }"
+html = html + "}"
+
+// 运行（子进程）
+html = html + "function doRun() {"
+html = html + "  var code = document.getElementById('editor').value;"
+html = html + "  document.getElementById('status').textContent = '运行中...';"
+html = html + "  window.ipc.postMessage('RUN\\n' + code);"
+html = html + "}"
+
+// 快速求值（进程内）
+html = html + "function doEval() {"
+html = html + "  var code = document.getElementById('editor').value;"
+html = html + "  document.getElementById('status').textContent = '求值中...';"
+html = html + "  window.ipc.postMessage('EVAL\\n' + code);"
+html = html + "}"
+
+// 打开文件
+html = html + "function doOpen() {"
+html = html + "  var path = prompt('输入文件路径:', 'examples/sample01_001_hello.sf');"
+html = html + "  if (path) window.ipc.postMessage('OPEN\\n' + path);"
+html = html + "}"
+
+// 保存文件
+html = html + "function doSave() {"
+html = html + "  var path = prompt('保存到:', document.getElementById('filename').textContent);"
+html = html + "  if (path) {"
+html = html + "    var code = document.getElementById('editor').value;"
+html = html + "    window.ipc.postMessage('SAVE\\n' + path + '\\n' + code);"
+html = html + "  }"
+html = html + "}"
+
+// 清空输出
+html = html + "function clearOutput() {"
+html = html + "  document.getElementById('output').innerHTML = '';"
+html = html + "  document.getElementById('output').className = 'output-content';"
+html = html + "}"
+
+// 显示输出（供 Sflang 后端调用）
+html = html + "function showOutput(text, isError) {"
+html = html + "  var el = document.getElementById('output');"
+html = html + "  el.className = 'output-content' + (isError ? ' error' : '');"
+html = html + "  el.textContent = text;"
+html = html + "}"
+
+// 设置编辑器内容（打开文件时）
+html = html + "function setEditorContent(code) {"
+html = html + "  document.getElementById('editor').value = code;"
+html = html + "  onEdit();"
+html = html + "}"
+
+// 设置文件名
+html = html + "function setFileName(name) {"
+html = html + "  document.getElementById('filename').textContent = name;"
+html = html + "}"
+
+// 设置状态
+html = html + "function setStatus(text) {"
+html = html + "  document.getElementById('status').textContent = text;"
+html = html + "}"
+
+// 切换主题（简易：切换输出区高度）
+html = html + "var bigOutput = false;"
+html = html + "function toggleTheme() {"
+html = html + "  bigOutput = !bigOutput;"
+html = html + "  document.getElementById('outputArea').style.height = bigOutput ? '50%' : '220px';"
+html = html + "}"
+
+// 插入示例代码
+html = html + "function insertTemplate() {"
+html = html + "  var tpl = '// Sflang 示例\\n"
+html = html + "println(\\\"Hello, Sflang!\\\")\\n"
+html = html + "\\n"
+html = html + "// 变量和函数\\n"
+html = html + "func fib(n) {\\n"
+html = html + "    if n <= 1 { return n }\\n"
+html = html + "    return fib(n-1) + fib(n-2)\\n"
+html = html + "}\\n"
+html = html + "\\n"
+html = html + "// 字符串插值\\n"
+html = html + "var name = \\\"World\\\"\\n"
+html = html + "println(\\\"Hello, \\\${name}!\\\")\\n"
+html = html + "\\n"
+html = html + "// 运行\\n"
+html = html + "for i := 0; i < 10; i++ {\\n"
+html = html + "    println(\\\"fib(\\\${i}) = \\\${fib(i)}\\\")\\n"
+html = html + "}\\n"
+html = html + "';"
+html = html + "  document.getElementById('editor').value = tpl;"
+html = html + "  onEdit();"
+html = html + "  document.getElementById('filename').textContent = '模板.sf';"
+html = html + "}"
+
+// 初始化
+html = html + "window.onload = function() {"
+html = html + "  onEdit();"
+html = html + "  document.getElementById('editor').focus();"
+html = html + "};"
+
+html = html + "</script></html>"
+
+// ---- 创建窗口 ----
+var win = guiNewWindow("--title=Sflang 代码编辑器", "--width=1100", "--height=750")
+win = guiSetHtml(win, html)
+win = guiSetHandler(win, onMessage)
+
+// 如果有命令行参数指定的文件，加载它
+if initFile != "" && fileExists(initFile) {
+    var initContent = readFile(initFile)
+    // 延迟执行：在 guiShow 之前无法执行 guiEval，所以通过初始 HTML 内嵌
+    // 改为在 HTML 的 onload 中检查全局变量
+    // 简单方案：把初始内容编码到 HTML 中
+    html = strReplace(html, "window.onload = function() {",
+        "window.onload = function() { document.getElementById('editor').value = '" + escapeJS(initContent) + "'; document.getElementById('filename').textContent = '" + escapeJS(initFile) + "';")
+    win = guiSetHtml(win, html)
+}
+
+guiShow(win)
