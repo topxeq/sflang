@@ -194,8 +194,10 @@ html = html + "<div class='toolbar'>"
 html = html + "<button class='run' onclick='doRun()' title='运行(F5)'>▶ 运行</button>"
 html = html + "<button class='eval' onclick='doEval()' title='快速求值(F6)'>⚡ 求值</button>"
 html = html + "<div class='sep'></div>"
+html = html + "<button onclick='doNew()' title='新建(Ctrl+N)'>📄 新建</button>"
 html = html + "<button onclick='doOpen()' title='打开(Ctrl+O)'>📂 打开</button>"
 html = html + "<button onclick='doSave()' title='保存(Ctrl+S)'>💾 保存</button>"
+html = html + "<button onclick='doSaveAs()' title='另存为(Ctrl+Shift+S)'>💾 另存</button>"
 html = html + "<div class='sep'></div>"
 html = html + "<button onclick='clearOutput()' title='清空输出'>🗑 清空</button>"
 html = html + "<button onclick=\'insertTemplate()\' title='插入示例代码'>📋 模板</button>"
@@ -310,12 +312,20 @@ html = html + "}"
 html = html + "function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }"
 
 // 编辑器事件
+html = html + "var isDirty = false; var currentFile = '';"
+html = html + "function setDirty(v) { isDirty = v; updateTitle(); }"
+html = html + "function updateTitle() {"
+html = html + "  var fn = document.getElementById('filename');"
+html = html + "  fn.textContent = (currentFile || '未命名.sf') + (isDirty ? ' ●' : '');"
+html = html + "}"
+
 html = html + "function onEdit() {"
 html = html + "  var ta = document.getElementById('editor');"
 html = html + "  var code = ta.value;"
 html = html + "  if (code[code.length-1] == '\\n') code += ' ';"
 html = html + "  document.getElementById('highlight').innerHTML = highlightCode(code);"
 html = html + "  updateCursor();"
+html = html + "  setDirty(true);"
 html = html + "}"
 
 // 同步滚动
@@ -337,8 +347,10 @@ html = html + "}"
 html = html + "function onKey(e) {"
 html = html + "  if (e.key == 'F5') { e.preventDefault(); doRun(); }"
 html = html + "  else if (e.key == 'F6') { e.preventDefault(); doEval(); }"
+html = html + "  else if (e.ctrlKey && e.shiftKey && e.key == 'S') { e.preventDefault(); doSaveAs(); }"
 html = html + "  else if (e.ctrlKey && e.key == 's') { e.preventDefault(); doSave(); }"
 html = html + "  else if (e.ctrlKey && e.key == 'o') { e.preventDefault(); doOpen(); }"
+html = html + "  else if (e.ctrlKey && e.key == 'n') { e.preventDefault(); doNew(); }"
 html = html + "  else if (e.key == 'Tab') { e.preventDefault(); document.execCommand('insertText', false, '    '); }"
 html = html + "}"
 
@@ -356,15 +368,38 @@ html = html + "  document.getElementById('status').textContent = '求值中...';
 html = html + "  window.ipc.postMessage('EVAL\\n' + code);"
 html = html + "}"
 
+// 新建文件
+html = html + "function doNew() {"
+html = html + "  if (isDirty && !confirm('当前文件未保存，是否放弃修改？')) return;"
+html = html + "  document.getElementById('editor').value = '';"
+html = html + "  onEdit();"
+html = html + "  currentFile = '';"
+html = html + "  setDirty(false);"
+html = html + "  clearOutput();"
+html = html + "  document.getElementById('status').textContent = '就绪';"
+html = html + "  document.getElementById('editor').focus();"
+html = html + "}"
+
 // 打开文件
 html = html + "function doOpen() {"
-html = html + "  var path = prompt('输入文件路径:', 'examples/sample01_001_hello.sf');"
+html = html + "  if (isDirty && !confirm('当前文件未保存，是否放弃修改？')) return;"
+html = html + "  var path = prompt('输入文件路径:', currentFile || 'examples/sample01_001_hello.sf');"
 html = html + "  if (path) window.ipc.postMessage('OPEN\\n' + path);"
 html = html + "}"
 
-// 保存文件
+// 保存文件（有当前路径时直接保存，否则提示输入路径）
 html = html + "function doSave() {"
-html = html + "  var path = prompt('保存到:', document.getElementById('filename').textContent);"
+html = html + "  var path = currentFile;"
+html = html + "  if (!path) { path = prompt('保存到:', 'untitled.sf'); }"
+html = html + "  if (path) {"
+html = html + "    var code = document.getElementById('editor').value;"
+html = html + "    window.ipc.postMessage('SAVE\\n' + path + '\\n' + code);"
+html = html + "  }"
+html = html + "}"
+
+// 另存为（总是提示输入路径）
+html = html + "function doSaveAs() {"
+html = html + "  var path = prompt('另存为:', currentFile || 'untitled.sf');"
 html = html + "  if (path) {"
 html = html + "    var code = document.getElementById('editor').value;"
 html = html + "    window.ipc.postMessage('SAVE\\n' + path + '\\n' + code);"
@@ -388,11 +423,13 @@ html = html + "}"
 html = html + "function setEditorContent(code) {"
 html = html + "  document.getElementById('editor').value = code;"
 html = html + "  onEdit();"
+html = html + "  setDirty(false);"
 html = html + "}"
 
-// 设置文件名
+// 设置文件名（打开/保存后调用）
 html = html + "function setFileName(name) {"
-html = html + "  document.getElementById('filename').textContent = name;"
+html = html + "  currentFile = name;"
+html = html + "  setDirty(false);"
 html = html + "}"
 
 // 设置状态
