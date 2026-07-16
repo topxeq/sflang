@@ -203,14 +203,14 @@ html = html + ".toolbar .sep { width: 1px; height: 22px; background: #505050; ma
 html = html + ".toolbar .title { margin-left: auto; color: #888; font-size: 12px; }"
 // 编辑器区
 html = html + ".editor-area { flex: 1; display: flex; overflow: hidden; position: relative; }"
-html = html + ".editor-wrap { flex: 1; position: relative; overflow: hidden; }"
-html = html + ".editor-inner { position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: hidden; }"
-html = html + ".editor-inner textarea, .editor-inner pre { position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; padding: 10px 10px 10px 52px; font-family: inherit; font-size: 14px; line-height: 1.5; border: none; resize: none; outline: none; white-space: pre; overflow: auto; tab-size: 4; box-sizing: border-box; }"
+html = html + ".editor-wrap { flex: 1; position: relative; overflow: hidden; display: flex; }"
+// 行号列
+html = html + ".gutter { background: #1e1e1e; color: #858585; padding: 10px 6px 10px 10px; text-align: right; font-size: 14px; line-height: 1.5; user-select: none; overflow: hidden; min-width: 40px; font-family: inherit; white-space: pre; flex-shrink: 0; }"
+html = html + ".editor-inner { flex: 1; position: relative; overflow: hidden; }"
+html = html + ".editor-inner textarea, .editor-inner pre { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 10px; font-family: inherit; font-size: 14px; line-height: 1.5; border: none; resize: none; outline: none; white-space: pre; overflow: auto; tab-size: 4; }"
 html = html + ".editor-inner textarea { background: transparent; color: transparent; caret-color: #d4d4d4; z-index: 2; }"
 html = html + ".editor-inner textarea::selection { background: #264f78; }"
 html = html + ".editor-inner pre { background: #1e1e1e; color: #d4d4d4; z-index: 1; pointer-events: none; }"
-// 行号样式（嵌入高亮层 pre 内，折行时自然跟随）
-html = html + ".ln { display: inline-block; width: 38px; margin-left: -42px; text-align: right; color: #858585; user-select: none; padding-right: 8px; }"
 // 高亮颜色
 html = html + ".kw { color: #569cd6; }"       // 关键字 蓝
 html = html + ".str { color: #ce9178; }"       // 字符串 橙
@@ -261,6 +261,7 @@ html = html + "</div>"
 // 编辑器区
 html = html + "<div class='editor-area'>"
 html = html + "<div class='editor-wrap'>"
+html = html + "<div class='gutter' id='gutter'>1</div>"
 html = html + "<div class='editor-inner'>"
 html = html + "<pre id='highlight'></pre>"
 html = html + "<textarea id='editor' spellcheck='false' oninput='onEdit()' onscroll='onScroll()' onkeydown='onKey(event)' onclick='updateCursor()' onkeyup='updateCursor()'></textarea>"
@@ -376,17 +377,19 @@ html = html + "  var fn = document.getElementById('filename');"
 html = html + "  fn.textContent = (currentFile || '未命名.sf') + (isDirty ? ' ●' : '');"
 html = html + "}"
 
+html = html + "function updateGutter() {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var lineCount = ta.value.split('\\n').length;"
+html = html + "  var nums = ''; for (var i = 1; i <= lineCount; i++) nums += i + '\\n';"
+html = html + "  document.getElementById('gutter').textContent = nums;"
+html = html + "}"
+
 html = html + "function onEdit() {"
 html = html + "  var ta = document.getElementById('editor');"
 html = html + "  var code = ta.value;"
 html = html + "  if (code[code.length-1] == '\\n') code += ' ';"
-html = html + "  var highlighted = highlightCode(code);"
-html = html + "  // 在每行前注入行号（折行时行号跟随代码行起始位置）"
-html = html + "  var lines = highlighted.split('\\n');"
-html = html + "  for (var j = 0; j < lines.length; j++) {"
-html = html + "    lines[j] = '<span class=\\'ln\\'>' + (j+1) + '</span>' + lines[j];"
-html = html + "  }"
-html = html + "  document.getElementById('highlight').innerHTML = lines.join('\\n');"
+html = html + "  document.getElementById('highlight').innerHTML = highlightCode(code);"
+html = html + "  updateGutter();"
 html = html + "  updateCursor();"
 html = html + "  setDirty(true);"
 html = html + "}"
@@ -396,6 +399,7 @@ html = html + "function onScroll() {"
 html = html + "  var ta = document.getElementById('editor');"
 html = html + "  document.getElementById('highlight').scrollTop = ta.scrollTop;"
 html = html + "  document.getElementById('highlight').scrollLeft = ta.scrollLeft;"
+html = html + "  document.getElementById('gutter').scrollTop = ta.scrollTop;"
 html = html + "}"
 
 // 更新光标位置 + Unicode 码点
