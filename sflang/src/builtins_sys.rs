@@ -563,8 +563,13 @@ fn bi_rename(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 fn bi_system_cmd(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let cmd = bh::as_str(args, 0, "systemCmd")?;
 
-    // 构建命令
-    let mut command = if cfg!(windows) {
+    // 构建命令：
+    // - 有额外参数时，直接用第一个参数作为可执行程序（避免 cmd /C 的路径解析问题）
+    // - 只有单个字符串参数时，通过 shell（cmd /C 或 sh -c）执行（支持管道、重定向等）
+    let mut command = if args.len() > 1 {
+        // 直接执行模式：systemCmd("program", "arg1", "arg2", ...)
+        std::process::Command::new(cmd)
+    } else if cfg!(windows) {
         let mut c = std::process::Command::new("cmd");
         c.arg("/C");
         c.arg(cmd);
@@ -576,7 +581,7 @@ fn bi_system_cmd(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         c
     };
 
-    // 追加额外参数（用于简单命令如 systemCmd("ping", "127.0.0.1")）
+    // 追加额外参数
     for i in 1..args.len() {
         if let Value::Str(s) = &args[i] {
             command.arg(s.as_ref());
@@ -587,8 +592,20 @@ fn bi_system_cmd(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         "systemCmd() 执行失败: {} (可能原因：命令不存在或权限不足)", e,
     )))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Windows 中文系统 cmd.exe 输出可能是 GBK(CP936) 编码。
+    // 先尝试 UTF-8，失败则用 GBK 解码（encoding_rs 已是依赖）。
+    let decode = |bytes: &[u8]| -> String {
+        match std::str::from_utf8(bytes) {
+            Ok(s) => s.to_string(),
+            Err(_) => {
+                // 非 UTF-8，尝试 GBK 解码
+                let (cow, _, _) = encoding_rs::GBK.decode(bytes);
+                cow.into_owned()
+            }
+        }
+    };
+    let stdout = decode(&output.stdout);
+    let stderr = decode(&output.stderr);
 
     if !output.status.success() && !stderr.is_empty() {
         // 命令失败但有 stderr 输出，拼到一起
@@ -598,7 +615,7 @@ fn bi_system_cmd(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         )));
     }
 
-    Ok(Value::str_from(stdout.into_owned()))
+    Ok(Value::str_from(stdout))
 }
 
 /// bi_exit 退出程序。

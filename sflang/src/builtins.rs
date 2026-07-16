@@ -278,6 +278,33 @@ static DOC_DEEP_CLONE: BuiltinDoc = BuiltinDoc {
     errors: &[],
 };
 
+static DOC_COMPILE: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "compile(src) -> code|error",
+    summary: "编译源码字符串为 Code 对象（可被 runCode 执行）。编译错误以 error 值返回（不抛出）。",
+    params: &[("src", "Sflang 源码字符串")],
+    returns: "code 编译后的代码对象；失败返回 error 值（用 isErr 检查）",
+    examples: &[
+        "var c = compile(\"return 1+2\")",
+        "if isErr(c) { println(c) } else { println(runCode(c)) }",
+    ],
+    errors: &["语法错误返回 error 值（不是抛出异常）"],
+};
+
+static DOC_RUN_CODE: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "runCode(code) -> value|error",
+    summary: "执行 compile() 返回的 Code 对象。运行错误以 error 值返回（不抛出）。",
+    params: &[("code", "compile() 的返回值")],
+    returns: "执行结果；运行出错返回 error 值（用 isErr 检查）",
+    examples: &[
+        "var c = compile(\"return fib(10)\")",
+        "var r = runCode(c)",
+        "if isErr(r) { println(\"错误:\", r) } else { println(\"结果:\", r) }",
+    ],
+    errors: &["参数不是 code 对象返回 error；运行时错误也返回 error 值"],
+};
+
 /// register 注册所有内置函数到 VM。
 pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("println", bi_println, &DOC_PRINTLN);
@@ -329,8 +356,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin("toStr", bi_string);
     vm.register_builtin("toInt", bi_int);
     vm.register_builtin("toFloat", bi_float);
-    vm.register_builtin("compile", bi_compile);
-    vm.register_builtin("runCode", bi_run_code);
+    vm.register_builtin_doc("compile", bi_compile, &DOC_COMPILE);
+    vm.register_builtin_doc("runCode", bi_run_code, &DOC_RUN_CODE);
     vm.register_builtin("newRef", bi_new_ref);
     vm.register_builtin("getValueByRef", bi_get_value_by_ref);
     vm.register_builtin("setValueByRef", bi_set_value_by_ref);

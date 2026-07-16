@@ -67,8 +67,8 @@ func onMessage(msg) {
         // 子进程模式：写临时文件 + systemCmd 执行
         ensureTempDir()
         writeFile(tempFile, data)
-        var cmd = sfExe + " " + tempFile
-        var output = systemCmd(cmd)
+        // 用分离参数调用 systemCmd（避免 cmd /C 的路径解析问题）
+        var output = systemCmd(sfExe, tempFile)
         // 检查是否有错误标记
         var isError = strContains("错误", output) || strContains("error", output) || strContains("panic", output)
         guiEval(win, "showOutput('" + escapeJS(output) + "', " + toStr(isError) + ")")
