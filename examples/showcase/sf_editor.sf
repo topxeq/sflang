@@ -207,10 +207,10 @@ html = html + ".editor-wrap { flex: 1; position: relative; overflow: hidden; dis
 // 行号列（与编辑器同滚动，不随折行错位：行号只占逻辑行高度）
 html = html + ".gutter { background: #1e1e1e; color: #858585; padding: 10px 8px 10px 10px; text-align: right; font-size: 14px; line-height: 1.5; user-select: none; overflow: hidden; min-width: 48px; font-family: inherit; white-space: pre; flex-shrink: 0; border-right: 1px solid #333; }"
 html = html + ".editor-inner { flex: 1; position: relative; overflow: hidden; }"
-html = html + ".editor-inner textarea, .editor-inner pre { position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; padding: 10px; font-family: inherit; font-size: 14px; line-height: 1.5; border: none; resize: none; outline: none; tab-size: 4; box-sizing: border-box; }"
-html = html + ".editor-inner textarea { background: transparent; color: transparent; caret-color: #d4d4d4; z-index: 2; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; overflow-y: auto; overflow-x: hidden; }"
+html = html + ".editor-inner textarea, .editor-inner pre { position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; padding: 10px; font-family: inherit; font-size: 14px; line-height: 1.5; border: none; resize: none; outline: none; tab-size: 4; box-sizing: border-box; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; }"
+html = html + ".editor-inner textarea { background: transparent; color: transparent; caret-color: #d4d4d4; z-index: 2; overflow: auto; }"
 html = html + ".editor-inner textarea::selection { background: #264f78; }"
-html = html + ".editor-inner pre { background: #1e1e1e; color: #d4d4d4; z-index: 1; pointer-events: none; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; overflow: hidden; }"
+html = html + ".editor-inner pre { background: transparent; color: #d4d4d4; z-index: 1; pointer-events: none; overflow: auto; }"
 // 高亮颜色
 html = html + ".kw { color: #569cd6; }"       // 关键字 蓝
 html = html + ".str { color: #ce9178; }"       // 字符串 橙
