@@ -190,10 +190,11 @@ func onMessage(msg) {
         }
         if path != "" && fileExists(path) {
             var content = readFile(path)
-            guiEval(win, "setEditorContent('" + escapeJS(content) + "')")
-            guiEval(win, "currentFile=''; setDirty(false); document.getElementById('status').textContent='已加载模板: " + escapeJS(name) + "';")
+            // 用全局变量中转，避免 guiEval 的 JS 字符串转义问题
+            guiEval(win, "window.__tplContent = '" + escapeJS(content) + "';")
+            guiEval(win, "document.getElementById('editor').value = window.__tplContent; onEdit(); setDirty(false); currentFile=''; document.getElementById('status').textContent='已加载: " + escapeJS(name) + "'; window.__tplContent=null;")
         } else {
-            guiEval(win, "showOutput('模板未找到: " + escapeJS(name) + " (" + escapeJS(path) + ")', true)")
+            guiEval(win, "showOutput('模板未找到: " + escapeJS(name) + " (路径: " + escapeJS(path) + ") CWD问题?', true)")
         }
     }
 }
@@ -632,7 +633,8 @@ html = html + "  window.ipc.postMessage('OPEN\\n' + path);"
 html = html + "}"
 
 html = html + "function loadTpl(name) {"
-html = html + "  if (isDirty && !confirm('当前内容未保存，是否替换？')) return;"
+html = html + "  var hasContent = document.getElementById('editor').value.trim().length > 0;"
+html = html + "  if (hasContent && isDirty && !confirm('当前内容未保存，是否替换？')) return;"
 html = html + "  document.getElementById('tplMenu').style.display = 'none';"
 html = html + "  document.getElementById('status').textContent = '加载模板中...';"
 html = html + "  window.ipc.postMessage('TPL\\n' + name);"
@@ -641,6 +643,7 @@ html = html + "}"
 // 初始化
 html = html + "window.onload = function() {"
 html = html + "  onEdit();"
+html = html + "  setDirty(false);"
 html = html + "  document.getElementById('editor').focus();"
 html = html + "};"
 
