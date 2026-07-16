@@ -209,7 +209,7 @@ html = html + ".gutter { background: #1e1e1e; color: #858585; padding: 10px 6px 
 html = html + ".editor-inner { flex: 1; position: relative; overflow: hidden; }"
 html = html + ".editor-inner textarea, .editor-inner pre { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 10px; font-family: inherit; font-size: 14px; line-height: 1.5; border: none; resize: none; outline: none; white-space: pre; overflow: auto; tab-size: 4; }"
 html = html + ".editor-inner textarea { background: transparent; color: transparent; caret-color: #d4d4d4; z-index: 2; }"
-html = html + ".editor-inner textarea::selection { background: #264f78; }"
+html = html + ".editor-inner textarea::selection { background: #264f78; color: #fff; }"
 html = html + ".editor-inner pre { background: #1e1e1e; color: #d4d4d4; z-index: 1; pointer-events: none; }"
 // 高亮颜色
 html = html + ".kw { color: #569cd6; }"       // 关键字 蓝
@@ -395,7 +395,7 @@ html = html + "    var d = document.createElement('div');"
 html = html + "    d.textContent = (i+1);"
 html = html + "    var rows = Math.max(1, Math.ceil((codeLines[i].length * cw) / taInner));"
 html = html + "    d.style.height = (rows * 21) + 'px';"
-html = html + "    d.style.lineHeight = (rows * 21) + 'px';"
+html = html + "    d.style.lineHeight = '21px';"
 html = html + "    gutter.appendChild(d);"
 html = html + "  }"
 html = html + "}"
