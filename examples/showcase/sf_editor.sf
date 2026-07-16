@@ -58,6 +58,9 @@ func onMessage(msg) {
         op = msg
     }
 
+    // 调试：在输出区显示收到的消息
+    guiEval(win, "document.getElementById('output').textContent = '[debug] handler called, op=[" + escapeJS(op) + "] data=[" + escapeJS(data) + "] nlPos=" + toStr(nlPos) + "';")
+
     if op == "RUN" {
         // 子进程模式：写临时文件 + systemCmd 执行
         ensureTempDir()
