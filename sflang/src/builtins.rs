@@ -1683,12 +1683,18 @@ fn bi_if_switch_exists(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 fn bi_compile(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
     let src = bh::as_str(args, 0, "compile")?;
-    let tokens = crate::lexer::tokenize(src, "<compile>")
-        .map_err(|e| crate::value::error_value(format!("compile() 词法错误: {}", e)))?;
-    let prog = crate::parser::parse_program(tokens, "<compile>")
-        .map_err(|e| crate::value::error_value(format!("compile() 语法错误: {}", e)))?;
-    let code = crate::compiler::compile(&prog)
-        .map_err(|e| crate::value::error_value(format!("compile() 编译错误: {}", e)))?;
+    let tokens = match crate::lexer::tokenize(src, "<compile>") {
+        Ok(t) => t,
+        Err(e) => return Ok(crate::value::error_value(format!("compile() 词法错误: {}", e))),
+    };
+    let prog = match crate::parser::parse_program(tokens, "<compile>") {
+        Ok(p) => p,
+        Err(e) => return Ok(crate::value::error_value(format!("compile() 语法错误: {}", e))),
+    };
+    let code = match crate::compiler::compile(&prog) {
+        Ok(c) => c,
+        Err(e) => return Ok(crate::value::error_value(format!("compile() 编译错误: {}", e))),
+    };
     Ok(Value::Native(std::sync::Arc::new(std::sync::Arc::new(code))))
 }
 
