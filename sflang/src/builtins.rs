@@ -1699,19 +1699,23 @@ fn bi_compile(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 }
 
 /// bi_run_code 执行编译后的 Code 对象，返回结果。
+/// 运行错误以 error 值返回（不抛出），与 compile() 行为一致。
 fn bi_run_code(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use std::sync::Arc;
     use crate::builtins_helpers as bh;
     bh::require_arg(args, 0, "runCode")?;
     let code_arc: Arc<crate::opcode::Code> = match &args[0] {
-        Value::Native(n) => {
-            n.downcast_ref::<Arc<crate::opcode::Code>>()
-                .ok_or_else(|| crate::value::error_value("runCode() 参数不是编译后的代码对象"))?
-                .clone()
-        }
-        _ => return Err(crate::value::error_value("runCode() 参数应为 compile() 的返回值")),
+        Value::Native(n) => match n.downcast_ref::<Arc<crate::opcode::Code>>() {
+            Some(c) => c.clone(),
+            None => return Ok(crate::value::error_value("runCode() 参数不是编译后的代码对象")),
+        },
+        _ => return Ok(crate::value::error_value("runCode() 参数应为 compile() 的返回值")),
     };
-    vm.run(code_arc)
+    // vm.run 返回 Result；错误转为 error 值返回（不抛出）
+    match vm.run(code_arc) {
+        Ok(v) => Ok(v),
+        Err(e) => Ok(e),
+    }
 }
 
 /// bi_new_ref 创建引用容器，包装一个初始值。
