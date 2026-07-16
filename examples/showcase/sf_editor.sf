@@ -204,13 +204,13 @@ html = html + ".toolbar .title { margin-left: auto; color: #888; font-size: 12px
 // 编辑器区
 html = html + ".editor-area { flex: 1; display: flex; overflow: hidden; position: relative; }"
 html = html + ".editor-wrap { flex: 1; position: relative; overflow: hidden; display: flex; }"
-// 行号列
-html = html + ".gutter { background: #1e1e1e; color: #858585; padding: 10px 6px 10px 10px; text-align: right; font-size: 14px; line-height: 1.5; user-select: none; overflow: hidden; min-width: 48px; font-family: inherit; white-space: pre; }"
+// 行号列（与编辑器同滚动，不随折行错位：行号只占逻辑行高度）
+html = html + ".gutter { background: #1e1e1e; color: #858585; padding: 10px 8px 10px 10px; text-align: right; font-size: 14px; line-height: 1.5; user-select: none; overflow: hidden; min-width: 48px; font-family: inherit; white-space: pre; flex-shrink: 0; border-right: 1px solid #333; }"
 html = html + ".editor-inner { flex: 1; position: relative; overflow: hidden; }"
-html = html + ".editor-inner textarea, .editor-inner pre { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 10px; font-family: inherit; font-size: 14px; line-height: 1.5; border: none; resize: none; outline: none; white-space: pre; overflow: auto; tab-size: 4; }"
-html = html + ".editor-inner textarea { background: transparent; color: transparent; caret-color: #d4d4d4; z-index: 2; }"
+html = html + ".editor-inner textarea, .editor-inner pre { position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; padding: 10px; font-family: inherit; font-size: 14px; line-height: 1.5; border: none; resize: none; outline: none; overflow: auto; tab-size: 4; box-sizing: border-box; }"
+html = html + ".editor-inner textarea { background: transparent; color: transparent; caret-color: #d4d4d4; z-index: 2; white-space: pre-wrap; word-wrap: break-word; }"
 html = html + ".editor-inner textarea::selection { background: #264f78; }"
-html = html + ".editor-inner pre { background: #1e1e1e; color: #d4d4d4; z-index: 1; pointer-events: none; }"
+html = html + ".editor-inner pre { background: #1e1e1e; color: #d4d4d4; z-index: 1; pointer-events: none; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; }"
 // 高亮颜色
 html = html + ".kw { color: #569cd6; }"       // 关键字 蓝
 html = html + ".str { color: #ce9178; }"       // 字符串 橙
@@ -253,7 +253,7 @@ html = html + "<div class='sep'></div>"
 html = html + "<button onclick='clearOutput()' title='清空输出'>🗑 清空</button>"
 html = html + "<button onclick=\'insertTemplate()\' title='插入示例代码'>📋 模板</button>"
 html = html + "<div class='sep'></div>"
-html = html + "<button onclick=\"toggleWrap()\" title='切换自动折行' id='wrapBtn'>↩ 折行</button>"
+html = html + "<button onclick=\"toggleWrap()\" title='切换自动折行' id='wrapBtn' style='background:#264f78'>↩ 折行</button>"
 html = html + "<button onclick=\"toggleTheme()\" title='切换主题'>🎨 主题</button>"
 html = html + "<span class='title' id='filename'>未命名.sf</span>"
 html = html + "</div>"
@@ -285,7 +285,7 @@ html = html + "<span id='cursorInfo'>行 1, 列 1</span>"
 html = html + "<span id='unicodeInfo'>U+0000</span>"
 html = html + "<span id='encodingInfo' style='cursor:pointer' onclick='cycleEncoding()' title='点击切换编码'>UTF-8</span>"
 html = html + "<span id='lineEndingInfo' style='cursor:pointer' onclick='cycleLineEnding()' title='点击切换换行符'>LF</span>"
-html = html + "<span id='wrapStatus'>不折行</span>"
+html = html + "<span id='wrapStatus'>折行</span>"
 html = html + "<span>Sflang</span>"
 html = html + "</div>"
 
@@ -530,23 +530,24 @@ html = html + "function setStatus(text) {"
 html = html + "  document.getElementById('status').textContent = text;"
 html = html + "}"
 
-// 切换自动折行
-html = html + "var wordWrap = false;"
+// 切换自动折行（默认折行）
+html = html + "var wordWrap = true;"
 html = html + "function toggleWrap() {"
 html = html + "  wordWrap = !wordWrap;"
 html = html + "  var ta = document.getElementById('editor');"
 html = html + "  var hl = document.getElementById('highlight');"
-html = html + "  if (wordWrap) {"
-html = html + "    ta.style.whiteSpace = 'pre-wrap'; ta.style.wordWrap = 'break-word';"
-html = html + "    hl.style.whiteSpace = 'pre-wrap'; hl.style.wordWrap = 'break-word';"
+html = html + "  if (!wordWrap) {"
+html = html + "    ta.style.whiteSpace = 'pre'; ta.style.wordWrap = 'normal'; ta.style.overflowWrap = 'normal';"
+html = html + "    hl.style.whiteSpace = 'pre'; hl.style.wordWrap = 'normal'; hl.style.overflowWrap = 'normal';"
 html = html + "  } else {"
-html = html + "    ta.style.whiteSpace = 'pre'; ta.style.wordWrap = 'normal';"
-html = html + "    hl.style.whiteSpace = 'pre'; hl.style.wordWrap = 'normal';"
+html = html + "    ta.style.whiteSpace = 'pre-wrap'; ta.style.wordWrap = 'break-word'; ta.style.overflowWrap = 'break-word';"
+html = html + "    hl.style.whiteSpace = 'pre-wrap'; hl.style.wordWrap = 'break-word'; hl.style.overflowWrap = 'break-word';"
 html = html + "  }"
 html = html + "  var btn = document.getElementById('wrapBtn');"
 html = html + "  btn.style.background = wordWrap ? '#264f78' : '#3c3c3c';"
 html = html + "  document.getElementById('wrapStatus').textContent = wordWrap ? '折行' : '不折行';"
 html = html + "  document.getElementById('status').textContent = wordWrap ? '自动折行: 开' : '自动折行: 关';"
+html = html + "  onEdit();  // 重新高亮以同步布局"
 html = html + "}"
 
 // 切换输出区大小
