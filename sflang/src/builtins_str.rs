@@ -606,12 +606,13 @@ fn bi_ends_with(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 注意：索引基于字符（与 len() 一致），非字节偏移。
 fn bi_find(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let h = bh::as_str(args, 0, "find")?;
-    let n = bh::as_str(args, 1, "find")?;
-    match h.find(n) {
+    // strFind(sub, s)：在 s 中查找 sub
+    let sub = bh::as_str(args, 0, "strFind")?;
+    let s = bh::as_str(args, 1, "strFind")?;
+    match s.find(sub) {
         // find 返回字节偏移，需转换为字符索引。
         Some(byte_off) => {
-            let char_idx = h[..byte_off].chars().count() as i64;
+            let char_idx = s[..byte_off].chars().count() as i64;
             Ok(Value::Int(char_idx))
         }
         None => Ok(Value::Int(-1)),

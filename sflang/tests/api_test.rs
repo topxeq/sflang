@@ -1618,8 +1618,9 @@ fn test_str_case_trim() {
 
 #[test]
 fn test_str_find_contains() {
-    assert_eq!(eval("return strFind(\"hello\", \"ll\")"), Value::Int(2));
-    assert_eq!(eval("return strFind(\"hello\", \"z\")"), Value::Int(-1));
+    // strFind(sub, s)：在 s 中查找 sub 的位置
+    assert_eq!(eval("return strFind(\"ll\", \"hello\")"), Value::Int(2));
+    assert_eq!(eval("return strFind(\"z\", \"hello\")"), Value::Int(-1));
     assert_eq!(eval("return contains(\"hello\", \"ell\")"), Value::Bool(true));
     assert_eq!(eval("return strStartsWith(\"hello\", \"he\")"), Value::Bool(true));
     assert_eq!(eval("return strEndsWith(\"hello\", \"lo\")"), Value::Bool(true));
