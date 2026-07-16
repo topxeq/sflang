@@ -166,9 +166,35 @@ func onMessage(msg) {
         guiEval(win, "setStatus('已保存: " + escapeJS(path) + " [" + enc + "/" + le + "]')")
     }
     elif op == "INFO" {
-        // 返回编辑器信息
         var info = "Sflang Editor v1.0 | sf路径: " + sfExe + " | 临时文件: " + tempFile
         guiEval(win, "showOutput('" + escapeJS(info) + "', false)")
+    }
+    elif op == "TPL" {
+        // 从示例文件加载模板
+        var tplMap = {
+            "hello": "examples/sample01_001_hello.sf",
+            "vars": "examples/sample01_006_types.sf",
+            "func": "examples/sample01_005_function.sf",
+            "interp": "examples/sample02_10_string_interp.sf",
+            "switch": "examples/sample03_03_switch.sf",
+            "loop": "examples/sample03_01_loops.sf",
+            "trycatch": "examples/sample05_01_trycatch.sf",
+            "oop": "examples/sample02_07_object.sf",
+            "concurrency": "examples/sample06_01_basic_thread.sf",
+            "csvdb": "examples/showcase/csv_excel_db.sf",
+        }
+        var name = data
+        var path = ""
+        if tplMap[name] != undefined {
+            path = tplMap[name]
+        }
+        if path != "" && fileExists(path) {
+            var content = readFile(path)
+            guiEval(win, "setEditorContent('" + escapeJS(content) + "')")
+            guiEval(win, "currentFile=''; setDirty(false); document.getElementById('status').textContent='已加载模板: " + escapeJS(name) + "';")
+        } else {
+            guiEval(win, "showOutput('模板未找到: " + escapeJS(name) + " (" + escapeJS(path) + ")', true)")
+        }
     }
 }
 
@@ -236,6 +262,9 @@ html = html + "::-webkit-scrollbar { width: 10px; height: 10px; }"
 html = html + "::-webkit-scrollbar-track { background: #1e1e1e; }"
 html = html + "::-webkit-scrollbar-thumb { background: #424242; border-radius: 5px; }"
 html = html + "::-webkit-scrollbar-thumb:hover { background: #555; }"
+// 模板菜单项
+html = html + ".tpl-item { padding: 5px 12px; cursor: pointer; font-size: 13px; color: #d4d4d4; white-space: nowrap; }"
+html = html + ".tpl-item:hover { background: #264f78; }"
 html = html + "</style>"
 
 html = html + "</head><body>"
@@ -251,7 +280,24 @@ html = html + "<button onclick='doSave()' title='保存(Ctrl+S)'>💾 保存</bu
 html = html + "<button onclick='doSaveAs()' title='另存为(Ctrl+Shift+S)'>💾 另存</button>"
 html = html + "<div class='sep'></div>"
 html = html + "<button onclick='clearOutput()' title='清空输出'>🗑 清空</button>"
-html = html + "<button onclick=\'insertTemplate()\' title='插入示例代码'>📋 模板</button>"
+html = html + "<div style='position:relative;display:inline-block'>"
+html = html + "<button onclick=\'toggleTplMenu()\' title='选择模板'>📋 模板 ▾</button>"
+html = html + "<div id='tplMenu' style='display:none;position:absolute;top:100%;left:0;background:#252526;border:1px solid #505050;border-radius:3px;z-index:100;min-width:160px;box-shadow:4px 4px 10px rgba(0,0,0,0.5)'>"
+html = html + "<div style='padding:4px 12px;color:#888;font-size:11px;border-bottom:1px solid #3c3c3c'>基础</div>"
+html = html + "<div class='tpl-item' onclick=\"loadTpl('hello')\">Hello World</div>"
+html = html + "<div class='tpl-item' onclick=\"loadTpl('vars')\">变量与类型</div>"
+html = html + "<div class='tpl-item' onclick=\"loadTpl('func')\">函数与递归</div>"
+html = html + "<div class='tpl-item' onclick=\"loadTpl('interp')\">字符串插值</div>"
+html = html + "<div style='padding:4px 12px;color:#888;font-size:11px;border-bottom:1px solid #3c3c3c;border-top:1px solid #3c3c3c'>控制流</div>"
+html = html + "<div class='tpl-item' onclick=\"loadTpl('switch')\">switch 语句</div>"
+html = html + "<div class='tpl-item' onclick=\"loadTpl('loop')\">循环与遍历</div>"
+html = html + "<div class='tpl-item' onclick=\"loadTpl('trycatch')\">异常处理</div>"
+html = html + "<div style='padding:4px 12px;color:#888;font-size:11px;border-bottom:1px solid #3c3c3c;border-top:1px solid #3c3c3c'>进阶</div>"
+html = html + "<div class='tpl-item' onclick=\"loadTpl('oop')\">面向对象</div>"
+html = html + "<div class='tpl-item' onclick=\"loadTpl('concurrency')\">并发</div>"
+html = html + "<div class='tpl-item' onclick=\"loadTpl('csvdb')\">CSV 数据库</div>"
+html = html + "</div>"
+html = html + "</div>"
 html = html + "<div class='sep'></div>"
 html = html + "<button onclick=\"toggleWrap()\" title='切换折行' id='wrapBtn'>↩ 折行</button>"
 html = html + "<button onclick=\"toggleTheme()\" title='切换主题'>🎨 主题</button>"
@@ -570,28 +616,26 @@ html = html + "  document.getElementById('outputArea').style.height = bigOutput 
 html = html + "}"
 
 // 插入示例代码
-html = html + "function insertTemplate() {"
-html = html + "  var tpl = '// Sflang 示例\\n"
-html = html + "println(\\\"Hello, Sflang!\\\")\\n"
-html = html + "\\n"
-html = html + "// 变量和函数\\n"
-html = html + "func fib(n) {\\n"
-html = html + "    if n <= 1 { return n }\\n"
-html = html + "    return fib(n-1) + fib(n-2)\\n"
-html = html + "}\\n"
-html = html + "\\n"
-html = html + "// 字符串插值\\n"
-html = html + "var name = \\\"World\\\"\\n"
-html = html + "println(\\\"Hello, \\\${name}!\\\")\\n"
-html = html + "\\n"
-html = html + "// 运行\\n"
-html = html + "for i := 0; i < 10; i++ {\\n"
-html = html + "    println(\\\"fib(\\\${i}) = \\\${fib(i)}\\\")\\n"
-html = html + "}\\n"
-html = html + "';"
-html = html + "  document.getElementById('editor').value = tpl;"
-html = html + "  onEdit();"
-html = html + "  document.getElementById('filename').textContent = '模板.sf';"
+// 模板下拉菜单
+html = html + "function toggleTplMenu() {"
+html = html + "  var m = document.getElementById('tplMenu');"
+html = html + "  m.style.display = m.style.display == 'none' ? 'block' : 'none';"
+html = html + "}"
+html = html + "document.addEventListener('click', function(e) {"
+html = html + "  if (!e.target.closest('.tpl-item') && !e.target.matches('[onclick*=toggleTplMenu]'))"
+html = html + "    document.getElementById('tplMenu').style.display = 'none';"
+html = html + "});"
+
+html = html + "var TEMPLATES = {};"
+html = html + "function loadTplFile(path, name) {"
+html = html + "  window.ipc.postMessage('OPEN\\n' + path);"
+html = html + "}"
+
+html = html + "function loadTpl(name) {"
+html = html + "  if (isDirty && !confirm('当前内容未保存，是否替换？')) return;"
+html = html + "  document.getElementById('tplMenu').style.display = 'none';"
+html = html + "  document.getElementById('status').textContent = '加载模板中...';"
+html = html + "  window.ipc.postMessage('TPL\\n' + name);"
 html = html + "}"
 
 // 初始化
