@@ -97,25 +97,73 @@ func onMessage(msg) {
             guiEval(win, "showOutput('文件不存在: " + escapeJS(path) + "', true)")
             return
         }
-        var content = readFile(path)
+        // 读取字节，检测编码
+        var rawBytes = readFileBytes(path)
+        var detectedEnc = "UTF-8"
+        if !isUtf8(rawBytes) {
+            detectedEnc = "GBK"
+            content = bytesGbToUtf8Str(rawBytes)
+        } else {
+            content = strFromBytes(rawBytes)
+        }
+        // 检测换行符
+        var detectedLE = "LF"
+        if strContains(content, "\r\n") {
+            detectedLE = "CRLF"
+            // 统一为 LF 供编辑器显示
+            content = strReplace(content, "\r\n", "\n")
+        }
         guiEval(win, "setEditorContent('" + escapeJS(content) + "')")
         guiEval(win, "setFileName('" + escapeJS(path) + "')")
-        guiEval(win, "setStatus('已打开: " + escapeJS(path) + "')")
+        // 通知前端更新编码和换行符显示
+        guiEval(win, "fileEncoding='" + detectedEnc + "'; encIdx=" + (detectedEnc == "GBK" ? "1" : "0") + "; document.getElementById('encodingInfo').textContent='" + detectedEnc + "';")
+        guiEval(win, "lineEnding='" + detectedLE + "'; leIdx=" + (detectedLE == "CRLF" ? "1" : "0") + "; document.getElementById('lineEndingInfo').textContent='" + detectedLE + "';")
+        guiEval(win, "setStatus('已打开: " + escapeJS(path) + " [" + detectedEnc + "/" + detectedLE + "]')")
     }
     elif op == "SAVE" {
-        // 解析路径和内容（第二行是路径，第三行开始是内容）
-        var nl2 = strFind("\n", data)
+        // 解析：第1行=路径，第2行=编码，第3行=换行符，第4行起=内容
+        var nl1 = strFind("\n", data)
+        var nl2 = strFind("\n", strSub(data, nl1 + 1))
+        var nl3 = strFind("\n", strSub(data, nl1 + nl2 + 2))
         var path = ""
+        var enc = "UTF-8"
+        var le = "LF"
         var content = ""
-        if nl2 >= 0 {
-            path = strSub(data, 0, nl2)
-            content = strSub(data, nl2 + 1)
+        if nl1 >= 0 {
+            path = strSub(data, 0, nl1)
+            var rest1 = strSub(data, nl1 + 1)
+            if nl2 >= 0 {
+                enc = strSub(rest1, 0, nl2)
+                var rest2 = strSub(rest1, nl2 + 1)
+                if nl3 >= 0 {
+                    le = strSub(rest2, 0, nl3)
+                    content = strSub(rest2, nl3 + 1)
+                } else {
+                    content = rest2
+                }
+            } else {
+                content = rest1
+            }
         } else {
             path = data
         }
-        writeFile(path, content)
+
+        // 换行符转换
+        if le == "CRLF" {
+            content = strReplace(content, "\n", "\r\n")
+        }
+
+        // 编码写入
+        if enc == "GBK" {
+            // GBK 编码：用 strToGbkBytes 转字节后写
+            var b = strToGbkBytes(content)
+            writeFileBytes(path, b)
+        } else {
+            writeFile(path, content)
+        }
+
         guiEval(win, "setFileName('" + escapeJS(path) + "')")
-        guiEval(win, "setStatus('已保存: " + escapeJS(path) + "')")
+        guiEval(win, "setStatus('已保存: " + escapeJS(path) + " [" + enc + "/" + le + "]')")
     }
     elif op == "INFO" {
         // 返回编辑器信息
@@ -155,11 +203,14 @@ html = html + ".toolbar .sep { width: 1px; height: 22px; background: #505050; ma
 html = html + ".toolbar .title { margin-left: auto; color: #888; font-size: 12px; }"
 // 编辑器区
 html = html + ".editor-area { flex: 1; display: flex; overflow: hidden; position: relative; }"
-html = html + ".editor-wrap { flex: 1; position: relative; overflow: hidden; }"
-html = html + ".editor-wrap textarea, .editor-wrap pre { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 10px; font-family: inherit; font-size: 14px; line-height: 1.5; border: none; resize: none; outline: none; white-space: pre; overflow: auto; tab-size: 4; }"
-html = html + ".editor-wrap textarea { background: transparent; color: transparent; caret-color: #d4d4d4; z-index: 2; }"
-html = html + ".editor-wrap textarea::selection { background: #264f78; }"
-html = html + ".editor-wrap pre { background: #1e1e1e; color: #d4d4d4; z-index: 1; pointer-events: none; }"
+html = html + ".editor-wrap { flex: 1; position: relative; overflow: hidden; display: flex; }"
+// 行号列
+html = html + ".gutter { background: #1e1e1e; color: #858585; padding: 10px 6px 10px 10px; text-align: right; font-size: 14px; line-height: 1.5; user-select: none; overflow: hidden; min-width: 40px; font-family: inherit; }"
+html = html + ".editor-inner { flex: 1; position: relative; overflow: hidden; }"
+html = html + ".editor-inner textarea, .editor-inner pre { position: absolute; top: 0; left: 0; width: 100%; height: 100%; padding: 10px; font-family: inherit; font-size: 14px; line-height: 1.5; border: none; resize: none; outline: none; white-space: pre; overflow: auto; tab-size: 4; }"
+html = html + ".editor-inner textarea { background: transparent; color: transparent; caret-color: #d4d4d4; z-index: 2; }"
+html = html + ".editor-inner textarea::selection { background: #264f78; }"
+html = html + ".editor-inner pre { background: #1e1e1e; color: #d4d4d4; z-index: 1; pointer-events: none; }"
 // 高亮颜色
 html = html + ".kw { color: #569cd6; }"       // 关键字 蓝
 html = html + ".str { color: #ce9178; }"       // 字符串 橙
@@ -209,8 +260,11 @@ html = html + "</div>"
 // 编辑器区
 html = html + "<div class='editor-area'>"
 html = html + "<div class='editor-wrap'>"
+html = html + "<div class='gutter' id='gutter'>1</div>"
+html = html + "<div class='editor-inner'>"
 html = html + "<pre id='highlight'></pre>"
-html = html + "<textarea id='editor' spellcheck='false' oninput='onEdit()' onscroll='onScroll()' onkeydown='onKey(event)'></textarea>"
+html = html + "<textarea id='editor' spellcheck='false' oninput='onEdit()' onscroll='onScroll()' onkeydown='onKey(event)' onclick='updateCursor()' onkeyup='updateCursor()'></textarea>"
+html = html + "</div>"
 html = html + "</div>"
 html = html + "</div>"
 
@@ -226,8 +280,11 @@ html = html + "</div>"
 html = html + "<div class='statusbar'>"
 html = html + "<span id='status'>就绪</span>"
 html = html + "<span class='spacer'></span>"
-html = html + "<span id='cursor'>行 1, 列 1</span>"
-html = html + "<span id='mode'>Sflang</span>"
+html = html + "<span id='cursorInfo'>行 1, 列 1</span>"
+html = html + "<span id='unicodeInfo'>U+0000</span>"
+html = html + "<span id='encodingInfo' style='cursor:pointer' onclick='cycleEncoding()' title='点击切换编码'>UTF-8</span>"
+html = html + "<span id='lineEndingInfo' style='cursor:pointer' onclick='cycleLineEnding()' title='点击切换换行符'>LF</span>"
+html = html + "<span>Sflang</span>"
 html = html + "</div>"
 
 html = html + "</body>"
@@ -312,11 +369,18 @@ html = html + "}"
 html = html + "function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }"
 
 // 编辑器事件
-html = html + "var isDirty = false; var currentFile = '';"
+html = html + "var isDirty = false; var currentFile = ''; var fileEncoding = 'UTF-8'; var lineEnding = 'LF';"
 html = html + "function setDirty(v) { isDirty = v; updateTitle(); }"
 html = html + "function updateTitle() {"
 html = html + "  var fn = document.getElementById('filename');"
 html = html + "  fn.textContent = (currentFile || '未命名.sf') + (isDirty ? ' ●' : '');"
+html = html + "}"
+
+html = html + "function updateGutter() {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var lineCount = ta.value.split('\\n').length;"
+html = html + "  var nums = ''; for (var i = 1; i <= lineCount; i++) nums += i + '\\n';"
+html = html + "  document.getElementById('gutter').textContent = nums;"
 html = html + "}"
 
 html = html + "function onEdit() {"
@@ -324,6 +388,7 @@ html = html + "  var ta = document.getElementById('editor');"
 html = html + "  var code = ta.value;"
 html = html + "  if (code[code.length-1] == '\\n') code += ' ';"
 html = html + "  document.getElementById('highlight').innerHTML = highlightCode(code);"
+html = html + "  updateGutter();"
 html = html + "  updateCursor();"
 html = html + "  setDirty(true);"
 html = html + "}"
@@ -333,14 +398,40 @@ html = html + "function onScroll() {"
 html = html + "  var ta = document.getElementById('editor');"
 html = html + "  document.getElementById('highlight').scrollTop = ta.scrollTop;"
 html = html + "  document.getElementById('highlight').scrollLeft = ta.scrollLeft;"
+html = html + "  document.getElementById('gutter').scrollTop = ta.scrollTop;"
 html = html + "}"
 
-// 更新光标位置
+// 更新光标位置 + Unicode 码点
 html = html + "function updateCursor() {"
 html = html + "  var ta = document.getElementById('editor');"
 html = html + "  var pos = ta.selectionStart;"
-html = html + "  var lines = ta.value.substring(0, pos).split('\\n');"
-html = html + "  document.getElementById('cursor').textContent = '行 ' + lines.length + ', 列 ' + (lines[lines.length-1].length+1);"
+html = html + "  var before = ta.value.substring(0, pos);"
+html = html + "  var lines = before.split('\\n');"
+html = html + "  document.getElementById('cursorInfo').textContent = '行 ' + lines.length + ', 列 ' + (lines[lines.length-1].length+1);"
+html = html + "  var ch = ta.value.substring(pos, pos+1);"
+html = html + "  if (ch) {"
+html = html + "    var cp = ch.codePointAt(0);"
+html = html + "    var hex = cp.toString(16).toUpperCase().padStart(4, '0');"
+html = html + "    document.getElementById('unicodeInfo').textContent = 'U+' + hex + ' ' + ch;"
+html = html + "  } else { document.getElementById('unicodeInfo').textContent = 'EOF'; }"
+html = html + "}"
+
+// 编码切换
+html = html + "var encodings = ['UTF-8', 'GBK']; var encIdx = 0;"
+html = html + "function cycleEncoding() {"
+html = html + "  encIdx = (encIdx + 1) % encodings.length;"
+html = html + "  fileEncoding = encodings[encIdx];"
+html = html + "  document.getElementById('encodingInfo').textContent = fileEncoding;"
+html = html + "  document.getElementById('status').textContent = '编码: ' + fileEncoding + '（保存时生效）';"
+html = html + "}"
+
+// 换行符切换
+html = html + "var lineEndings = ['LF', 'CRLF']; var leIdx = 0;"
+html = html + "function cycleLineEnding() {"
+html = html + "  leIdx = (leIdx + 1) % lineEndings.length;"
+html = html + "  lineEnding = lineEndings[leIdx];"
+html = html + "  document.getElementById('lineEndingInfo').textContent = lineEnding;"
+html = html + "  document.getElementById('status').textContent = '换行符: ' + lineEnding + '（保存时生效）';"
 html = html + "}"
 
 // 键盘快捷键
@@ -393,7 +484,7 @@ html = html + "  var path = currentFile;"
 html = html + "  if (!path) { path = prompt('保存到:', 'untitled.sf'); }"
 html = html + "  if (path) {"
 html = html + "    var code = document.getElementById('editor').value;"
-html = html + "    window.ipc.postMessage('SAVE\\n' + path + '\\n' + code);"
+html = html + "    window.ipc.postMessage('SAVE\\n' + path + '\\n' + fileEncoding + '\\n' + lineEnding + '\\n' + code);"
 html = html + "  }"
 html = html + "}"
 
@@ -402,7 +493,7 @@ html = html + "function doSaveAs() {"
 html = html + "  var path = prompt('另存为:', currentFile || 'untitled.sf');"
 html = html + "  if (path) {"
 html = html + "    var code = document.getElementById('editor').value;"
-html = html + "    window.ipc.postMessage('SAVE\\n' + path + '\\n' + code);"
+html = html + "    window.ipc.postMessage('SAVE\\n' + path + '\\n' + fileEncoding + '\\n' + lineEnding + '\\n' + code);"
 html = html + "  }"
 html = html + "}"
 
