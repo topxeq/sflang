@@ -166,6 +166,7 @@ func onMessage(msg) {
     }
     elif op == "TPL" {
         // 从示例文件加载模板
+        guiEval(win, "document.getElementById('output').textContent = '[debug] TPL handler called, data=[" + escapeJS(data) + "] op=[" + escapeJS(op) + "]';")
         var tplMap = {
             "hello": "examples/sample01_001_hello.sf",
             "vars": "examples/sample01_006_types.sf",
@@ -628,11 +629,17 @@ html = html + "  window.ipc.postMessage('OPEN\\n' + path);"
 html = html + "}"
 
 html = html + "function loadTpl(name) {"
-html = html + "  var hasContent = document.getElementById('editor').value.trim().length > 0;"
-html = html + "  if (hasContent && isDirty && !confirm('当前内容未保存，是否替换？')) return;"
-html = html + "  document.getElementById('tplMenu').style.display = 'none';"
-html = html + "  document.getElementById('status').textContent = '加载模板中...';"
-html = html + "  window.ipc.postMessage('TPL\\\\n' + name);"
+html = html + "  try {"
+html = html + "    var hasContent = document.getElementById('editor').value.trim().length > 0;"
+html = html + "    if (hasContent && isDirty && !confirm('当前内容未保存，是否替换？')) return;"
+html = html + "    document.getElementById('tplMenu').style.display = 'none';"
+html = html + "    document.getElementById('status').textContent = '加载模板中: ' + name;"
+html = html + "    var msg = 'TPL' + String.fromCharCode(10) + name;"
+html = html + "    window.ipc.postMessage(msg);"
+html = html + "    document.getElementById('output').textContent = '[debug] sent TPL request for: ' + name + ' (msg len=' + msg.length + ')';"
+html = html + "  } catch(e) {"
+html = html + "    document.getElementById('output').textContent = '[loadTpl错误] ' + e.message;"
+html = html + "  }"
 html = html + "}"
 
 // 初始化
@@ -640,6 +647,14 @@ html = html + "window.onload = function() {"
 html = html + "  onEdit();"
 html = html + "  setDirty(false);"
 html = html + "  document.getElementById('editor').focus();"
+html = html + "};"
+
+// 全局错误捕获——显示在输出区
+html = html + "window.onerror = function(msg, url, line, col, err) {"
+html = html + "  var el = document.getElementById('output');"
+html = html + "  el.className = 'output-content error';"
+html = html + "  el.textContent = '[JS错误] ' + msg + ' (行' + line + ':' + col + ')';"
+html = html + "  return true;"
 html = html + "};"
 
 html = html + "</script></html>"
