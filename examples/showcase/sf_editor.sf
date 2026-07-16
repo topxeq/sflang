@@ -5,18 +5,13 @@
 
 // ---- 工具函数 ----
 
-/// escapeJS 转义字符串中的特殊字符，使其可安全嵌入 JS 字符串字面量
+/// escapeJS 转义字符串中的特殊字符，使其可安全嵌入 JS 单引号字符串字面量
 func escapeJS(s) {
-    var r = ""
-    for i := 0; i < len(s); i++ {
-        var c = strSub(s, i, 1)
-        if c == "\\" { r = r + "\\\\" }
-        elif c == "'" { r = r + "\\'" }
-        elif c == "\n" { r = r + "\\n" }
-        elif c == "\r" { r = r + "" }
-        else { r = r + c }
-    }
-    return r
+    s = strReplace(s, "\\", "\\\\")
+    s = strReplace(s, "'", "\\'")
+    s = strReplace(s, "\n", "\\n")
+    s = strReplace(s, "\r", "")
+    return s
 }
 
 // ---- 临时文件和 sf.exe 路径 ----
