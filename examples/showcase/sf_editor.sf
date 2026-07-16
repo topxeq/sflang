@@ -632,7 +632,7 @@ html = html + "  var hasContent = document.getElementById('editor').value.trim()
 html = html + "  if (hasContent && isDirty && !confirm('当前内容未保存，是否替换？')) return;"
 html = html + "  document.getElementById('tplMenu').style.display = 'none';"
 html = html + "  document.getElementById('status').textContent = '加载模板中...';"
-html = html + "  window.ipc.postMessage('TPL\\n' + name);"
+html = html + "  window.ipc.postMessage('TPL\\\\n' + name);"
 html = html + "}"
 
 // 初始化
