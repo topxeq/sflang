@@ -128,7 +128,8 @@ func onMessage(msg) {
         if defaultName == "" { defaultName = "untitled.sf" }
         var path = saveFileDialog(defaultName)
         if path != undefined {
-            saveToPath(path)
+            // 发回 JS 端让它组装内容并发 SAVE 请求
+            guiEval(win, "saveToPath('" + escapeJS(path) + "');")
         } else {
             guiEval(win, "setStatus('就绪')")
         }
