@@ -93,6 +93,46 @@ func onMessage(msg) {
         }
         guiEval(win, "setStatus('求值完成')")
     }
+    elif op == "OPENDLG" {
+        // 原生文件打开对话框
+        var path = openFileDialog(".sf,.txt")
+        if path != undefined {
+            if fileExists(path) {
+                var rawBytes = readFileBytes(path)
+                var detectedEnc = "UTF-8"
+                if !isUtf8(rawBytes) {
+                    detectedEnc = "GBK"
+                    var content = bytesGbToUtf8Str(rawBytes)
+                } else {
+                    var content = strFromBytes(rawBytes)
+                }
+                var detectedLE = "LF"
+                if strContains(content, "\r\n") {
+                    detectedLE = "CRLF"
+                    content = strReplace(content, "\r\n", "\n")
+                }
+                guiEval(win, "window.__tplContent = '" + escapeJS(content) + "';")
+                guiEval(win, "document.getElementById('editor').value = window.__tplContent; onEdit(); setDirty(false); currentFile='" + escapeJS(path) + "'; updateTitle(); document.getElementById('status').textContent='已打开: " + escapeJS(path) + "'; window.__tplContent=null;")
+                guiEval(win, "fileEncoding='" + detectedEnc + "'; encIdx=" + (detectedEnc == "GBK" ? "1" : "0") + "; document.getElementById('encodingInfo').textContent='" + detectedEnc + "';")
+                guiEval(win, "lineEnding='" + detectedLE + "'; leIdx=" + (detectedLE == "CRLF" ? "1" : "0") + "; document.getElementById('lineEndingInfo').textContent='" + detectedLE + "';")
+            } else {
+                guiEval(win, "showOutput('文件不存在: " + escapeJS(path) + "', true)")
+            }
+        } else {
+            guiEval(win, "setStatus('就绪')")
+        }
+    }
+    elif op == "SAVEDLG" {
+        // 原生保存文件对话框
+        var defaultName = data
+        if defaultName == "" { defaultName = "untitled.sf" }
+        var path = saveFileDialog(defaultName)
+        if path != undefined {
+            saveToPath(path)
+        } else {
+            guiEval(win, "setStatus('就绪')")
+        }
+    }
     elif op == "OPEN" {
         // 读取文件
         var path = data
@@ -547,40 +587,24 @@ html = html + "  document.getElementById('status').textContent = '就绪';"
 html = html + "  document.getElementById('editor').focus();"
 html = html + "}"
 
-// 打开文件（用文件选择对话框）
+// 打开文件（用原生系统对话框，通过 IPC 调 Sflang 后端）
 html = html + "function doOpen() {"
 html = html + "  if (isDirty && !confirm('当前文件未保存，是否放弃修改？')) return;"
-html = html + "  document.getElementById('filePicker').click();"
-html = html + "}"
-html = html + "function onFilePicked(input) {"
-html = html + "  if (input.files.length > 0) {"
-html = html + "    var f = input.files[0];"
-html = html + "    var reader = new FileReader();"
-html = html + "    reader.onload = function(e) {"
-html = html + "      var path = f.name;"
-html = html + "      if (f.path) path = f.path;"
-html = html + "      window.__filePath = path;"
-html = html + "      document.getElementById('editor').value = e.target.result;"
-html = html + "      onEdit(); setDirty(false); currentFile = path;"
-html = html + "      updateTitle();"
-html = html + "      document.getElementById('status').textContent = '已打开: ' + path;"
-html = html + "    };"
-html = html + "    reader.readAsText(f);"
-html = html + "  }"
-html = html + "  input.value = '';"
+html = html + "  document.getElementById('status').textContent = '请选择文件...';"
+html = html + "  window.ipc.postMessage('OPENDLG');"
 html = html + "}"
 
-// 保存文件（有当前路径时直接保存，否则提示路径）
+// 保存文件（有当前路径时直接保存，否则弹保存对话框）
 html = html + "function doSave() {"
-html = html + "  var path = currentFile;"
-html = html + "  if (!path) { path = prompt('保存到:', 'untitled.sf'); }"
-html = html + "  if (path) { saveToPath(path); }"
+html = html + "  if (currentFile) { saveToPath(currentFile); }"
+html = html + "  else { doSaveAs(); }"
 html = html + "}"
 
-// 另存为（提示输入路径）
+// 另存为（弹原生保存对话框）
 html = html + "function doSaveAs() {"
-html = html + "  var path = prompt('另存为:', currentFile || 'untitled.sf');"
-html = html + "  if (path) { saveToPath(path); }"
+html = html + "  document.getElementById('status').textContent = '请选择保存位置...';"
+html = html + "  var defaultName = currentFile ? currentFile.split('/').pop().split('\\\\').pop() : 'untitled.sf';"
+html = html + "  window.ipc.postMessage('SAVEDLG' + String.fromCharCode(10) + defaultName);"
 html = html + "}"
 html = html + "function saveToPath(path) {"
 html = html + "  var code = document.getElementById('editor').value;"
