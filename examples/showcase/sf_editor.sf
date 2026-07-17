@@ -165,31 +165,27 @@ func onMessage(msg) {
         guiEval(win, "showOutput('" + escapeJS(info) + "', false)")
     }
     elif op == "TPL" {
-        // 从示例文件加载模板
+        // 从 base64 内嵌数据解码模板（不依赖外部文件）
         var tplMap = {
-            "hello": "examples/sample01_001_hello.sf",
-            "vars": "examples/sample01_006_types.sf",
-            "func": "examples/sample01_005_function.sf",
-            "interp": "examples/sample02_10_string_interp.sf",
-            "switch": "examples/sample03_03_switch.sf",
-            "loop": "examples/sample03_01_loops.sf",
-            "trycatch": "examples/sample05_01_trycatch.sf",
-            "oop": "examples/sample02_07_object.sf",
-            "concurrency": "examples/sample06_01_basic_thread.sf",
-            "csvdb": "examples/showcase/csv_excel_db.sf",
+            "hello": "Ly8gSGVsbG8gV29ybGQKcHJpbnRsbigiSGVsbG8sIFNmbGFuZyEiKQpwcmludGxuKCLkvaDlpb3vvIzkuJbnlYzvvIEiKQo=",
+            "vars": "Ly8g5Y+Y6YeP5LiO5pWw5o2u57G75Z6LCnZhciBpID0gNDIKdmFyIGYgPSAzLjE0CnZhciBzID0gImhlbGxvIgp2YXIgYiA9IHRydWUKdmFyIGFyciA9IFsxLCAyLCAzXQp2YXIgb2JqID0ge25hbWU6ICJBbGljZSIsIGFnZTogMzB9CnByaW50bG4oaSwgZiwgcywgYikKcHJpbnRsbihhcnIpCnByaW50bG4ob2JqKQo=",
+            "func": "Ly8g5Ye95pWw5LiO6YCS5b2SCmZ1bmMgZmliKG4pIHsKICAgIGlmIG4gPD0gMSB7IHJldHVybiBuIH0KICAgIHJldHVybiBmaWIobi0xKSArIGZpYihuLTIpCn0KCmZvciBpIDo9IDA7IGkgPCAxMDsgaSsrIHsKICAgIHByaW50bG4oImZpYigiICsgaSArICIpID0gIiArIGZpYihpKSkKfQo=",
+            "interp": "Ly8g5a2X56ym5Liy5o+S5YC8CnZhciBuYW1lID0gIldvcmxkIgp2YXIgY291bnQgPSA0MgpwcmludGxuKCJIZWxsbywgJHtuYW1lfSEiKQpwcmludGxuKCJjb3VudCA9ICR7Y291bnQgKyAxfSIpCg==",
+            "switch": "Ly8gc3dpdGNoIOivreWPpQp2YXIgZGF5ID0gMwpzd2l0Y2ggZGF5IHsKICAgIGNhc2UgMSB7IHByaW50bG4oIuWRqOS4gCIpIH0KICAgIGNhc2UgMiB7IHByaW50bG4oIuWRqOS6jCIpIH0KICAgIGNhc2UgMyB7IHByaW50bG4oIuWRqOS4iSIpIH0KICAgIGRlZmF1bHQgeyBwcmludGxuKCLlhbbku5YiKSB9Cn0K",
+            "loop": "Ly8g5b6q546v5LiO6YGN5Y6GCnZhciBhcnIgPSBbMTAsIDIwLCAzMF0KZm9yIHYgaW4gYXJyIHsgcHJpbnRsbih2KSB9CmZvciBpLCB2IGluIGFyciB7IHByaW50bG4oaSwgdikgfQpmb3IgaSA6PSAwOyBpIDwgMzsgaSsrIHsgcHJpbnRsbihpKSB9CnZhciBtID0gbWFweyJhIjogMSwgImIiOiAyfQpmb3IgaywgdiBpbiBtIHsgcHJpbnRsbihrLCB2KSB9Cg==",
+            "trycatch": "Ly8g5byC5bi45aSE55CGCmZ1bmMgZGl2aWRlKGEsIGIpIHsKICAgIGlmIGIgPT0gMCB7IHJldHVybiBlcnJvcigi6Zmk6Zu26ZSZ6K+vIikgfQogICAgcmV0dXJuIGEgLyBiCn0KCnZhciByID0gZGl2aWRlKDEwLCAwKQppZiBpc0VycihyKSB7CiAgICBwcmludGxuKCLplJnor686IiwgcikKfSBlbHNlIHsKICAgIHByaW50bG4oIue7k+aenDoiLCByKQp9Cgp0cnkgewogICAgdGhyb3cgIuiHquWumuS5ieW8guW4uCIKfSBjYXRjaCAoZSkgewogICAgcHJpbnRsbigi5o2V6I63OiIsIGUpCn0gZmluYWxseSB7CiAgICBwcmludGxuKCJmaW5hbGx5IikKfQo=",
+            "oop": "Ly8g6Z2i5ZCR5a+56LGhCmZ1bmMgQ291bnRlcihzdGFydCkgewogICAgdmFyIHNlbGYgPSB7dmFsdWU6IHN0YXJ0fQogICAgc2VsZi5pbmMgPSBmdW5jKHNlbGYsIG4pIHsgc2VsZi52YWx1ZSA9IHNlbGYudmFsdWUgKyBuOyByZXR1cm4gc2VsZi52YWx1ZSB9CiAgICBzZWxmLmdldCA9IGZ1bmMoc2VsZikgeyByZXR1cm4gc2VsZi52YWx1ZSB9CiAgICByZXR1cm4gc2VsZgp9Cgp2YXIgYyA9IENvdW50ZXIoMTApCnByaW50bG4oYy5pbmMoNSkpICAvLyAxNQpwcmludGxuKGMuZ2V0KCkpICAgLy8gMTUK",
+            "concurrency": "Ly8g5bm25Y+RCnZhciBjaCA9IG5ld0NoYW5uZWwoKQoKZnVuYyB3b3JrZXIoY2gpIHsKICAgIGZvciBpIDo9IDA7IGkgPCAzOyBpKysgewogICAgICAgIGNoYW5TZW5kKGNoLCBpKQogICAgICAgIHNsZWVwKDAuMSkKICAgIH0KICAgIGNoYW5TZW5kKGNoLCAtMSkKfQoKcnVuIHdvcmtlcihjaCkKCndoaWxlIHRydWUgewogICAgdmFyIHYgPSBjaGFuUmVjdihjaCkKICAgIGlmIHYgPCAwIHsgYnJlYWsgfQogICAgcHJpbnRsbigi5pS25YiwOiIsIHYpCn0KcHJpbnRsbigi5a6M5oiQIikK",
+            "csvdb": "Ly8gQ1NWIOaVsOaNruW6k+afpeivogp3cml0ZUZpbGUoInRlbXAvZGVtby5jc3YiLCAibmFtZSxhZ2UsY2l0eQpBbGljZSwzMCxCZWlqaW5nCkJvYiwyNSxTaGFuZ2hhaQoiKQoKdmFyIGRiID0gZGJDb25uZWN0KCJjc3YiLCAidGVtcC9kZW1vLmNzdiIpCmlmIGlzRXJyKGRiKSB7IHByaW50bG4oZGIpOyBleGl0KDEpIH0KCnByaW50bG4oZGJRdWVyeShkYiwgIlNFTEVDVCAqIEZST00gZGVtbyBXSEVSRSBhZ2UgPiAyNiIpKQpwcmludGxuKGRiUXVlcnkoZGIsICJTRUxFQ1QgY2l0eSwgQ09VTlQoKikgQVMgY250IEZST00gZGVtbyBHUk9VUCBCWSBjaXR5IikpCg==",
         }
         var name = data
-        var path = ""
-        if tplMap[name] != undefined {
-            path = tplMap[name]
-        }
-        if path != "" && fileExists(path) {
-            var content = readFile(path)
-            // 用全局变量中转，避免 guiEval 的 JS 字符串转义问题
+        var b64 = tplMap[name]
+        if b64 != undefined {
+            var content = strFromBytes(base64Decode(b64))
             guiEval(win, "window.__tplContent = '" + escapeJS(content) + "';")
             guiEval(win, "document.getElementById('editor').value = window.__tplContent; onEdit(); setDirty(false); currentFile=''; document.getElementById('status').textContent='已加载: " + escapeJS(name) + "'; window.__tplContent=null;")
         } else {
-            guiEval(win, "showOutput('模板未找到: " + escapeJS(name) + " (路径: " + escapeJS(path) + ") CWD问题?', true)")
+            guiEval(win, "showOutput('模板未找到: " + escapeJS(name) + "', true)")
         }
     }
 }
