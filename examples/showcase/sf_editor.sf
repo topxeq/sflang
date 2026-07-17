@@ -584,7 +584,7 @@ html = html + "  document.getElementById('status').textContent = text;"
 html = html + "}"
 
 // 切换折行
-html = html + "var wordWrap = false;"
+html = html + "var wordWrap = true;"
 html = html + "function toggleWrap() {"
 html = html + "  wordWrap = !wordWrap;"
 html = html + "  var ta = document.getElementById('editor');"
@@ -634,6 +634,7 @@ html = html + "}"
 
 // 初始化
 html = html + "window.onload = function() {"
+html = html + "  toggleWrap(); toggleWrap();"
 html = html + "  onEdit();"
 html = html + "  setDirty(false);"
 html = html + "  document.getElementById('editor').focus();"
