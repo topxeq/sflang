@@ -22,8 +22,8 @@ repository = "https://github.com/topxeq/sflang"
 # regex：rust-lang 官方正则库（MIT OR Apache-2.0），用于 reg* 内置函数。
 regex = "1"
 # windows-sys：Windows API 绑定（仅 Windows 编译）。
-# features：控制台编码转换 + 剪贴板读写（DataExchange + Memory + Gdi）
-windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation", "Win32_Globalization", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Graphics_Gdi"] }
+# features：控制台编码转换 + 剪贴板读写（DataExchange + Memory + Gdi）+ 对话框（Controls_Dialogs + WindowsAndMessaging）
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation", "Win32_Globalization", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Graphics_Gdi", "Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging"] }
 # rust_xlsxwriter：写 Excel xlsx 文件（MIT OR Apache-2.0, jmcnamara），用于 excel* 写入函数。
 rust_xlsxwriter = "0.79"
 # calamine：读 Excel xlsx/xls/ods 文件（MIT, tafia），用于 excel* 读取函数。

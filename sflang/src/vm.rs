@@ -169,6 +169,7 @@ impl VM {
         crate::builtins_containers::register(&mut vm);
         crate::builtins_xml::register(&mut vm);
         crate::builtins_clipboard::register(&mut vm);
+        crate::builtins_dialog::register(&mut vm);
         crate::builtins_test::register(&mut vm);
         crate::builtins_pinyin::register(&mut vm);
         crate::builtins_jwt::register(&mut vm);
