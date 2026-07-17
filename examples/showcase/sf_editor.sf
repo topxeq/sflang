@@ -570,23 +570,17 @@ html = html + "  }"
 html = html + "  input.value = '';"
 html = html + "}"
 
-// 保存文件（有当前路径时直接保存）
+// 保存文件（有当前路径时直接保存，否则提示路径）
 html = html + "function doSave() {"
-html = html + "  if (currentFile) { saveToPath(currentFile); }"
-html = html + "  else { doSaveAs(); }"
+html = html + "  var path = currentFile;"
+html = html + "  if (!path) { path = prompt('保存到:', 'untitled.sf'); }"
+html = html + "  if (path) { saveToPath(path); }"
 html = html + "}"
 
-// 另存为（用 Blob 下载）
+// 另存为（提示输入路径）
 html = html + "function doSaveAs() {"
-html = html + "  var code = document.getElementById('editor').value;"
-html = html + "  var blob = new Blob([code], {type: 'text/plain;charset=utf-8'});"
-html = html + "  var a = document.createElement('a');"
-html = html + "  a.href = URL.createObjectURL(blob);"
-html = html + "  a.download = currentFile ? currentFile.split('/').pop().split('\\\\').pop() : 'untitled.sf';"
-html = html + "  a.click();"
-html = html + "  URL.revokeObjectURL(a.href);"
-html = html + "  setDirty(false);"
-html = html + "  document.getElementById('status').textContent = '已下载文件';"
+html = html + "  var path = prompt('另存为:', currentFile || 'untitled.sf');"
+html = html + "  if (path) { saveToPath(path); }"
 html = html + "}"
 html = html + "function saveToPath(path) {"
 html = html + "  var code = document.getElementById('editor').value;"
