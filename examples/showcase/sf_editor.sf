@@ -20,10 +20,19 @@ var sfExe = ""
 
 // 查找 sf 可执行文件路径
 func findSfExe() {
-    // 优先用 scriptPathG（自身可执行文件路径）
-    if scriptPathG != undefined && scriptPathG != "" {
-        sfExe = scriptPathG
-        return
+    // 用 getOsArgs()[0] 获取 sf.exe 的完整路径
+    var osArgs = getOsArgs()
+    if len(osArgs) > 0 {
+        var exePath = osArgs[0]
+        // Windows 下确保有 .exe 扩展名
+        if !strEndsWith(exePath, ".exe") && !strEndsWith(exePath, ".sf") {
+            exePath = exePath + ".exe"
+        }
+        // 确认不是 .sf 脚本文件
+        if !strEndsWith(exePath, ".sf") {
+            sfExe = exePath
+            return
+        }
     }
     // 尝试常见位置
     var candidates = [
