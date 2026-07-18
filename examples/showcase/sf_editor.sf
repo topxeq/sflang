@@ -247,61 +247,52 @@ func onMessage(msg) {
         guiEval(win, "showLangRef('" + escapeJS(html2) + "')")
     }
     elif op == "BUILTINS" {
-        // 获取所有内置函数分类和函数名，生成 HTML 传给 JS
-        var cats = builtin_categories()
+        // 用 help() 获取完整分类文本，解析生成 HTML
+        var helpText = help()
+        var lines = strSplit("\n", helpText)
         var bhtml = ""
-        for entry in cats {
-            var catName = entry[0]
-            var fns = entry[1]
-            bhtml = bhtml + "<h2>" + catName + "（" + len(fns) + "）</h2>"
-            bhtml = bhtml + "<div style='display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;'>"
-            for fn in fns {
-                var doc = builtin_doc(fn)
-                if doc != undefined {
-                    bhtml = bhtml + "<span style='background:#2d2d2d;padding:2px 8px;border-radius:3px;cursor:pointer;border:1px solid #444;' onclick=\"window.ipc.postMessage('HELPFN" + strFromBytes(bytes([10])) + fn + "')\" title='" + escapeJS(doc.summary) + "'>" + fn + "</span>"
-                } else {
-                    bhtml = bhtml + "<span style='background:#2d2d2d;padding:2px 8px;border-radius:3px;color:#888;border:1px solid #444;'>" + fn + "</span>"
+        var inCategory = false
+        for line in lines {
+            // 分类行：== xxx（N）==
+            if strStartsWith(line, "== ") {
+                bhtml = bhtml + "<h2>" + line + "</h2>"
+                bhtml = bhtml + "<div style='display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;'>"
+                inCategory = true
+            }
+            // 函数行：  funcName, funcName2, ...
+            elif inCategory && strStartsWith(line, "  ") {
+                var fns = strSplit(",", strTrim(line))
+                for fn in fns {
+                    var fnName = strTrim(fn)
+                    if fnName != "" {
+                        bhtml = bhtml + "<span style='background:#2d2d2d;padding:2px 8px;border-radius:3px;cursor:pointer;border:1px solid #444;' onclick=\"window.ipc.postMessage('HELPFN" + strFromBytes(bytes([10])) + fnName + "')\">" + fnName + "</span>"
+                    }
                 }
             }
-            bhtml = bhtml + "</div>"
+            elif inCategory && line == "" {
+                bhtml = bhtml + "</div>"
+                inCategory = false
+            }
         }
+        if inCategory { bhtml = bhtml + "</div>" }
         guiEval(win, "showBuiltins('" + escapeJS(bhtml) + "')")
     }
     elif op == "HELPFN" {
-        // 查询单个函数的详细文档
+        // 用 help(fn) 查询单个函数文档
         var fn = data
-        var doc = builtin_doc(fn)
-        if doc != undefined {
-            var detail = "<h2>" + fn + "</h2>"
-            detail = detail + "<p><code>" + doc.signature + "</code></p>"
-            detail = detail + "<p>分类: " + doc.category + "</p>"
-            detail = detail + "<p>" + doc.summary + "</p>"
-            if len(doc.params) > 0 {
-                detail = detail + "<h3>参数</h3><ul>"
-                for p in doc.params {
-                    detail = detail + "<li><code>" + p[0] + "</code> - " + p[1] + "</li>"
-                }
-                detail = detail + "</ul>"
+        var fnHelp = help(fn)
+        // help(fn) 返回多行文本，转为 HTML
+        var lines2 = strSplit("\n", fnHelp)
+        var detail = ""
+        for line2 in lines2 {
+            if strStartsWith(line2, "  ") {
+                detail = detail + "<div style='padding-left:20px;'>" + escapeJS(strTrim(line2)) + "</div>"
+            } elif line2 != "" {
+                detail = detail + "<p>" + escapeJS(line2) + "</p>"
             }
-            detail = detail + "<p><b>返回:</b> " + doc.returns + "</p>"
-            if len(doc.examples) > 0 {
-                detail = detail + "<h3>示例</h3><pre>"
-                for ex in doc.examples {
-                    detail = detail + ex + "\n"
-                }
-                detail = detail + "</pre>"
-            }
-            if len(doc.errors) > 0 {
-                detail = detail + "<h3>常见错误</h3><ul>"
-                for e in doc.errors {
-                    detail = detail + "<li>" + e + "</li>"
-                }
-                detail = detail + "</ul>"
-            }
-            guiEval(win, "showFnDetail('" + escapeJS(detail) + "')")
-        } else {
-            guiEval(win, "showFnDetail('<p>暂无文档: " + escapeJS(fn) + "</p>')")
         }
+        if detail == "" { detail = "<p>暂无文档: " + escapeJS(fn) + "</p>" }
+        guiEval(win, "showFnDetail('" + detail + "')")
     }
     elif op == "TPL" {
         // 从 base64 内嵌数据解码模板（不依赖外部文件）
@@ -440,10 +431,10 @@ html = html + "<div class='tpl-item' onclick=\"doEditCmd('selectAll')\">全选 C
 html = html + "<div class='tpl-item' onclick=\"doEditCmd('copy')\">复制 Ctrl+C</div>"
 html = html + "<div class='tpl-item' onclick=\"doEditCmd('cut')\">剪切 Ctrl+X</div>"
 html = html + "<div class='tpl-item' onclick=\"doEditCmd('paste')\">粘贴 Ctrl+V</div>"
-html = html + "<div class='tpl-item' onclick=\"doLangRef()\">语言参考</div>"
-html = html + "<div class='tpl-item' onclick=\"doBuiltins()\">内置函数</div>"
 html = html + "<div style='padding:4px 12px;color:#888;font-size:11px;border-bottom:1px solid #3c3c3c;border-top:1px solid #3c3c3c'>帮助</div>"
 html = html + "<div class='tpl-item' onclick=\"doHelp()\">帮助文档</div>"
+html = html + "<div class='tpl-item' onclick=\"doLangRef()\">语言参考</div>"
+html = html + "<div class='tpl-item' onclick=\"doBuiltins()\">内置函数</div>"
 html = html + "<div class='tpl-item' onclick=\"doAbout()\">关于</div>"
 html = html + "</div>"
 html = html + "</div>"
