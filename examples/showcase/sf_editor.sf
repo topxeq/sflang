@@ -720,14 +720,6 @@ html = html + "  setDirty(false);"
 html = html + "  document.getElementById('editor').focus();"
 html = html + "};"
 
-// 全局错误捕获——显示在输出区
-html = html + "window.onerror = function(msg, url, line, col, err) {"
-html = html + "  var el = document.getElementById('output');"
-html = html + "  el.className = 'output-content error';"
-html = html + "  el.textContent = '[JS错误] ' + msg + ' (行' + line + ':' + col + ')';"
-html = html + "  return true;"
-html = html + "};"
-
 html = html + "</script></html>"
 
 // ---- 创建窗口 ----
