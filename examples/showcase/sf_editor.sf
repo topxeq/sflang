@@ -265,7 +265,7 @@ func onMessage(msg) {
                 for fn in fns {
                     var fnName = strTrim(fn)
                     if fnName != "" {
-                        bhtml = bhtml + "<span style='background:#2d2d2d;padding:2px 8px;border-radius:3px;cursor:pointer;border:1px solid #444;' onclick=\"window.ipc.postMessage('HELPFN" + strFromBytes(bytes([10])) + fnName + "')\">" + fnName + "</span>"
+                        bhtml = bhtml + "<span class='bfn' data-fn='" + fnName + "'>" + fnName + "</span>"
                     }
                 }
             }
@@ -375,6 +375,8 @@ html = html + "::-webkit-scrollbar-thumb:hover { background: #555; }"
 // 模板菜单项
 html = html + ".tpl-item { padding: 5px 12px; cursor: pointer; font-size: 13px; color: #d4d4d4; white-space: nowrap; }"
 html = html + ".tpl-item:hover { background: #264f78; }"
+html = html + ".bfn { display:inline-block; background:#2d2d2d; padding:2px 8px; border-radius:3px; cursor:pointer; border:1px solid #444; margin:2px; font-size:12px; }"
+html = html + ".bfn:hover { background:#264f78; }"
 html = html + "</style>"
 
 html = html + "</head><body>"
@@ -885,6 +887,13 @@ html = html + "      spans[i].style.display = match ? '' : 'none';"
 html = html + "      if (match) { spans[i].style.background = '#37343a'; } else { spans[i].style.background = '#2d2d2d'; }"
 html = html + "    }"
 html = html + "  };"
+html = html + "  content.addEventListener('click', function(e) {"
+html = html + "    if (e.target.classList.contains('bfn')) {"
+html = html + "      var fnName = e.target.getAttribute('data-fn');"
+html = html + "      var msg = 'HELPFN' + String.fromCharCode(10) + fnName;"
+html = html + "      window.ipc.postMessage(msg);"
+html = html + "    }"
+html = html + "  });"
 html = html + "}"
 // 函数详情弹窗
 html = html + "function showFnDetail(html) {"
