@@ -278,21 +278,9 @@ func onMessage(msg) {
         guiEval(win, "showBuiltins('" + escapeJS(bhtml) + "')")
     }
     elif op == "HELPFN" {
-        // 用 help(fn) 查询单个函数文档
         var fn = data
         var fnHelp = help(fn)
-        // help(fn) 返回多行文本，转为 HTML
-        var lines2 = strSplit("\n", fnHelp)
-        var detail = ""
-        for line2 in lines2 {
-            if strStartsWith(line2, "  ") {
-                detail = detail + "<div style='padding-left:20px;'>" + escapeJS(strTrim(line2)) + "</div>"
-            } elif line2 != "" {
-                detail = detail + "<p>" + escapeJS(line2) + "</p>"
-            }
-        }
-        if detail == "" { detail = "<p>暂无文档: " + escapeJS(fn) + "</p>" }
-        guiEval(win, "showFnDetail('" + detail + "')")
+        guiEval(win, "showFnDetail('" + escapeJS(fnHelp) + "')")
     }
     elif op == "TPL" {
         // 从 base64 内嵌数据解码模板（不依赖外部文件）
