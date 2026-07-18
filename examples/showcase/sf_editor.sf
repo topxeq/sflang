@@ -78,8 +78,9 @@ func onMessage(msg) {
         // CMD 窗口运行：在新 CMD 窗口中执行脚本
         ensureTempDir()
         writeFile(tempFile, data)
-        // 用多参数 systemCmdDetached 直接启动（不经 cmd /C），用 cmd /K 保持窗口
-        systemCmdDetached("cmd", "/K", sfExe, tempFile)
+        // 直接启动 sf.exe 运行临时文件（多参数模式，不经 cmd /C）
+        // Windows: systemCmdDetached 已加 CREATE_NEW_CONSOLE，会弹新窗口
+        systemCmdDetached(sfExe, tempFile)
         guiEval(win, "setStatus('已在 CMD 窗口启动')")
     }
     elif op == "EVAL" {
