@@ -20,6 +20,11 @@ var sfExe = ""
 
 // 查找 sf 可执行文件路径
 func findSfExe() {
+    // 优先用 scriptPathG（自身可执行文件路径）
+    if scriptPathG != undefined && scriptPathG != "" {
+        sfExe = scriptPathG
+        return
+    }
     // 尝试常见位置
     var candidates = [
         "sf",
@@ -73,8 +78,8 @@ func onMessage(msg) {
         // CMD 窗口运行：在新 CMD 窗口中执行脚本
         ensureTempDir()
         writeFile(tempFile, data)
-        // systemCmdDetached 启动新进程，不等待
-        systemCmdDetached("cmd /K " + sfExe + " " + tempFile)
+        // 用多参数 systemCmdDetached 直接启动（不经 cmd /C），用 cmd /K 保持窗口
+        systemCmdDetached("cmd", "/K", sfExe, tempFile)
         guiEval(win, "setStatus('已在 CMD 窗口启动')")
     }
     elif op == "EVAL" {
