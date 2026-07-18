@@ -246,6 +246,63 @@ func onMessage(msg) {
         var html2 = renderMarkdown(md)
         guiEval(win, "showLangRef('" + escapeJS(html2) + "')")
     }
+    elif op == "BUILTINS" {
+        // 获取所有内置函数分类和函数名，生成 HTML 传给 JS
+        var cats = builtin_categories()
+        var bhtml = ""
+        for entry in cats {
+            var catName = entry[0]
+            var fns = entry[1]
+            bhtml = bhtml + "<h2>" + catName + "（" + len(fns) + "）</h2>"
+            bhtml = bhtml + "<div style='display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;'>"
+            for fn in fns {
+                var doc = builtin_doc(fn)
+                if doc != undefined {
+                    bhtml = bhtml + "<span style='background:#2d2d2d;padding:2px 8px;border-radius:3px;cursor:pointer;border:1px solid #444;' onclick=\"window.ipc.postMessage('HELPFN" + strFromBytes(bytes([10])) + fn + "')\" title='" + escapeJS(doc.summary) + "'>" + fn + "</span>"
+                } else {
+                    bhtml = bhtml + "<span style='background:#2d2d2d;padding:2px 8px;border-radius:3px;color:#888;border:1px solid #444;'>" + fn + "</span>"
+                }
+            }
+            bhtml = bhtml + "</div>"
+        }
+        guiEval(win, "showBuiltins('" + escapeJS(bhtml) + "')")
+    }
+    elif op == "HELPFN" {
+        // 查询单个函数的详细文档
+        var fn = data
+        var doc = builtin_doc(fn)
+        if doc != undefined {
+            var detail = "<h2>" + fn + "</h2>"
+            detail = detail + "<p><code>" + doc.signature + "</code></p>"
+            detail = detail + "<p>分类: " + doc.category + "</p>"
+            detail = detail + "<p>" + doc.summary + "</p>"
+            if len(doc.params) > 0 {
+                detail = detail + "<h3>参数</h3><ul>"
+                for p in doc.params {
+                    detail = detail + "<li><code>" + p[0] + "</code> - " + p[1] + "</li>"
+                }
+                detail = detail + "</ul>"
+            }
+            detail = detail + "<p><b>返回:</b> " + doc.returns + "</p>"
+            if len(doc.examples) > 0 {
+                detail = detail + "<h3>示例</h3><pre>"
+                for ex in doc.examples {
+                    detail = detail + ex + "\n"
+                }
+                detail = detail + "</pre>"
+            }
+            if len(doc.errors) > 0 {
+                detail = detail + "<h3>常见错误</h3><ul>"
+                for e in doc.errors {
+                    detail = detail + "<li>" + e + "</li>"
+                }
+                detail = detail + "</ul>"
+            }
+            guiEval(win, "showFnDetail('" + escapeJS(detail) + "')")
+        } else {
+            guiEval(win, "showFnDetail('<p>暂无文档: " + escapeJS(fn) + "</p>')")
+        }
+    }
     elif op == "TPL" {
         // 从 base64 内嵌数据解码模板（不依赖外部文件）
         var tplMap = {
@@ -384,6 +441,7 @@ html = html + "<div class='tpl-item' onclick=\"doEditCmd('copy')\">复制 Ctrl+C
 html = html + "<div class='tpl-item' onclick=\"doEditCmd('cut')\">剪切 Ctrl+X</div>"
 html = html + "<div class='tpl-item' onclick=\"doEditCmd('paste')\">粘贴 Ctrl+V</div>"
 html = html + "<div class='tpl-item' onclick=\"doLangRef()\">语言参考</div>"
+html = html + "<div class='tpl-item' onclick=\"doBuiltins()\">内置函数</div>"
 html = html + "<div style='padding:4px 12px;color:#888;font-size:11px;border-bottom:1px solid #3c3c3c;border-top:1px solid #3c3c3c'>帮助</div>"
 html = html + "<div class='tpl-item' onclick=\"doHelp()\">帮助文档</div>"
 html = html + "<div class='tpl-item' onclick=\"doAbout()\">关于</div>"
@@ -762,6 +820,11 @@ html = html + "  document.getElementById('moreMenu').style.display = 'none';"
 html = html + "  document.getElementById('status').textContent = '加载语言参考...';"
 html = html + "  window.ipc.postMessage('LANGREF');"
 html = html + "}"
+html = html + "function doBuiltins() {"
+html = html + "  document.getElementById('moreMenu').style.display = 'none';"
+html = html + "  document.getElementById('status').textContent = '加载内置函数...';"
+html = html + "  window.ipc.postMessage('BUILTINS');"
+html = html + "}"
 
 // 帮助对话框（Markdown→HTML 渲染）
 html = html + "function showHelpDialog(html) {"
@@ -793,6 +856,66 @@ html = html + "  dlg.innerHTML += '<div style=\"color:#888;font-size:12px;margin
 html = html + "  dlg.innerHTML += '<div style=\"color:#888;font-size:12px;\">用 Sflang 自身编写</div>';"
 html = html + "  var btn = document.createElement('button');"
 html = html + "  btn.textContent = '确定';"
+html = html + "  btn.style.cssText = 'margin-top:16px;padding:6px 24px;background:#0e639c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:14px;';"
+html = html + "  btn.onclick = function() { document.body.removeChild(overlay); };"
+html = html + "  dlg.appendChild(btn);"
+html = html + "  overlay.appendChild(dlg);"
+html = html + "  overlay.onclick = function(e) { if (e.target == overlay) document.body.removeChild(overlay); };"
+html = html + "  document.body.appendChild(overlay);"
+html = html + "}"
+
+// 内置函数浏览器
+html = html + "function showBuiltins(html) {"
+html = html + "  var overlay = document.createElement('div');"
+html = html + "  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:1000;display:flex;';"
+html = html + "  var dlg = document.createElement('div');"
+html = html + "  dlg.style.cssText = 'background:#1e1e1e;color:#d4d4d4;border-radius:8px;margin:auto;width:90vw;max-width:1200px;height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,0.5);';"
+html = html + "  var header = document.createElement('div');"
+html = html + "  header.style.cssText = 'display:flex;align-items:center;padding:10px 16px;border-bottom:1px solid #3c3c3c;flex-shrink:0;';"
+html = html + "  var title = document.createElement('span');"
+html = html + "  title.textContent = '内置函数参考';"
+html = html + "  title.style.cssText = 'font-size:15px;font-weight:bold;color:#4ec9b0;';"
+html = html + "  header.appendChild(title);"
+html = html + "  var search = document.createElement('input');"
+html = html + "  search.type = 'text';"
+html = html + "  search.placeholder = '搜索函数名...';"
+html = html + "  search.style.cssText = 'margin-left:16px;flex:1;background:#2d2d2d;border:1px solid #505050;border-radius:3px;padding:4px 10px;color:#d4d4d4;font-size:13px;outline:none;';"
+html = html + "  header.appendChild(search);"
+html = html + "  var closeBtn = document.createElement('button');"
+html = html + "  closeBtn.textContent = 'X';"
+html = html + "  closeBtn.style.cssText = 'margin-left:12px;background:#f44747;color:#fff;border:none;border-radius:3px;width:28px;height:28px;cursor:pointer;font-size:14px;';"
+html = html + "  closeBtn.onclick = function() { document.body.removeChild(overlay); };"
+html = html + "  header.appendChild(closeBtn);"
+html = html + "  dlg.appendChild(header);"
+html = html + "  var content = document.createElement('div');"
+html = html + "  content.style.cssText = 'flex:1;overflow-y:auto;padding:16px 24px;';"
+html = html + "  content.innerHTML = html;"
+html = html + "  dlg.appendChild(content);"
+html = html + "  overlay.appendChild(dlg);"
+html = html + "  overlay.onclick = function(e) { if (e.target == overlay) document.body.removeChild(overlay); };"
+html = html + "  document.body.appendChild(overlay);"
+html = html + "  content.style.cssText += 'h2{color:#569cd6;border-bottom:1px solid #3c3c3c;padding-bottom:4px;margin-top:20px;} code{background:#2d2d2d;padding:1px 5px;border-radius:3px;color:#ce9178;}';"
+html = html + "  search.oninput = function() {"
+html = html + "    var q = search.value.toLowerCase();"
+html = html + "    var spans = content.querySelectorAll('span');"
+html = html + "    var currentH2 = null;"
+html = html + "    var h2Visible = {};"
+html = html + "    for (var i = 0; i < spans.length; i++) {"
+html = html + "      var match = q == '' || spans[i].textContent.toLowerCase().indexOf(q) >= 0;"
+html = html + "      spans[i].style.display = match ? '' : 'none';"
+html = html + "      if (match) { spans[i].style.background = '#37343a'; } else { spans[i].style.background = '#2d2d2d'; }"
+html = html + "    }"
+html = html + "  };"
+html = html + "}"
+// 函数详情弹窗
+html = html + "function showFnDetail(html) {"
+html = html + "  var overlay = document.createElement('div');"
+html = html + "  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:1001;display:flex;align-items:center;justify-content:center;';"
+html = html + "  var dlg = document.createElement('div');"
+html = html + "  dlg.style.cssText = 'background:#252526;color:#d4d4d4;border:1px solid #505050;border-radius:8px;padding:24px 32px;max-width:600px;max-height:80vh;overflow:auto;font-size:14px;line-height:1.6;box-shadow:0 8px 32px rgba(0,0,0,0.5);';"
+html = html + "  dlg.innerHTML = html;"
+html = html + "  var btn = document.createElement('button');"
+html = html + "  btn.textContent = '关闭';"
 html = html + "  btn.style.cssText = 'margin-top:16px;padding:6px 24px;background:#0e639c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:14px;';"
 html = html + "  btn.onclick = function() { document.body.removeChild(overlay); };"
 html = html + "  dlg.appendChild(btn);"
