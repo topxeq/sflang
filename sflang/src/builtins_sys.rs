@@ -913,7 +913,7 @@ fn bi_get_input_password(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 fn bi_system_cmd_detached(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let cmd = bh::as_str(args, 0, "systemCmdDetached")?;
     let mut command = std::process::Command::new(cmd);
-    // 第二个参数可为字符串或字符串数组
+    // 后续参数可为多个 string 或单个 string 数组
     if args.len() > 1 {
         match &args[1] {
             Value::Array(a) => {
@@ -922,14 +922,24 @@ fn bi_system_cmd_detached(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> 
                     command.arg(v.to_str());
                 }
             }
-            Value::Str(s) => {
-                command.arg(s.as_ref());
+            Value::Str(_) => {
+                // 多参数模式：args[1..] 每个都是单独的参数
+                for i in 1..args.len() {
+                    command.arg(bh::as_str(args, i, "systemCmdDetached")?);
+                }
             }
             v => return Err(crate::value::error_value(format!(
-                "systemCmdDetached() 第二个参数应为 string 或 array<string>，得到 {} (可能原因：参数类型错误)",
+                "systemCmdDetached() 参数应为 string 或 string 数组，得到 {} (可能原因：参数类型错误)",
                 v.type_name(),
             ))),
         }
+    }
+    // Windows: 在新控制台窗口中启动（CREATE_NEW_CONSOLE）
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_CONSOLE = 0x00000010
+        command.creation_flags(0x00000010);
     }
     let child = command.spawn().map_err(|e| crate::value::error_value(format!(
         "systemCmdDetached() 启动失败: '{}' - {} (可能原因：命令不存在或权限不足)", cmd, e,
