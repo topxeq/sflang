@@ -87,9 +87,9 @@ func onMessage(msg) {
         // CMD 窗口运行：在新 CMD 窗口中执行脚本
         ensureTempDir()
         writeFile(tempFile, data)
-        // 用 cmd /K 执行：运行完脚本后 CMD 窗口保持打开
-        var cmd = "cmd /K \"" + sfExe + "\" \"" + tempFile + "\""
-        systemCmdDetached(cmd)
+        // 用多参数 systemCmdDetached：cmd /K sfExe tempFile
+        // cmd 保持窗口，sfExe 执行脚本
+        systemCmdDetached("cmd", "/K", sfExe, tempFile)
         guiEval(win, "setStatus('已在 CMD 窗口启动')")
     }
     elif op == "EVAL" {
