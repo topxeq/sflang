@@ -232,6 +232,13 @@ func onMessage(msg) {
     elif op == "SETTITLE" {
         guiSetTitle(win, data)
     }
+    elif op == "HELPDLG" {
+        var helpText = "Sflang 代码编辑器 - 帮助\n\n快捷键:\n  F5    运行（子进程，完整输出）\n  F6    快速求值（进程内，返回值）\n  F7    CMD窗口运行\n  Ctrl+N  新建\n  Ctrl+O  打开\n  Ctrl+S  保存\n  Ctrl+Shift+S 另存为\n  Tab   缩进4空格\n\n状态栏:\n  点击 UTF-8 切换编码（UTF-8/GBK）\n  点击 LF 切换换行符（LF/CRLF）\n\n更多帮助: sf --help / help() 内置函数"
+        msgBox(helpText, "帮助", "info")
+    }
+    elif op == "ABOUTDLG" {
+        msgBox("Sflang 代码编辑器\n版本: 1.0\n语言: Sflang\n仓库: github.com/topxeq/sflang\n用 Sflang 自身编写", "关于", "info")
+    }
     elif op == "TPL" {
         // 从 base64 内嵌数据解码模板（不依赖外部文件）
         var tplMap = {
@@ -736,34 +743,11 @@ html = html + "}"
 // 帮助
 html = html + "function doHelp() {"
 html = html + "  document.getElementById('moreMenu').style.display = 'none';"
-html = html + "  document.getElementById('output').textContent = '"
-html = html + "Sflang 代码编辑器 帮助\\n"
-html = html + "====================\\n\\n"
-html = html + "快捷键:\\n"
-html = html + "  F5    运行（子进程，完整输出）\\n"
-html = html + "  F6    快速求值（进程内，返回值）\\n"
-html = html + "  F7    CMD窗口运行\\n"
-html = html + "  Ctrl+N  新建\\n"
-html = html + "  Ctrl+O  打开\\n"
-html = html + "  Ctrl+S  保存\\n"
-html = html + "  Ctrl+Shift+S 另存为\\n"
-html = html + "  Tab   缩进4空格\\n\\n"
-html = html + "状态栏:\\n"
-html = html + "  点击 UTF-8 切换编码\\n"
-html = html + "  点击 LF 切换换行符\\n\\n"
-html = html + "更多帮助: sf --help / help() 内置函数\\n"
-html = html + "  ';"
-html = html + "  document.getElementById('output').className = 'output-content';"
+html = html + "  window.ipc.postMessage('HELPDLG');"
 html = html + "}"
 html = html + "function doAbout() {"
 html = html + "  document.getElementById('moreMenu').style.display = 'none';"
-html = html + "  document.getElementById('output').textContent = '"
-html = html + "Sflang 代码编辑器\\n"
-html = html + "版本: 1.0\\n"
-html = html + "语言: Sflang (github.com/topxeq/sflang)\\n"
-html = html + "用 Sflang 自身编写\\n"
-html = html + "  ';"
-html = html + "  document.getElementById('output').className = 'output-content';"
+html = html + "  window.ipc.postMessage('ABOUTDLG');"
 html = html + "}"
 
 html = html + "var TEMPLATES = {};"
