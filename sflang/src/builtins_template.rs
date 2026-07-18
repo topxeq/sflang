@@ -325,6 +325,44 @@ fn bi_render_markdown(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             continue;
         }
 
+        // GFM 表格（| ... | ... |）
+        // 判定条件：当前行以 | 开头且以下一行是分隔线（|---|---|）
+        if trimmed.starts_with('|') && i + 1 < lines.len() {
+            let next = lines[i + 1].trim();
+            if next.starts_with('|') && next.contains('-') && next.contains('|') {
+                // 表格：第一行是表头，第二行是分隔线（|---|---|），后续行是数据行
+                out.push_str("<table>\n");
+                // 表头
+                let headers: Vec<&str> = trimmed.split('|').filter(|s| !s.trim().is_empty()).collect();
+                out.push_str("<thead><tr>");
+                for h in &headers {
+                    out.push_str("<th>");
+                    out.push_str(&render_inline(h.trim()));
+                    out.push_str("</th>");
+                }
+                out.push_str("</tr></thead>\n<tbody>\n");
+                i += 2; // 跳过表头和分隔线
+                // 数据行
+                while i < lines.len() {
+                    let row = lines[i].trim();
+                    if !row.starts_with('|') {
+                        break;
+                    }
+                    let cells: Vec<&str> = row.split('|').filter(|s| !s.trim().is_empty()).collect();
+                    out.push_str("<tr>");
+                    for c in &cells {
+                        out.push_str("<td>");
+                        out.push_str(&render_inline(c.trim()));
+                        out.push_str("</td>");
+                    }
+                    out.push_str("</tr>\n");
+                    i += 1;
+                }
+                out.push_str("</tbody></table>\n");
+                continue;
+            }
+        }
+
         // 段落：连续的非空行组成一个段落
         let mut para = String::new();
         while i < lines.len() {
