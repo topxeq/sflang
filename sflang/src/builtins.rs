@@ -305,107 +305,1026 @@ static DOC_RUN_CODE: BuiltinDoc = BuiltinDoc {
     errors: &["参数不是 code 对象返回 error；运行时错误也返回 error 值"],
 };
 
+// ---- 打印/输出函数 ----
+
+static DOC_PRINT: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "print(...) -> undefined",
+    summary: "打印参数（空格分隔）不换行，输出到标准输出。",
+    params: &[("...", "任意类型，自动转为字符串（多个用空格分隔）")],
+    returns: "undefined（无返回值）",
+    examples: &[
+        "print(\"hello\")              // 输出 hello（不换行）",
+        "print(\"a\", 1, true)         // 输出 a 1 true",
+    ],
+    errors: &[],
+};
+
+static DOC_PLN: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "pln(...) -> undefined",
+    summary: "println 的简写别名：打印参数（空格分隔）并换行。",
+    params: &[("...", "任意类型，自动转为字符串")],
+    returns: "undefined",
+    examples: &["pln(\"hello\")  // 输出 hello 并换行"],
+    errors: &[],
+};
+
+static DOC_PR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "pr(...) -> undefined",
+    summary: "print 的简写别名：打印参数（空格分隔）不换行。",
+    params: &[("...", "任意类型，自动转为字符串")],
+    returns: "undefined",
+    examples: &["pr(\"hello\")  // 输出 hello（不换行）"],
+    errors: &[],
+};
+
+static DOC_PRINTF: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "printf(fmt, args...) -> undefined",
+    summary: "按格式字符串打印（不换行），Go 风格占位符（%v %d %s %f %t %x %%）。",
+    params: &[
+        ("fmt", "格式字符串，含 %v %d %s %f %t %x %%"),
+        ("args", "对应占位符的参数（可变）"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "printf(\"%s=%d\\n\", \"count\", 42)   // 输出 count=42 并换行",
+        "printf(\"%.2f\", 3.14159)            // 输出 3.14",
+    ],
+    errors: &["占位符数量与参数数量不匹配会返回错误"],
+};
+
+static DOC_PRF: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "prf(fmt, args...) -> undefined",
+    summary: "printf 的简写别名：按格式字符串打印（不换行）。",
+    params: &[
+        ("fmt", "格式字符串"),
+        ("args", "对应占位符的参数（可变）"),
+    ],
+    returns: "undefined",
+    examples: &["prf(\"%d+%d=%d\\n\", 1, 2, 3)  // 输出 1+2=3 并换行"],
+    errors: &[],
+};
+
+static DOC_PRINTFLN: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "printfln(fmt, args...) -> undefined",
+    summary: "格式化打印并换行（语义 = printf + \"\\n\"）。",
+    params: &[
+        ("fmt", "格式字符串"),
+        ("args", "对应占位符的参数（可变）"),
+    ],
+    returns: "undefined",
+    examples: &["printfln(\"%s=%d\", \"count\", 42)  // 输出 count=42 并换行"],
+    errors: &[],
+};
+
+static DOC_PL: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "pl(fmt, args...) -> undefined",
+    summary: "printfln 的简写别名：格式化打印并换行。",
+    params: &[
+        ("fmt", "格式字符串"),
+        ("args", "对应占位符的参数（可变）"),
+    ],
+    returns: "undefined",
+    examples: &["pl(\"hello %d\", 42)  // 输出 hello 42 并换行"],
+    errors: &[],
+};
+
+static DOC_FPR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "fpr(fmt, args...) -> undefined",
+    summary: "printf 的别名：按格式字符串打印（不换行）。",
+    params: &[
+        ("fmt", "格式字符串"),
+        ("args", "对应占位符的参数（可变）"),
+    ],
+    returns: "undefined",
+    examples: &["fpr(\"x=%d\", 1)  // 输出 x=1（不换行）"],
+    errors: &[],
+};
+
+static DOC_SPR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "spr(fmt, args...) -> string",
+    summary: "sprintf 的简写别名：格式化字符串并返回（不打印）。",
+    params: &[
+        ("fmt", "格式字符串"),
+        ("args", "对应占位符的参数（可变）"),
+    ],
+    returns: "string 格式化后的字符串",
+    examples: &["var s = spr(\"%s=%d\", \"count\", 42)  // s == \"count=42\""],
+    errors: &[],
+};
+
+static DOC_PLT: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "plt(...) -> undefined",
+    summary: "打印每个参数的类型与值，格式 (类型名)值，每行一个（调试用）。",
+    params: &[("...", "任意类型，逐个输出类型与值")],
+    returns: "undefined",
+    examples: &[
+        "plt(42, \"hi\")",
+        "// 输出：",
+        "// (int) 42",
+        "// (string) \"hi\"",
+    ],
+    errors: &[],
+};
+
+// ---- 数组/容器操作 ----
+
+static DOC_POP: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "pop(arr) -> value",
+    summary: "弹出数组末尾元素并返回（原地修改）。",
+    params: &[("arr", "目标数组（原地修改）")],
+    returns: "数组末尾元素",
+    examples: &[
+        "var a = [1, 2, 3]; var x = pop(a)  // x == 3; a 变为 [1, 2]",
+    ],
+    errors: &[
+        "空数组弹出返回错误",
+        "第一个参数应为 array",
+    ],
+};
+
+static DOC_ENTRIES: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "entries(obj) -> array<[key, value]>",
+    summary: "返回 object/map 的键值对数组（每对为 [key, value]），过滤掉函数成员。",
+    params: &[("obj", "object 或 map")],
+    returns: "array，元素为 [key, value] 二元数组",
+    examples: &[
+        "entries({\"a\":1, \"b\":2})  // [[\"a\", 1], [\"b\", 2]]（顺序不保证）",
+    ],
+    errors: &["参数应为 object 或 map"],
+};
+
+static DOC_DATA_KEYS: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "dataKeys(obj) -> array<string>",
+    summary: "返回 object/map 的非函数键名（过滤掉方法）。",
+    params: &[("obj", "object 或 map")],
+    returns: "array<string> 键名数组",
+    examples: &["dataKeys({\"a\":1, \"b\":2})  // [\"a\", \"b\"]（顺序不保证）"],
+    errors: &["参数应为 object 或 map"],
+};
+
+static DOC_DATA_VALUES: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "dataValues(obj) -> array",
+    summary: "返回 object/map 的非函数值（过滤掉方法）。",
+    params: &[("obj", "object 或 map")],
+    returns: "array 值数组",
+    examples: &["dataValues({\"a\":1, \"b\":2})  // [1, 2]"],
+    errors: &["参数应为 object 或 map"],
+};
+
+static DOC_HAS_KEY: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "hasKey(obj, key) -> bool",
+    summary: "判断 object/map 是否包含某键。",
+    params: &[
+        ("obj", "object 或 map"),
+        ("key", "键名字符串"),
+    ],
+    returns: "bool：存在返回 true",
+    examples: &[
+        "hasKey({\"a\":1}, \"a\")  // true",
+        "hasKey({\"a\":1}, \"b\")  // false",
+    ],
+    errors: &["第一个参数应为 object 或 map"],
+};
+
+static DOC_CLEAR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "clear(c) -> undefined",
+    summary: "清空容器内容（不释放内存）。支持 stringBuilder/array/byteArray/map/ring。",
+    params: &[("c", "stringBuilder/array/byteArray/map/ring 之一")],
+    returns: "undefined",
+    examples: &[
+        "var sb = newStringBuilder(\"hi\"); clear(sb)  // sb 内容清空",
+        "var a = [1,2]; clear(a)                      // a 变为 []",
+    ],
+    errors: &["参数类型不支持"],
+};
+
+static DOC_RESET: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "reset(c) -> undefined",
+    summary: "清空容器并释放内存（对 stringBuilder 效果最明显）。支持 stringBuilder/array/byteArray。",
+    params: &[("c", "stringBuilder/array/byteArray 之一")],
+    returns: "undefined",
+    examples: &["var sb = newStringBuilder(\"hi\"); reset(sb)  // sb 清空并释放内存"],
+    errors: &["参数类型不支持"],
+};
+
+static DOC_NEW_MAP: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "newMap() -> map",
+    summary: "创建空有序 Map（纯数据容器，按插入顺序遍历）。",
+    params: &[],
+    returns: "map 空有序映射",
+    examples: &[
+        "var m = newMap(); setMember(m, \"k\", 1)",
+    ],
+    errors: &[],
+};
+
+static DOC_NEW_OBJECT: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "newObject(proto) -> object",
+    summary: "创建以 proto 为原型的空 object（暴露原型链，用于方法共享）。",
+    params: &[("proto", "原型对象（方法挂在其上）")],
+    returns: "object 以 proto 为原型的新对象",
+    examples: &[
+        "var proto = { greet: func() { return \"hi\" } }",
+        "var o = newObject(proto)",
+        "o.greet()  // \"hi\"（继承自原型）",
+    ],
+    errors: &["第一个参数应为 object"],
+};
+
+static DOC_NEW_STRING_BUILDER: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "newStringBuilder([initial]) -> stringBuilder",
+    summary: "创建 StringBuilder（高效字符串构建器），可选初始内容。",
+    params: &[("initial", "可选。初始字符串内容，默认为空")],
+    returns: "stringBuilder 对象，可用 writeStr/len/toStr/clear/reset 操作",
+    examples: &[
+        "var sb = newStringBuilder()",
+        "var sb2 = newStringBuilder(\"init\")",
+    ],
+    errors: &[],
+};
+
+static DOC_NEW_REF: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "newRef(value) -> ref",
+    summary: "创建引用容器，包装一个初始值。引用是独立可变容器，便于函数传参后修改。",
+    params: &[("value", "初始值")],
+    returns: "ref 引用容器（用 getValueByRef/setValueByRef 读写）",
+    examples: &[
+        "var r = newRef(10)",
+        "getValueByRef(r)  // 10",
+        "setValueByRef(r, 20)",
+    ],
+    errors: &[],
+};
+
+static DOC_GET_VALUE_BY_REF: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "getValueByRef(ref) -> value",
+    summary: "读取引用容器内的值。",
+    params: &[("ref", "newRef 创建的引用对象")],
+    returns: "引用内当前值",
+    examples: &["getValueByRef(newRef(5))  // 5"],
+    errors: &["参数不是引用对象（需用 newRef 创建）"],
+};
+
+static DOC_SET_VALUE_BY_REF: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "setValueByRef(ref, newValue) -> undefined",
+    summary: "设置引用容器内的值（原地修改）。",
+    params: &[
+        ("ref", "newRef 创建的引用对象"),
+        ("newValue", "新值"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "var r = newRef(1); setValueByRef(r, 99); getValueByRef(r)  // 99",
+    ],
+    errors: &["第一个参数不是引用对象"],
+};
+
+static DOC_BYTE: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "byte(n) -> byte",
+    summary: "构造 byte 值（0-255）。超出范围报错。",
+    params: &[("n", "0-255 的整数")],
+    returns: "byte 字节值",
+    examples: &["byte(65)  // Byte(65)"],
+    errors: &["值超出 0-255 范围"],
+};
+
+static DOC_BYTES_XOR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "bytesXor(data, key) -> bytes",
+    summary: "批量 XOR：data 的每个字节与 key 的对应字节异或（key 循环复用），返回新 bytes。",
+    params: &[
+        ("data", "bytes/byteArray/string：被异或的数据"),
+        ("key", "bytes/byteArray/string/int(byte)：异或密钥"),
+    ],
+    returns: "bytes 异或后的新字节串（不可变）",
+    examples: &[
+        "bytesXor(\"abc\", \"x\")  // 与单字节密钥异或的新 bytes",
+    ],
+    errors: &["key 不能为空"],
+};
+
+static DOC_BYTES_XOR_IN_PLACE: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "bytesXorInPlace(byteArray, key) -> byteArray",
+    summary: "原地 XOR（直接修改 byteArray，不创建新对象）。返回原 byteArray。",
+    params: &[
+        ("byteArray", "可变的 byteArray 容器（原地修改）"),
+        ("key", "bytes/byteArray/string/int(byte)：异或密钥"),
+    ],
+    returns: "传入的 byteArray（已就地修改）",
+    examples: &["var b = byteArray(\"abc\"); bytesXorInPlace(b, \"x\")"],
+    errors: &[
+        "key 不能为空",
+        "第一个参数须为 byteArray",
+    ],
+};
+
+// ---- 类型转换 ----
+
+static DOC_STRING: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "string([x]) -> string",
+    summary: "转字符串。无参返回空串；有参返回参数的字符串表示。",
+    params: &[("x", "可选。要转换的值，省略时返回空串")],
+    returns: "string 字符串表示",
+    examples: &[
+        "string(42)       // \"42\"",
+        "string(3.14)     // \"3.14\"",
+        "string()         // \"\"",
+    ],
+    errors: &[],
+};
+
+static DOC_INT: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "int(x) -> int",
+    summary: "转整数。支持 int/float/bool/byte/string/bigInt（字符串需为有效整数）。",
+    params: &[("x", "要转换的值（int/float/bool/byte/string/bigInt）")],
+    returns: "int 整数值",
+    examples: &[
+        "int(3.9)        // 3（截断）",
+        "int(true)       // 1",
+        "int(\"42\")      // 42",
+    ],
+    errors: &[
+        "字符串不是有效整数返回错误",
+        "BigInt 超出 i64 范围返回错误",
+    ],
+};
+
+static DOC_FLOAT: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "float(x) -> float",
+    summary: "转浮点。支持 int/float/bool/byte/string/bigInt/bigFloat。",
+    params: &[("x", "要转换的值")],
+    returns: "float 浮点值",
+    examples: &[
+        "float(3)        // 3.0",
+        "float(\"3.14\")   // 3.14",
+    ],
+    errors: &[
+        "字符串无法解析为浮点返回错误",
+        "BigInt 超出 i64 范围返回错误",
+    ],
+};
+
+static DOC_TO_STR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "toStr([x]) -> string",
+    summary: "string 的别名：转字符串。无参返回空串。",
+    params: &[("x", "可选。要转换的值")],
+    returns: "string 字符串表示",
+    examples: &["toStr(42)  // \"42\""],
+    errors: &[],
+};
+
+static DOC_TO_INT: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "toInt(x) -> int",
+    summary: "int 的别名：转整数。",
+    params: &[("x", "要转换的值")],
+    returns: "int 整数值",
+    examples: &["toInt(\"42\")  // 42"],
+    errors: &["字符串不是有效整数返回错误"],
+};
+
+static DOC_TO_FLOAT: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "toFloat(x) -> float",
+    summary: "float 的别名：转浮点。",
+    params: &[("x", "要转换的值")],
+    returns: "float 浮点值",
+    examples: &["toFloat(\"3.14\")  // 3.14"],
+    errors: &["字符串无法解析返回错误"],
+};
+
+static DOC_ADJUST_FLOAT: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "adjustFloat(x[, prec]) -> float",
+    summary: "消除浮点计算精度误差，按指定精度四舍五入（默认 10 位）。",
+    params: &[
+        ("x", "浮点数"),
+        ("prec", "可选。小数位数，默认 10"),
+    ],
+    returns: "float 调整后的浮点数",
+    examples: &[
+        "adjustFloat(0.1 + 0.2)       // 0.3（消除精度误差）",
+        "adjustFloat(3.14159, 2)      // 3.14",
+    ],
+    errors: &["解析失败返回错误"],
+};
+
+// ---- 类型判断 ----
+
+static DOC_IS_UNDEFINED: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "isUndefined([v]) -> bool",
+    summary: "判断是否为 undefined。缺参时返回 true（便于链式判空 isUndefined(m[\"k\"])）。",
+    params: &[("v", "可选。任意值，省略时视为 undefined")],
+    returns: "bool：是 undefined 或缺参返回 true",
+    examples: &[
+        "isUndefined(undefined)  // true",
+        "isUndefined(42)         // false",
+        "isUndefined()           // true（缺参）",
+    ],
+    errors: &[],
+};
+
+static DOC_IS_TYPE: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "isType(v, typeName) -> bool",
+    summary: "按类型名（大小写不敏感）判断值类型。支持基础类型与 native 细分（如 ring/regex）。",
+    params: &[
+        ("v", "任意值"),
+        ("typeName", "类型名字符串（与 typeName 返回一致）"),
+    ],
+    returns: "bool：类型匹配返回 true",
+    examples: &[
+        "isType(42, \"int\")        // true",
+        "isType(\"hi\", \"string\")   // true",
+    ],
+    errors: &[],
+};
+
+static DOC_IS_TYPE_CODE: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "isTypeCode(v, code) -> bool",
+    summary: "按类型数字编码判断值类型（编码见 typeCode，0-19）。",
+    params: &[
+        ("v", "任意值"),
+        ("code", "类型编码整数（详见 typeCode）"),
+    ],
+    returns: "bool：编码匹配返回 true",
+    examples: &[
+        "isTypeCode(42, 1)        // true（1 = int）",
+        "isTypeCode(\"hi\", 4)      // true（4 = string）",
+    ],
+    errors: &[],
+};
+
+// ---- 错误处理 ----
+
+static DOC_IS_ERR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "isErr(v) -> bool",
+    summary: "判断是否为错误样值（Error 对象或 \"TXERROR:\" 开头的字符串）。",
+    params: &[("v", "任意值")],
+    returns: "bool：是错误样值返回 true",
+    examples: &[
+        "isErr(error(\"x\"))          // true",
+        "isErr(\"TXERROR:boom\")      // true",
+        "isErr(42)                   // false",
+    ],
+    errors: &[],
+};
+
+static DOC_IS_ERR_X: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "isErrX(v) -> bool",
+    summary: "isErr 的 Charlang 兼容别名。",
+    params: &[("v", "任意值")],
+    returns: "bool：是错误样值返回 true",
+    examples: &["isErrX(error(\"x\"))  // true"],
+    errors: &[],
+};
+
+static DOC_IS_ERR_STR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "isErrStr(v) -> bool",
+    summary: "判断是否为 \"TXERROR:\" 开头的字符串（仅识别字符串形式错误）。",
+    params: &[("v", "任意值")],
+    returns: "bool：是 TXERROR 字符串返回 true",
+    examples: &[
+        "isErrStr(\"TXERROR:boom\")  // true",
+        "isErrStr(error(\"x\"))       // false（Error 对象不是字符串）",
+    ],
+    errors: &[],
+};
+
+static DOC_GET_ERR_STR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "getErrStr(v) -> string",
+    summary: "提取错误信息字符串：Error 取 message，TXERROR 字符串去前缀，其他取 to_str。",
+    params: &[("v", "任意值")],
+    returns: "string 错误信息或字符串表示",
+    examples: &[
+        "getErrStr(error(\"bad\"))        // \"bad\"",
+        "getErrStr(\"TXERROR:boom\")      // \"boom\"",
+    ],
+    errors: &[],
+};
+
+static DOC_GET_ERR_STR_X: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "getErrStrX(v) -> string",
+    summary: "getErrStr 的 Charlang 兼容别名。",
+    params: &[("v", "任意值")],
+    returns: "string 错误信息字符串",
+    examples: &["getErrStrX(\"TXERROR:x\")  // \"x\""],
+    errors: &[],
+};
+
+static DOC_ERR_STRF: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "errStrf(fmt, args...) -> string",
+    summary: "格式化生成 \"TXERROR:\" 前缀的错误字符串（创建字符串形式错误的便捷方式）。",
+    params: &[
+        ("fmt", "格式字符串（同 sprintf）"),
+        ("args", "对应占位符的参数（可变）"),
+    ],
+    returns: "string \"TXERROR:\" + 格式化结果",
+    examples: &[
+        "errStrf(\"%s 失败\", \"加载\")  // \"TXERROR:加载 失败\"",
+    ],
+    errors: &[],
+};
+
+static DOC_ERRF: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "errf(fmt, args...) -> string",
+    summary: "errStrf 的 Charlang 兼容别名：格式化生成 TXERROR 错误字符串。",
+    params: &[
+        ("fmt", "格式字符串"),
+        ("args", "对应占位符的参数（可变）"),
+    ],
+    returns: "string \"TXERROR:\" + 格式化结果",
+    examples: &["errf(\"boom\")  // \"TXERROR:boom\""],
+    errors: &[],
+};
+
+static DOC_ERR_TO_EMPTY: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "errToEmpty(v) -> value",
+    summary: "若 v 是错误样值则转为空字符串，否则原样返回（安全处理可能错误值）。",
+    params: &[("v", "任意值")],
+    returns: "错误时返回空字符串，非错误时返回原值",
+    examples: &[
+        "errToEmpty(error(\"x\"))   // \"\"",
+        "errToEmpty(\"hi\")          // \"hi\"",
+    ],
+    errors: &[],
+};
+
+static DOC_CHECK_ERR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "checkErr(v[, \"-format=...\"]) -> value",
+    summary: "若 v 是错误样值则打印错误并退出进程（退出码 1）；非错误原样返回。",
+    params: &[
+        ("v", "要检查的值"),
+        ("-format=", "可选。自定义输出格式，默认 \"Error: %v\\n\""),
+    ],
+    returns: "v 非错误时原样返回",
+    examples: &[
+        "var r = checkErr(loadFile(\"x.txt\"))  // 加载失败则退出",
+        "checkErr(r, \"-format=fatal: %v\\n\")",
+    ],
+    errors: &["v 为错误时直接 exit(1)"],
+};
+
+static DOC_CHECK_ERR_X: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "checkErrX(v[, \"-format=...\"]) -> value",
+    summary: "checkErr 的 Charlang 兼容别名。",
+    params: &[
+        ("v", "要检查的值"),
+        ("-format=", "可选。自定义输出格式"),
+    ],
+    returns: "v 非错误时原样返回",
+    examples: &["checkErrX(error(\"x\"))  // 打印并退出"],
+    errors: &["v 为错误时直接 exit(1)"],
+};
+
+static DOC_TRIM_ERR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "trimErr(v[, cutset...]) -> string|value",
+    summary: "若 v 是错误样值则原样返回（不丢失错误），否则去空白。可指定 cutset 字符集。",
+    params: &[
+        ("v", "要处理的值"),
+        ("cutset", "可选。要去除的字符（多个字符串参数）"),
+    ],
+    returns: "错误样值原样返回；否则返回去空白后的字符串",
+    examples: &[
+        "trimErr(\"  hi  \")            // \"hi\"",
+        "trimErr(error(\"x\"))          // 原样返回错误",
+        "trimErr(\"##hi##\", \"#\")       // \"hi\"",
+    ],
+    errors: &[],
+};
+
+static DOC_UNDEF_TO_EMPTY: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "undefToEmpty(v) -> string",
+    summary: "将 undefined（或缺参）转为空字符串，其余值转为 to_str（对标 Charlang nilToEmpty）。",
+    params: &[("v", "任意值")],
+    returns: "undefined 返回空串，其余返回 to_str",
+    examples: &[
+        "undefToEmpty(undefined)  // \"\"",
+        "undefToEmpty(42)          // \"42\"",
+    ],
+    errors: &[],
+};
+
+static DOC_EXPLAIN_UNDEF: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "explainUndef(name) -> string",
+    summary: "返回某名字为何为 undefined 的诊断字符串（含是否预定义、相似名字提示，AI 友好）。",
+    params: &[("name", "变量名字符串")],
+    returns: "string 多行诊断信息",
+    examples: &[
+        "explainUndef(\"printl\")",
+        "// 提示：未定义，相似名字：println",
+    ],
+    errors: &[],
+};
+
+// ---- 数组高阶函数 ----
+
+static DOC_FILTER: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "filter(arr, fn) -> array",
+    summary: "用谓词函数过滤数组，返回新数组（仅保留 fn(x) 为 truthy 的元素）。",
+    params: &[
+        ("arr", "原数组（不修改）"),
+        ("fn", "谓词函数 fn(x) -> truthy/falsy"),
+    ],
+    returns: "array 过滤后的新数组",
+    examples: &[
+        "filter([1,2,3,4], func(x) { return x > 2 })  // [3, 4]",
+    ],
+    errors: &["第一个参数应为 array"],
+};
+
+static DOC_MAP_FN: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "map(arr, fn) -> array",
+    summary: "用函数映射数组每个元素，返回新数组 [fn(a[0]), fn(a[1]), ...]。",
+    params: &[
+        ("arr", "原数组（不修改）"),
+        ("fn", "映射函数 fn(x) -> y"),
+    ],
+    returns: "array 映射后的新数组",
+    examples: &[
+        "map([1,2,3], func(x) { return x * 2 })  // [2, 4, 6]",
+    ],
+    errors: &["第一个参数应为 array"],
+};
+
+static DOC_FIND: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "find(arr, fn) -> value|undefined",
+    summary: "查找数组中第一个满足谓词的元素，返回该元素；无则 undefined。",
+    params: &[
+        ("arr", "原数组"),
+        ("fn", "谓词函数 fn(x) -> truthy/falsy"),
+    ],
+    returns: "第一个匹配元素，无匹配返回 undefined",
+    examples: &[
+        "find([1,2,3,4], func(x) { return x > 2 })  // 3",
+    ],
+    errors: &["第一个参数应为 array"],
+};
+
+// ---- 命令行参数 ----
+
+static DOC_GET_PARAM: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "getParam(args, index[, default]) -> value",
+    summary: "从参数数组取第 index 个元素，不存在则返回 default（或 undefined）。",
+    params: &[
+        ("args", "参数数组（如 argsG）"),
+        ("index", "位置索引（int）"),
+        ("default", "可选。缺省时返回的默认值"),
+    ],
+    returns: "对应位置参数；不存在返回 default 或 undefined",
+    examples: &[
+        "getParam(argsG, 0)               // 第一个参数",
+        "getParam(argsG, 2, \"fallback\")    // 越界返回 \"fallback\"",
+    ],
+    errors: &[],
+};
+
+static DOC_GET_SWITCH: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "getSwitch(args, key[, default]) -> string",
+    summary: "从参数数组按 \"--key=value\" 前缀提取开关值；无匹配返回 default。",
+    params: &[
+        ("args", "参数数组（如 argsG）"),
+        ("key", "前缀字符串，含前缀和等号，如 \"--host=\""),
+        ("default", "可选。无匹配时的默认值"),
+    ],
+    returns: "匹配项的等号右侧值；无匹配返回 default",
+    examples: &[
+        "getSwitch(argsG, \"--host=\", \"localhost\")  // 匹配 --host=x 返回 x",
+    ],
+    errors: &[],
+};
+
+static DOC_GET_ALL_SWITCHES: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "getAllSwitches(args, key) -> array<string>",
+    summary: "从参数数组提取所有匹配 \"--key=value\" 的值（可多个同名），返回数组。",
+    params: &[
+        ("args", "参数数组（如 argsG）"),
+        ("key", "前缀字符串，含前缀和等号"),
+    ],
+    returns: "array<string> 所有匹配值；无匹配返回空数组",
+    examples: &[
+        "getAllSwitches(argsG, \"--attach=\")  // [\"file1.pdf\", \"file2.xlsx\"]",
+    ],
+    errors: &[],
+};
+
+static DOC_IF_SWITCH_EXISTS: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "ifSwitchExists(args, key) -> bool",
+    summary: "检查参数数组中是否存在某个布尔型开关（无值，如 \"--verbose\"）。",
+    params: &[
+        ("args", "参数数组（如 argsG）"),
+        ("key", "开关名字符串，如 \"--verbose\" 或 \"-v\""),
+    ],
+    returns: "bool：存在返回 true",
+    examples: &[
+        "ifSwitchExists(argsG, \"--verbose\")  // true/false",
+    ],
+    errors: &[],
+};
+
+// ---- 系统与杂项 ----
+
+static DOC_SLEEP_MS: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "sleepMs(ms) -> undefined",
+    summary: "休眠指定毫秒数（整数）。",
+    params: &[("ms", "毫秒数（int）")],
+    returns: "undefined",
+    examples: &["sleepMs(500)  // 休眠 500 毫秒"],
+    errors: &[],
+};
+
+static DOC_RANDOM_STR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "randomStr(n) -> string",
+    summary: "生成长度为 n 的随机字母数字字符串（大小写字母 + 数字）。",
+    params: &[("n", "长度（int，非负）")],
+    returns: "string 随机字母数字串",
+    examples: &[
+        "randomStr(8)  // 如 \"aB3xK9mN\"",
+    ],
+    errors: &["长度为负返回错误"],
+};
+
+static DOC_PASS: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "pass(...) -> undefined",
+    summary: "空操作占位符（no-op），忽略所有参数，返回 undefined。",
+    params: &[("...", "任意参数，全部忽略")],
+    returns: "undefined",
+    examples: &["pass()  // 什么都不做"],
+    errors: &[],
+};
+
+static DOC_TO_KMG: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "toKMG(n[, decimals]) -> string",
+    summary: "将数字转为带单位的易读字符串（K/M/G/T/P，1024 进制），默认 2 位小数。",
+    params: &[
+        ("n", "数字（int 或 float）"),
+        ("decimals", "可选。小数位数，默认 2"),
+    ],
+    returns: "string 带 K/M/G/T/P 单位的字符串",
+    examples: &[
+        "toKMG(1536)        // \"1.50K\"",
+        "toKMG(1048576)     // \"1.00M\"",
+        "toKMG(0, 0)        // \"0\"",
+    ],
+    errors: &[],
+};
+
+// ---- 调试与反射 ----
+
+static DOC_DUMP_VAR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "dumpVar(v) -> string",
+    summary: "转储变量详细信息（类型名、类型码、值摘要），返回多行诊断字符串。",
+    params: &[("v", "任意值")],
+    returns: "string 多行诊断信息（type/typeCode/value）",
+    examples: &[
+        "println(dumpVar(42))",
+        "// type: int",
+        "// typeCode: 1",
+        "// value: 42",
+    ],
+    errors: &[],
+};
+
+static DOC_GLOBALS: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "globals() -> array<string>",
+    summary: "列出所有全局变量名（用于反射与调试）。",
+    params: &[],
+    returns: "array<string> 全局变量名数组",
+    examples: &["var names = globals()  // 当前所有全局变量名"],
+    errors: &[],
+};
+
+static DOC_GET_MEMBER: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "getMember(obj, key) -> value",
+    summary: "反射式读取 object/map 的成员。Object 沿原型链查找；不存在返回 undefined。",
+    params: &[
+        ("obj", "object 或 map"),
+        ("key", "成员名字符串"),
+    ],
+    returns: "成员值；不存在返回 undefined",
+    examples: &[
+        "getMember({\"a\":1}, \"a\")  // 1",
+        "getMember(obj, \"method\")  // 沿原型链查找",
+    ],
+    errors: &["第一个参数应为 object 或 map"],
+};
+
+static DOC_SET_MEMBER: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "setMember(obj, key, value) -> undefined",
+    summary: "反射式设置 object/map 的成员值（原地修改，仅写入自身，与 obj.key = v 一致）。",
+    params: &[
+        ("obj", "object 或 map"),
+        ("key", "成员名字符串"),
+        ("value", "新值"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "var o = {}; setMember(o, \"k\", 1)  // o 变为 {\"k\":1}",
+    ],
+    errors: &["第一个参数应为 object 或 map"],
+};
+
+static DOC_CALL_METHOD: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "callMethod(obj, methodName[, args]) -> value",
+    summary: "调用对象方法（沿原型链查找 methodName），obj 作为隐式 self 传入。",
+    params: &[
+        ("obj", "object 实例"),
+        ("methodName", "方法名字符串（沿原型链查找）"),
+        ("args", "可选。参数数组或单个值，作为方法后续参数"),
+    ],
+    returns: "方法返回值",
+    examples: &[
+        "callMethod(o, \"greet\")               // 无参调用",
+        "callMethod(o, \"add\", [1, 2])          // 带参调用",
+    ],
+    errors: &[
+        "对象上找不到方法返回错误",
+        "第一个参数应为 object",
+    ],
+};
+
+static DOC_SHOW_TABLE: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "showTable(data[, opts]) -> string",
+    summary: "将二维数组渲染为对齐的 ASCII 表格字符串（首行默认为表头）。",
+    params: &[
+        ("data", "array<array>，每行是一维数组"),
+        ("opts", "可选。map/object，支持 header(bool,默认true) 和 sep(string,默认\"|\")"),
+    ],
+    returns: "string 表格字符串（含边框，不直接打印）",
+    examples: &[
+        "println(showTable([[\"姓名\",\"年龄\"],[\"张三\",20],[\"李四\",25]]))",
+        "// +------+----+",
+        "// | 姓名 | 年龄 |",
+        "// +------+----+",
+        "// | 张三 | 20  |",
+        "// | 李四 | 25  |",
+        "// +------+----+",
+    ],
+    errors: &["每行必须是一维数组"],
+};
+
 /// register 注册所有内置函数到 VM。
 pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("println", bi_println, &DOC_PRINTLN);
-    vm.register_builtin("print", bi_print);
+    vm.register_builtin_doc("print", bi_print, &DOC_PRINT);
     // 打印函数简称（别名）
-    vm.register_builtin("pln", bi_println);
-    vm.register_builtin("pr", bi_print);
+    vm.register_builtin_doc("pln", bi_println, &DOC_PLN);
+    vm.register_builtin_doc("pr", bi_print, &DOC_PR);
     // 格式化打印（Go 风格占位符 %v %d %s %f %t %x %%）
-    vm.register_builtin("printf", bi_printf);
-    vm.register_builtin("prf", bi_printf);
-    vm.register_builtin("printfln", bi_printfln);
-    vm.register_builtin("pl", bi_printfln);
+    vm.register_builtin_doc("printf", bi_printf, &DOC_PRINTF);
+    vm.register_builtin_doc("prf", bi_printf, &DOC_PRF);
+    vm.register_builtin_doc("printfln", bi_printfln, &DOC_PRINTFLN);
+    vm.register_builtin_doc("pl", bi_printfln, &DOC_PL);
     vm.register_builtin_doc("len", bi_len, &DOC_LEN);
     vm.register_builtin_doc("keys", bi_keys, &DOC_KEYS);
     vm.register_builtin_doc("push", bi_push, &DOC_PUSH);
-    vm.register_builtin("pop", bi_pop);
+    vm.register_builtin_doc("pop", bi_pop, &DOC_POP);
     vm.register_builtin_doc("typeCode", bi_type_code, &DOC_TYPECODE);
     vm.register_builtin_doc("typeName", bi_type_name, &DOC_TYPENAME);
-    vm.register_builtin("string", bi_string);
-    vm.register_builtin("int", bi_int);
-    vm.register_builtin("float", bi_float);
+    vm.register_builtin_doc("string", bi_string, &DOC_STRING);
+    vm.register_builtin_doc("int", bi_int, &DOC_INT);
+    vm.register_builtin_doc("float", bi_float, &DOC_FLOAT);
     vm.register_builtin_doc("range", bi_range, &DOC_RANGE);
     vm.register_builtin_doc("assert", bi_assert, &DOC_ASSERT);
     vm.register_builtin_doc("sleep", bi_sleep, &DOC_SLEEP);
-    vm.register_builtin("sleepMs", bi_sleep_ms);
-    vm.register_builtin("newStringBuilder", bi_new_string_builder);
-    vm.register_builtin("clear", bi_clear);
-    vm.register_builtin("reset", bi_reset);
+    vm.register_builtin_doc("sleepMs", bi_sleep_ms, &DOC_SLEEP_MS);
+    vm.register_builtin_doc("newStringBuilder", bi_new_string_builder, &DOC_NEW_STRING_BUILDER);
+    vm.register_builtin_doc("clear", bi_clear, &DOC_CLEAR);
+    vm.register_builtin_doc("reset", bi_reset, &DOC_RESET);
     // ---- 实用函数（对标 charlang 常见编程任务）----
     vm.register_builtin_doc("uuid", bi_uuid, &DOC_UUID);
-    vm.register_builtin("randomStr", bi_random_str);
+    vm.register_builtin_doc("randomStr", bi_random_str, &DOC_RANDOM_STR);
     vm.register_builtin_doc("values", bi_values, &DOC_VALUES);
-    vm.register_builtin("hasKey", bi_has_key);
+    vm.register_builtin_doc("hasKey", bi_has_key, &DOC_HAS_KEY);
     vm.register_builtin_doc("deepClone", bi_deep_clone, &DOC_DEEP_CLONE);
-    vm.register_builtin("newObject", bi_new_object);
-    vm.register_builtin("filter", bi_filter);
-    vm.register_builtin("map", bi_map);
-    vm.register_builtin("find", bi_find);
+    vm.register_builtin_doc("newObject", bi_new_object, &DOC_NEW_OBJECT);
+    vm.register_builtin_doc("filter", bi_filter, &DOC_FILTER);
+    vm.register_builtin_doc("map", bi_map, &DOC_MAP_FN);
+    vm.register_builtin_doc("find", bi_find, &DOC_FIND);
     vm.register_builtin_doc("sprintf", bi_sprintf, &DOC_SPRINTF);
-    vm.register_builtin("spr", bi_sprintf);
-    vm.register_builtin("fpr", bi_printf);
-    vm.register_builtin("adjustFloat", bi_adjust_float);
-    vm.register_builtin("pass", bi_pass);
-    vm.register_builtin("plt", bi_plt);
-    vm.register_builtin("getParam", bi_get_param);
-    vm.register_builtin("getSwitch", bi_get_switch);
-    vm.register_builtin("getAllSwitches", bi_get_all_switches);
-    vm.register_builtin("ifSwitchExists", bi_if_switch_exists);
-    vm.register_builtin("toStr", bi_string);
-    vm.register_builtin("toInt", bi_int);
-    vm.register_builtin("toFloat", bi_float);
+    vm.register_builtin_doc("spr", bi_sprintf, &DOC_SPR);
+    vm.register_builtin_doc("fpr", bi_printf, &DOC_FPR);
+    vm.register_builtin_doc("adjustFloat", bi_adjust_float, &DOC_ADJUST_FLOAT);
+    vm.register_builtin_doc("pass", bi_pass, &DOC_PASS);
+    vm.register_builtin_doc("plt", bi_plt, &DOC_PLT);
+    vm.register_builtin_doc("getParam", bi_get_param, &DOC_GET_PARAM);
+    vm.register_builtin_doc("getSwitch", bi_get_switch, &DOC_GET_SWITCH);
+    vm.register_builtin_doc("getAllSwitches", bi_get_all_switches, &DOC_GET_ALL_SWITCHES);
+    vm.register_builtin_doc("ifSwitchExists", bi_if_switch_exists, &DOC_IF_SWITCH_EXISTS);
+    vm.register_builtin_doc("toStr", bi_string, &DOC_TO_STR);
+    vm.register_builtin_doc("toInt", bi_int, &DOC_TO_INT);
+    vm.register_builtin_doc("toFloat", bi_float, &DOC_TO_FLOAT);
     vm.register_builtin_doc("compile", bi_compile, &DOC_COMPILE);
     vm.register_builtin_doc("runCode", bi_run_code, &DOC_RUN_CODE);
-    vm.register_builtin("newRef", bi_new_ref);
-    vm.register_builtin("getValueByRef", bi_get_value_by_ref);
-    vm.register_builtin("setValueByRef", bi_set_value_by_ref);
+    vm.register_builtin_doc("newRef", bi_new_ref, &DOC_NEW_REF);
+    vm.register_builtin_doc("getValueByRef", bi_get_value_by_ref, &DOC_GET_VALUE_BY_REF);
+    vm.register_builtin_doc("setValueByRef", bi_set_value_by_ref, &DOC_SET_VALUE_BY_REF);
     // byte 构造与字节操作
-    vm.register_builtin("byte", bi_byte);
-    vm.register_builtin("newMap", bi_new_map);
-    vm.register_builtin("entries", bi_entries);
-    vm.register_builtin("dataKeys", bi_data_keys);
-    vm.register_builtin("dataValues", bi_data_values);
-    vm.register_builtin("bytesXor", bi_bytes_xor);
-    vm.register_builtin("bytesXorInPlace", bi_bytes_xor_in_place);
+    vm.register_builtin_doc("byte", bi_byte, &DOC_BYTE);
+    vm.register_builtin_doc("newMap", bi_new_map, &DOC_NEW_MAP);
+    vm.register_builtin_doc("entries", bi_entries, &DOC_ENTRIES);
+    vm.register_builtin_doc("dataKeys", bi_data_keys, &DOC_DATA_KEYS);
+    vm.register_builtin_doc("dataValues", bi_data_values, &DOC_DATA_VALUES);
+    vm.register_builtin_doc("bytesXor", bi_bytes_xor, &DOC_BYTES_XOR);
+    vm.register_builtin_doc("bytesXorInPlace", bi_bytes_xor_in_place, &DOC_BYTES_XOR_IN_PLACE);
     // 类型判断：isUndefined 保留（特殊语义：缺参返回 true，链式判空）
-    vm.register_builtin("isUndefined", bi_is_undefined);
+    vm.register_builtin_doc("isUndefined", bi_is_undefined, &DOC_IS_UNDEFINED);
     // 错误处理：isError/isErr 保留（错误判断，非纯类型判断）
     vm.register_builtin_doc("error", bi_error, &DOC_ERROR);
     vm.register_builtin_doc("isError", bi_is_error, &DOC_IS_ERROR);
     // ---- TXERROR 错误字符串机制（对标 Charlang isErrX/getErrStrX 等）----
-    vm.register_builtin("isErr", bi_is_err);
-    vm.register_builtin("isErrX", bi_is_err);      // Charlang 兼容别名
-    vm.register_builtin("isErrStr", bi_is_err_str);
-    vm.register_builtin("getErrStr", bi_get_err_str);
-    vm.register_builtin("getErrStrX", bi_get_err_str);  // Charlang 兼容别名
-    vm.register_builtin("errStrf", bi_err_strf);
-    vm.register_builtin("errf", bi_err_strf);       // Charlang 兼容别名
-    vm.register_builtin("errToEmpty", bi_err_to_empty);
-    vm.register_builtin("checkErr", bi_check_err);
-    vm.register_builtin("checkErrX", bi_check_err); // Charlang 兼容别名
-    vm.register_builtin("trimErr", bi_trim_err);
+    vm.register_builtin_doc("isErr", bi_is_err, &DOC_IS_ERR);
+    vm.register_builtin_doc("isErrX", bi_is_err, &DOC_IS_ERR_X);      // Charlang 兼容别名
+    vm.register_builtin_doc("isErrStr", bi_is_err_str, &DOC_IS_ERR_STR);
+    vm.register_builtin_doc("getErrStr", bi_get_err_str, &DOC_GET_ERR_STR);
+    vm.register_builtin_doc("getErrStrX", bi_get_err_str, &DOC_GET_ERR_STR_X);  // Charlang 兼容别名
+    vm.register_builtin_doc("errStrf", bi_err_strf, &DOC_ERR_STRF);
+    vm.register_builtin_doc("errf", bi_err_strf, &DOC_ERRF);       // Charlang 兼容别名
+    vm.register_builtin_doc("errToEmpty", bi_err_to_empty, &DOC_ERR_TO_EMPTY);
+    vm.register_builtin_doc("checkErr", bi_check_err, &DOC_CHECK_ERR);
+    vm.register_builtin_doc("checkErrX", bi_check_err, &DOC_CHECK_ERR_X); // Charlang 兼容别名
+    vm.register_builtin_doc("trimErr", bi_trim_err, &DOC_TRIM_ERR);
     // ---- undefined 配套内置函数（对标 Charlang 的 nilToEmpty 等）----
-    vm.register_builtin("undefToEmpty", bi_undef_to_empty);
+    vm.register_builtin_doc("undefToEmpty", bi_undef_to_empty, &DOC_UNDEF_TO_EMPTY);
     // 注：原 "default" 改名为 "defaultVal"，因 "default" 已成为 switch 关键字。
     // 语义不变（truthy 兜底，等价于 x || d 运算符）。
     vm.register_builtin_doc("defaultVal", bi_default, &DOC_DEFAULT_VAL);
     vm.register_builtin_doc("defaultUndef", bi_default_undef, &DOC_DEFAULT_UNDEF);
-    vm.register_builtin("explainUndef", bi_explain_undef);
+    vm.register_builtin_doc("explainUndef", bi_explain_undef, &DOC_EXPLAIN_UNDEF);
     // ---- 通用类型判断（取代零散的 isXxx 谓词）----
-    vm.register_builtin("isType", bi_is_type);
-    vm.register_builtin("isTypeCode", bi_is_type_code);
+    vm.register_builtin_doc("isType", bi_is_type, &DOC_IS_TYPE);
+    vm.register_builtin_doc("isTypeCode", bi_is_type_code, &DOC_IS_TYPE_CODE);
     // ---- 调试与反射 ----
-    vm.register_builtin("dumpVar", bi_dump_var);
-    vm.register_builtin("globals", bi_globals);
+    vm.register_builtin_doc("dumpVar", bi_dump_var, &DOC_DUMP_VAR);
+    vm.register_builtin_doc("globals", bi_globals, &DOC_GLOBALS);
     // ---- 成员反射 ----
-    vm.register_builtin("getMember", bi_get_member);
-    vm.register_builtin("setMember", bi_set_member);
-    vm.register_builtin("callMethod", bi_call_method);
+    vm.register_builtin_doc("getMember", bi_get_member, &DOC_GET_MEMBER);
+    vm.register_builtin_doc("setMember", bi_set_member, &DOC_SET_MEMBER);
+    vm.register_builtin_doc("callMethod", bi_call_method, &DOC_CALL_METHOD);
     // ---- 格式化辅助 ----
-    vm.register_builtin("toKMG", bi_to_kmg);
-    vm.register_builtin("showTable", bi_show_table);
+    vm.register_builtin_doc("toKMG", bi_to_kmg, &DOC_TO_KMG);
+    vm.register_builtin_doc("showTable", bi_show_table, &DOC_SHOW_TABLE);
     // ---- Help 系统（AI 友好的文档自省）----
     vm.register_builtin_doc("help", bi_help, &DOC_HELP);
 }

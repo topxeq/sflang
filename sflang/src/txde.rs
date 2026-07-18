@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use crate::function::BuiltinDoc;
 use crate::value::Value;
 
 // ---- 辅助 ----
@@ -343,31 +344,327 @@ pub fn is_encrypted_txdem(data: &[u8]) -> bool {
 
 // ---- 注册内置函数 ----
 
+// ---- TXTE ----
+
+static DOC_ENCRYPT_TEXT_BY_TXTE: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "encryptTextByTXTE(text[, code]) -> string",
+    summary: "用 TXTE 算法加密文本（加法混淆 + hex 编码输出）。",
+    params: &[
+        ("text", "要加密的字符串"),
+        ("code", "可选。密码字符串，省略时默认 \"topxeq\""),
+    ],
+    returns: "string 加密后的 hex 字符串（空输入返回空串）",
+    examples: &[
+        "var s = encryptTextByTXTE(\"hello\")            // 默认密码",
+        "var s2 = encryptTextByTXTE(\"hello\", \"mykey\")    // 指定密码",
+    ],
+    errors: &[],
+};
+
+static DOC_DECRYPT_TEXT_BY_TXTE: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "decryptTextByTXTE(hex[, code]) -> string",
+    summary: "用 TXTE 算法解密文本（输入 hex 字符串，需与加密时同一密码）。",
+    params: &[
+        ("hex", "encryptTextByTXTE 输出的 hex 字符串"),
+        ("code", "可选。密码字符串，省略时默认 \"topxeq\""),
+    ],
+    returns: "string 解密后的原文（空输入或 hex 解码失败返回空串）",
+    examples: &[
+        "decryptTextByTXTE(encryptTextByTXTE(\"hi\"))     // \"hi\"",
+    ],
+    errors: &["密码不匹配时返回乱码（不报错）"],
+};
+
+// ---- TXDEE ----
+
+static DOC_ENCRYPT_DATA_BY_TXDEE: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "encryptDataByTXDEE(data[, code]) -> bytes",
+    summary: "用 TXDEE 算法加密数据（4 字节随机盐帧混淆）。返回二进制 bytes。",
+    params: &[
+        ("data", "要加密的数据（string/bytes/byteArray）"),
+        ("code", "可选。密码字符串，省略时默认 \"topxeq\""),
+    ],
+    returns: "bytes 加密后的二进制数据（长度 = 原长度 + 4）",
+    examples: &[
+        "var b = encryptDataByTXDEE(\"data\")",
+        "var b2 = encryptDataByTXDEE(\"data\", \"pw\")",
+    ],
+    errors: &["参数类型应为 string/bytes/byteArray"],
+};
+
+static DOC_DECRYPT_DATA_BY_TXDEE: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "decryptDataByTXDEE(data[, code]) -> bytes|error",
+    summary: "用 TXDEE 算法解密数据（需与加密时同一密码）。",
+    params: &[
+        ("data", "encryptDataByTXDEE 输出的 bytes/string/byteArray"),
+        ("code", "可选。密码字符串，省略时默认 \"topxeq\""),
+    ],
+    returns: "bytes 解密后的原始数据；解密失败返回 error 值",
+    examples: &[
+        "decryptDataByTXDEE(encryptDataByTXDEE(\"x\"))   // 还原 \"x\" 的 bytes",
+    ],
+    errors: &["密码错误或数据损坏时返回 error 值（数据长度 < 4）"],
+};
+
+static DOC_ENCRYPT_TEXT_BY_TXDEE: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "encryptTextByTXDEE(text[, code]) -> string",
+    summary: "用 TXDEE 加密文本，输出 hex 字符串（对 TXDEE 二进制结果做 hex 编码）。",
+    params: &[
+        ("text", "要加密的字符串"),
+        ("code", "可选。密码字符串，省略时默认 \"topxeq\""),
+    ],
+    returns: "string hex 编码的密文",
+    examples: &[
+        "var s = encryptTextByTXDEE(\"hello\", \"pw\")",
+    ],
+    errors: &[],
+};
+
+static DOC_DECRYPT_TEXT_BY_TXDEE: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "decryptTextByTXDEE(hex[, code]) -> string",
+    summary: "解密 encryptTextByTXDEE 生成的 hex 字符串（兼容 740404 前缀）。",
+    params: &[
+        ("hex", "encryptTextByTXDEE 输出的 hex 字符串"),
+        ("code", "可选。密码字符串，省略时默认 \"topxeq\""),
+    ],
+    returns: "string 解密后的原文；失败返回 error 值",
+    examples: &[
+        "decryptTextByTXDEE(encryptTextByTXDEE(\"hi\", \"pw\"), \"pw\")   // \"hi\"",
+    ],
+    errors: &[
+        "hex 解码失败返回 error",
+        "解密失败（密码错误/数据损坏）返回 error",
+    ],
+};
+
+// ---- TXDEF ----
+
+static DOC_ENCRYPT_DATA: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "encryptData(data[, code[, \"-addHead\"]]) -> bytes",
+    summary: "用 TXDEF 默认算法加密数据（key 派生盐长度）。可选添加 //TXDEF# 头。",
+    params: &[
+        ("data", "要加密的数据（string/bytes/byteArray）"),
+        ("code", "可选。密码字符串，省略时默认 \"topxeq\""),
+        ("-addHead", "可选。字符串字面量 \"-addHead\"，添加 //TXDEF# 头"),
+    ],
+    returns: "bytes 加密后的数据",
+    examples: &[
+        "var b = encryptData(\"data\")",
+        "var b2 = encryptData(\"data\", \"pw\", \"-addHead\")   // 带 //TXDEF# 头",
+    ],
+    errors: &["参数类型应为 string/bytes/byteArray"],
+};
+
+static DOC_ENCRYPT_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "encryptBytes(data[, code[, \"-addHead\"]]) -> bytes",
+    summary: "encryptData 的别名：用 TXDEF 算法加密数据。",
+    params: &[
+        ("data", "要加密的数据（string/bytes/byteArray）"),
+        ("code", "可选。密码字符串"),
+        ("-addHead", "可选。字符串 \"-addHead\"，添加 //TXDEF# 头"),
+    ],
+    returns: "bytes 加密后的数据",
+    examples: &["var b = encryptBytes(\"data\", \"pw\")"],
+    errors: &[],
+};
+
+static DOC_DECRYPT_DATA: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "decryptData(data[, code]) -> bytes|error",
+    summary: "用 TXDEF 算法解密数据（自动识别并去除 //TXDEF# 头）。",
+    params: &[
+        ("data", "encryptData 输出的 bytes/string/byteArray"),
+        ("code", "可选。密码字符串，省略时默认 \"topxeq\""),
+    ],
+    returns: "bytes 解密后的原始数据；失败返回 error 值",
+    examples: &[
+        "decryptData(encryptData(\"x\"))   // 还原 \"x\" 的 bytes",
+    ],
+    errors: &["密码错误或数据损坏返回 error"],
+};
+
+static DOC_DECRYPT_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "decryptBytes(data[, code]) -> bytes|error",
+    summary: "decryptData 的别名：用 TXDEF 算法解密数据。",
+    params: &[
+        ("data", "encryptData/encryptBytes 的输出"),
+        ("code", "可选。密码字符串"),
+    ],
+    returns: "bytes 解密后的数据；失败返回 error 值",
+    examples: &["decryptBytes(encryptBytes(\"x\"))"],
+    errors: &[],
+};
+
+static DOC_ENCRYPT_TEXT: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "encryptText(text[, code]) -> string",
+    summary: "用 TXDEF 加密文本，输出 hex 字符串（不带 //TXDEF# 头）。",
+    params: &[
+        ("text", "要加密的字符串"),
+        ("code", "可选。密码字符串，省略时默认 \"topxeq\""),
+    ],
+    returns: "string hex 编码的密文",
+    examples: &[
+        "var s = encryptText(\"hello\", \"pw\")",
+    ],
+    errors: &[],
+};
+
+static DOC_ENCRYPT_STR: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "encryptStr(text[, code]) -> string",
+    summary: "encryptText 的别名：用 TXDEF 加密文本输出 hex 字符串。",
+    params: &[
+        ("text", "要加密的字符串"),
+        ("code", "可选。密码字符串"),
+    ],
+    returns: "string hex 编码的密文",
+    examples: &["encryptStr(\"hello\", \"pw\")"],
+    errors: &[],
+};
+
+static DOC_DECRYPT_TEXT: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "decryptText(hex[, code]) -> string|error",
+    summary: "解密 encryptText 生成的 hex 字符串（兼容 //TXDEF# 和 740404 前缀）。",
+    params: &[
+        ("hex", "encryptText 输出的 hex 字符串"),
+        ("code", "可选。密码字符串，省略时默认 \"topxeq\""),
+    ],
+    returns: "string 解密后的原文；失败返回 error 值",
+    examples: &[
+        "decryptText(encryptText(\"hi\", \"pw\"), \"pw\")   // \"hi\"",
+    ],
+    errors: &["hex 解码失败或解密失败返回 error"],
+};
+
+static DOC_DECRYPT_STR: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "decryptStr(hex[, code]) -> string|error",
+    summary: "decryptText 的别名：解密 TXDEF 文本密文。",
+    params: &[
+        ("hex", "encryptText/encryptStr 输出的 hex 字符串"),
+        ("code", "可选。密码字符串"),
+    ],
+    returns: "string 解密后的原文；失败返回 error 值",
+    examples: &["decryptStr(encryptStr(\"hi\"))"],
+    errors: &[],
+};
+
+static DOC_IS_ENCRYPTED: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "isEncrypted(v) -> bool",
+    summary: "检测值是否为已加密格式：string 检查 //TXDEF# 或 //TXDEM# 前缀，bytes 检查 magic bytes。",
+    params: &[("v", "string 或 bytes")],
+    returns: "bool：识别为加密格式返回 true",
+    examples: &[
+        "isEncrypted(\"//TXDEF#xxxx\")        // true",
+        "isEncrypted(encryptData(\"x\"))        // 视情况",
+    ],
+    errors: &["非 string/bytes 类型返回 false"],
+};
+
+// ---- TXDEM ----
+
+static DOC_ENCRYPT_DATA_BY_TXDEM: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "encryptDataByTXDEM(data[, codeA[, codeB]]) -> bytes",
+    summary: "用 TXDEM 双密码流密码加密数据（任一密码正确均可解密）。",
+    params: &[
+        ("data", "要加密的数据（string/bytes/byteArray）"),
+        ("codeA", "可选。密码 A，省略时默认 \"topxeq\""),
+        ("codeB", "可选。密码 B，省略时默认 \"txdem\""),
+    ],
+    returns: "bytes 加密后的数据（含双盐槽 + 校验和 + 密文）",
+    examples: &[
+        "var b = encryptDataByTXDEM(\"data\", \"pw1\", \"pw2\")",
+    ],
+    errors: &["参数类型应为 string/bytes/byteArray"],
+};
+
+static DOC_DECRYPT_DATA_BY_TXDEM: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "decryptDataByTXDEM(data[, codeA]) -> bytes|error",
+    summary: "用 TXDEM 解密数据。提供 codeA 或 codeB 任一即可（自动尝试两个盐槽）。",
+    params: &[
+        ("data", "encryptDataByTXDEM 的输出（string/bytes/byteArray）"),
+        ("codeA", "可选。密码 A 或 B，省略时默认 \"topxeq\""),
+    ],
+    returns: "bytes 解密后的数据；两个密码都不匹配返回 error 值",
+    examples: &[
+        "decryptDataByTXDEM(encryptDataByTXDEM(\"x\", \"pw1\", \"pw2\"), \"pw1\")  // 还原 \"x\"",
+    ],
+    errors: &["两个密码都不正确时返回 error 值"],
+};
+
+static DOC_ENCRYPT_TEXT_BY_TXDEM: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "encryptTextByTXDEM(text[, codeA[, codeB]]) -> string",
+    summary: "用 TXDEM 双密码流密码加密文本，输出 hex 字符串。",
+    params: &[
+        ("text", "要加密的字符串"),
+        ("codeA", "可选。密码 A，省略时默认 \"topxeq\""),
+        ("codeB", "可选。密码 B，省略时默认 \"txdem\""),
+    ],
+    returns: "string hex 编码的密文",
+    examples: &[
+        "var s = encryptTextByTXDEM(\"hello\", \"pw1\", \"pw2\")",
+    ],
+    errors: &[],
+};
+
+static DOC_DECRYPT_TEXT_BY_TXDEM: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "decryptTextByTXDEM(hex[, codeA]) -> string|error",
+    summary: "解密 encryptTextByTXDEM 的 hex 字符串（兼容 //TXDEM# 和 740405 前缀）。",
+    params: &[
+        ("hex", "encryptTextByTXDEM 输出的 hex 字符串"),
+        ("codeA", "可选。密码 A 或 B，省略时默认 \"topxeq\""),
+    ],
+    returns: "string 解密后的原文；失败返回 error 值",
+    examples: &[
+        "decryptTextByTXDEM(encryptTextByTXDEM(\"hi\", \"pw\"), \"pw\")   // \"hi\"",
+    ],
+    errors: &[
+        "hex 解码失败返回 error",
+        "密码不正确或数据损坏返回 error",
+    ],
+};
+
 /// register 注册所有 TXDE 内置函数。
 pub fn register(vm: &mut crate::vm::VM) {
     // TXTE
-    vm.register_builtin("encryptTextByTXTE", bi_encrypt_str_txte);
-    vm.register_builtin("decryptTextByTXTE", bi_decrypt_str_txte);
+    vm.register_builtin_doc("encryptTextByTXTE", bi_encrypt_str_txte, &DOC_ENCRYPT_TEXT_BY_TXTE);
+    vm.register_builtin_doc("decryptTextByTXTE", bi_decrypt_str_txte, &DOC_DECRYPT_TEXT_BY_TXTE);
     // TXDEE
-    vm.register_builtin("encryptDataByTXDEE", bi_encrypt_data_txdee);
-    vm.register_builtin("decryptDataByTXDEE", bi_decrypt_data_txdee);
-    vm.register_builtin("encryptTextByTXDEE", bi_encrypt_str_txdee);
-    vm.register_builtin("decryptTextByTXDEE", bi_decrypt_str_txdee);
+    vm.register_builtin_doc("encryptDataByTXDEE", bi_encrypt_data_txdee, &DOC_ENCRYPT_DATA_BY_TXDEE);
+    vm.register_builtin_doc("decryptDataByTXDEE", bi_decrypt_data_txdee, &DOC_DECRYPT_DATA_BY_TXDEE);
+    vm.register_builtin_doc("encryptTextByTXDEE", bi_encrypt_str_txdee, &DOC_ENCRYPT_TEXT_BY_TXDEE);
+    vm.register_builtin_doc("decryptTextByTXDEE", bi_decrypt_str_txdee, &DOC_DECRYPT_TEXT_BY_TXDEE);
     // TXDEF
-    vm.register_builtin("encryptData", bi_encrypt_data_txdef);
-    vm.register_builtin("encryptBytes", bi_encrypt_data_txdef);
-    vm.register_builtin("decryptData", bi_decrypt_data_txdef);
-    vm.register_builtin("decryptBytes", bi_decrypt_data_txdef);
-    vm.register_builtin("encryptText", bi_encrypt_str_txdef);
-    vm.register_builtin("encryptStr", bi_encrypt_str_txdef);
-    vm.register_builtin("decryptText", bi_decrypt_str_txdef);
-    vm.register_builtin("decryptStr", bi_decrypt_str_txdef);
-    vm.register_builtin("isEncrypted", bi_is_encrypted);
+    vm.register_builtin_doc("encryptData", bi_encrypt_data_txdef, &DOC_ENCRYPT_DATA);
+    vm.register_builtin_doc("encryptBytes", bi_encrypt_data_txdef, &DOC_ENCRYPT_BYTES);
+    vm.register_builtin_doc("decryptData", bi_decrypt_data_txdef, &DOC_DECRYPT_DATA);
+    vm.register_builtin_doc("decryptBytes", bi_decrypt_data_txdef, &DOC_DECRYPT_BYTES);
+    vm.register_builtin_doc("encryptText", bi_encrypt_str_txdef, &DOC_ENCRYPT_TEXT);
+    vm.register_builtin_doc("encryptStr", bi_encrypt_str_txdef, &DOC_ENCRYPT_STR);
+    vm.register_builtin_doc("decryptText", bi_decrypt_str_txdef, &DOC_DECRYPT_TEXT);
+    vm.register_builtin_doc("decryptStr", bi_decrypt_str_txdef, &DOC_DECRYPT_STR);
+    vm.register_builtin_doc("isEncrypted", bi_is_encrypted, &DOC_IS_ENCRYPTED);
     // TXDEM
-    vm.register_builtin("encryptDataByTXDEM", bi_encrypt_data_txdem);
-    vm.register_builtin("decryptDataByTXDEM", bi_decrypt_data_txdem);
-    vm.register_builtin("encryptTextByTXDEM", bi_encrypt_str_txdem);
-    vm.register_builtin("decryptTextByTXDEM", bi_decrypt_str_txdem);
+    vm.register_builtin_doc("encryptDataByTXDEM", bi_encrypt_data_txdem, &DOC_ENCRYPT_DATA_BY_TXDEM);
+    vm.register_builtin_doc("decryptDataByTXDEM", bi_decrypt_data_txdem, &DOC_DECRYPT_DATA_BY_TXDEM);
+    vm.register_builtin_doc("encryptTextByTXDEM", bi_encrypt_str_txdem, &DOC_ENCRYPT_TEXT_BY_TXDEM);
+    vm.register_builtin_doc("decryptTextByTXDEM", bi_decrypt_str_txdem, &DOC_DECRYPT_TEXT_BY_TXDEM);
 }
 
 use crate::builtins_helpers as bh;
