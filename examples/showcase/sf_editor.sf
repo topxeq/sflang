@@ -213,6 +213,9 @@ func onMessage(msg) {
         var info = "Sflang Editor v1.0 | sf路径: " + sfExe + " | 临时文件: " + tempFile
         guiEval(win, "showOutput('" + escapeJS(info) + "', false)")
     }
+    elif op == "SETTITLE" {
+        guiSetTitle(win, data)
+    }
     elif op == "TPL" {
         // 从 base64 内嵌数据解码模板（不依赖外部文件）
         var tplMap = {
@@ -343,7 +346,6 @@ html = html + "</div>"
 html = html + "<div class='sep'></div>"
 html = html + "<button onclick=\"toggleWrap()\" title='切换折行' id='wrapBtn'>↩ 折行</button>"
 html = html + "<button onclick=\"toggleTheme()\" title='切换主题'>🎨 主题</button>"
-html = html + "<span class='title' id='filename'>未命名.sf</span>"
 html = html + "</div>"
 
 // 隐藏的文件选择器
@@ -465,8 +467,8 @@ html = html + "function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&l
 html = html + "var isDirty = false; var currentFile = ''; var fileEncoding = 'UTF-8'; var lineEnding = 'LF';"
 html = html + "function setDirty(v) { isDirty = v; updateTitle(); }"
 html = html + "function updateTitle() {"
-html = html + "  var fn = document.getElementById('filename');"
-html = html + "  fn.textContent = (currentFile || '未命名.sf') + (isDirty ? ' ●' : '');"
+html = html + "  var name = (currentFile || '未命名.sf') + (isDirty ? ' ●' : '');"
+html = html + "  window.ipc.postMessage('SETTITLE' + String.fromCharCode(10) + name);"
 html = html + "}"
 
 html = html + "function updateGutter() {"
