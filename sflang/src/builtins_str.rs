@@ -644,8 +644,9 @@ fn bi_str_replace(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_split 按分隔符切分为字符串数组。
 fn bi_split(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let src = bh::as_str(args, 0, "split")?;
-    let sep = bh::as_str(args, 1, "split")?;
+    // strSplit(sep, s)：按分隔符 sep 分割字符串 s
+    let sep = bh::as_str(args, 0, "strSplit")?;
+    let src = bh::as_str(args, 1, "strSplit")?;
     let parts: Vec<Value> = if sep.is_empty() {
         // 空分隔符：按字符切分
         src.chars().map(|c| Value::str_from(c.to_string())).collect()

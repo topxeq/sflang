@@ -1629,7 +1629,8 @@ fn test_str_find_contains() {
 #[test]
 fn test_str_replace_split_join() {
     assert_eq!(eval("return strReplace(\"a-b-c\", \"-\", \"+\")"), Value::str("a+b+c"));
-    let r = eval("return strJoin(strSplit(\"a,b,c\", \",\"), \"-\")");
+    // strSplit(sep, s)：按分隔符 sep 分割字符串 s
+    let r = eval("return strJoin(strSplit(\",\", \"a,b,c\"), \"-\")");
     assert_eq!(r, Value::str("a-b-c"));
 }
 
