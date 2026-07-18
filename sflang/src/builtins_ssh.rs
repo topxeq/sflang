@@ -330,6 +330,24 @@ static DOC_SSH_JOIN_PATH: BuiltinDoc = BuiltinDoc {
     ],
 };
 
+static DOC_SSH_LIST_DETAIL: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshListDetail(--host=..., --user=..., --password=..., --remotePath=...) -> array<map>",
+    summary: "列出远程目录内容（含元信息：名称/大小/类型/修改时间）。SSH 文件浏览器使用。",
+    params: &[
+        ("--host", "SSH 主机地址"),
+        ("--user", "用户名"),
+        ("--password", "密码（或 --key 密钥路径）"),
+        ("--remotePath", "远程目录路径，默认 /"),
+        ("--port", "可选。端口，默认 22"),
+    ],
+    returns: "array<map{name,size,isDir,isFile,isSymlink,mtime}>；失败返回 error",
+    examples: &[
+        "var items = sshListDetail(\"--host=1.2.3.4\", \"--user=root\", \"--password=x\", \"--remotePath=/etc\")",
+    ],
+    errors: &["连接失败或目录不存在返回 error"],
+};
+
 pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("sshRun", bi_ssh_run, &DOC_SSH_RUN);
     vm.register_builtin_doc("sshList", bi_ssh_list, &DOC_SSH_LIST);
@@ -346,6 +364,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("sshGetFileInfo", bi_ssh_get_file_info, &DOC_SSH_GET_FILE_INFO);
     vm.register_builtin_doc("sshEnsureMakeDirs", bi_ssh_ensure_make_dirs, &DOC_SSH_ENSURE_MAKE_DIRS);
     vm.register_builtin_doc("sshJoinPath", bi_ssh_join_path, &DOC_SSH_JOIN_PATH);
+    vm.register_builtin_doc("sshListDetail", bi_ssh_list_detail, &DOC_SSH_LIST_DETAIL);
 }
 
 fn get_switch(args: &[Value], key: &str, default: &str) -> String {
@@ -521,6 +540,49 @@ fn bi_ssh_list(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }) {
         Ok(files) => {
             let result: Vec<Value> = files.into_iter().map(Value::str_from).collect();
+            Ok(Value::Array(Arc::new(std::sync::Mutex::new(result))))
+        }
+        Err(e) => Ok(crate::value::error_value(e)),
+    }
+}
+
+/// bi_ssh_list_detail 列出远程目录内容（含元信息）。
+///
+/// 用法：sshListDetail("--host=x", "--user=y", "--password=z", "--remotePath=/etc")
+/// 返回 array<map{name, size, isDir, isFile, isSymlink, mtime}>
+fn bi_ssh_list_detail(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ssh_params(args)?;
+    let remote_path = get_switch(args, "remotePath", "/");
+
+    match do_ssh(&params, |handle| async move {
+        let sftp = sftp_open(&handle).await?;
+        let mut entries: Vec<(String, u64, bool, bool, bool, i64)> = Vec::new();
+        let dir = sftp.read_dir(&remote_path).await
+            .map_err(|e| format!("SFTP 读取目录失败: {}", e))?;
+        for entry in dir {
+            let name = entry.file_name();
+            let meta = entry.metadata();
+            let is_dir = meta.file_type().is_dir();
+            let is_file = meta.file_type().is_file();
+            let is_symlink = meta.file_type().is_symlink();
+            let size = meta.size.unwrap_or(0);
+            let mtime = meta.mtime.unwrap_or(0) as i64;
+            entries.push((name, size, is_dir, is_file, is_symlink, mtime));
+        }
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        Ok::<Vec<(String, u64, bool, bool, bool, i64)>, String>(entries)
+    }) {
+        Ok(items) => {
+            let result: Vec<Value> = items.into_iter().map(|(name, size, is_dir, is_file, is_symlink, mtime)| {
+                let mut m = crate::ord_map::OrdMap::new();
+                m.set("name".to_string(), Value::str_from(name));
+                m.set("size".to_string(), Value::Int(size as i64));
+                m.set("isDir".to_string(), Value::Bool(is_dir));
+                m.set("isFile".to_string(), Value::Bool(is_file));
+                m.set("isSymlink".to_string(), Value::Bool(is_symlink));
+                m.set("mtime".to_string(), Value::Int(mtime));
+                Value::Map(Arc::new(std::sync::Mutex::new(m)))
+            }).collect();
             Ok(Value::Array(Arc::new(std::sync::Mutex::new(result))))
         }
         Err(e) => Ok(crate::value::error_value(e)),

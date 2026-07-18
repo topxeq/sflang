@@ -398,6 +398,31 @@ fn bi_gui_show(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             }
         }
 
+        // 检查后台异步任务结果，通过 guiEval 回调通知前端
+        let async_results = crate::builtins_async::drain_async_results();
+        if !async_results.is_empty() {
+            for r in async_results {
+                // 构造 JS 回调：window.onAsyncResult(id, result, isError)
+                let val_str = if r.is_error {
+                    format!("\"{}\"", r.result.to_str().replace('\\', "\\\\").replace('"', "\\\""))
+                } else {
+                    match &r.result {
+                        Value::Str(s) => format!("\"{}\"", s.to_string().replace('\\', "\\\\").replace('"', "\\\"")),
+                        Value::Int(n) => n.to_string(),
+                        Value::Float(f) => f.to_string(),
+                        Value::Bool(b) => b.to_string(),
+                        Value::Undefined => "undefined".to_string(),
+                        _ => format!("\"{}\"", r.result.to_str().replace('\\', "\\\\").replace('"', "\\\"")),
+                    }
+                };
+                let js = format!(
+                    "if(window.onAsyncResult)window.onAsyncResult({},{},{});",
+                    r.id, val_str, r.is_error
+                );
+                let _ = webview.evaluate_script(&js);
+            }
+        }
+
         match event {
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
