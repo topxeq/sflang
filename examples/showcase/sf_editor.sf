@@ -100,11 +100,12 @@ func onMessage(msg) {
             if fileExists(path) {
                 var rawBytes = readFileBytes(path)
                 var detectedEnc = "UTF-8"
+                var content = ""
                 if !isUtf8(rawBytes) {
                     detectedEnc = "GBK"
-                    var content = bytesGbToUtf8Str(rawBytes)
+                    content = bytesGbToUtf8Str(rawBytes)
                 } else {
-                    var content = strFromBytes(rawBytes)
+                    content = strFromBytes(rawBytes)
                 }
                 var detectedLE = "LF"
                 if strContains(content, "\r\n") {
