@@ -233,11 +233,12 @@ func onMessage(msg) {
         guiSetTitle(win, data)
     }
     elif op == "HELPDLG" {
-        var helpText = "Sflang 代码编辑器 - 帮助\n\n快捷键:\n  F5    运行（子进程，完整输出）\n  F6    快速求值（进程内，返回值）\n  F7    CMD窗口运行\n  Ctrl+N  新建\n  Ctrl+O  打开\n  Ctrl+S  保存\n  Ctrl+Shift+S 另存为\n  Tab   缩进4空格\n\n状态栏:\n  点击 UTF-8 切换编码（UTF-8/GBK）\n  点击 LF 切换换行符（LF/CRLF）\n\n更多帮助: sf --help / help() 内置函数"
-        msgBox(helpText, "帮助", "info")
+        var helpMd = "# Sflang 代码编辑器\n\n## 快捷键\n\n| 按键 | 功能 |\n|------|------|\n| F5 | 运行（子进程，完整输出）|\n| F6 | 快速求值（进程内，返回值）|\n| F7 | CMD窗口运行 |\n| Ctrl+N | 新建 |\n| Ctrl+O | 打开 |\n| Ctrl+S | 保存 |\n| Ctrl+Shift+S | 另存为 |\n| Tab | 缩进4空格 |\n\n## 状态栏\n\n- 点击 **UTF-8** 切换编码（UTF-8/GBK）\n- 点击 **LF** 切换换行符（LF/CRLF）\n\n## 更多帮助\n\n- 命令行：`sf --help`\n- 脚本内：`help()` 内置函数\n- 内置函数列表：`sf --list-builtins`\n"
+        var helpHtml = renderMarkdown(helpMd)
+        guiEval(win, "showHelpDialog('" + escapeJS(helpHtml) + "')")
     }
     elif op == "ABOUTDLG" {
-        msgBox("Sflang 代码编辑器\n版本: 1.0\n语言: Sflang\n仓库: github.com/topxeq/sflang\n用 Sflang 自身编写", "关于", "info")
+        guiEval(win, "showAboutDialog()")
     }
     elif op == "TPL" {
         // 从 base64 内嵌数据解码模板（不依赖外部文件）
@@ -748,6 +749,44 @@ html = html + "}"
 html = html + "function doAbout() {"
 html = html + "  document.getElementById('moreMenu').style.display = 'none';"
 html = html + "  window.ipc.postMessage('ABOUTDLG');"
+html = html + "}"
+
+// 帮助对话框（Markdown→HTML 渲染）
+html = html + "function showHelpDialog(html) {"
+html = html + "  var overlay = document.createElement('div');"
+html = html + "  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:1000;display:flex;align-items:center;justify-content:center;';"
+html = html + "  var dlg = document.createElement('div');"
+html = html + "  dlg.style.cssText = 'background:#252526;color:#d4d4d4;border:1px solid #505050;border-radius:8px;padding:24px 32px;max-width:600px;max-height:80vh;overflow:auto;font-size:14px;line-height:1.6;box-shadow:0 8px 32px rgba(0,0,0,0.5);';"
+html = html + "  dlg.innerHTML = html;"
+html = html + "  var btn = document.createElement('button');"
+html = html + "  btn.textContent = '关闭';"
+html = html + "  btn.style.cssText = 'margin-top:16px;padding:6px 24px;background:#0e639c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:14px;';"
+html = html + "  btn.onclick = function() { document.body.removeChild(overlay); };"
+html = html + "  dlg.appendChild(btn);"
+html = html + "  overlay.appendChild(dlg);"
+html = html + "  overlay.onclick = function(e) { if (e.target == overlay) document.body.removeChild(overlay); };"
+html = html + "  document.body.appendChild(overlay);"
+html = html + "}"
+
+// 关于对话框
+html = html + "function showAboutDialog() {"
+html = html + "  var overlay = document.createElement('div');"
+html = html + "  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:1000;display:flex;align-items:center;justify-content:center;';"
+html = html + "  var dlg = document.createElement('div');"
+html = html + "  dlg.style.cssText = 'background:#252526;color:#d4d4d4;border:1px solid #505050;border-radius:8px;padding:32px 48px;text-align:center;font-size:14px;line-height:1.8;box-shadow:0 8px 32px rgba(0,0,0,0.5);';"
+html = html + "  dlg.innerHTML = '<div style=\"font-size:20px;font-weight:bold;margin-bottom:12px;color:#4ec9b0;\">Sflang 代码编辑器</div>';"
+html = html + "  dlg.innerHTML += '<div>版本: 1.0</div>';"
+html = html + "  dlg.innerHTML += '<div>语言: <span style=\"color:#569cd6;\">Sflang</span></div>';"
+html = html + "  dlg.innerHTML += '<div style=\"color:#888;font-size:12px;margin-top:8px;\">github.com/topxeq/sflang</div>';"
+html = html + "  dlg.innerHTML += '<div style=\"color:#888;font-size:12px;\">用 Sflang 自身编写</div>';"
+html = html + "  var btn = document.createElement('button');"
+html = html + "  btn.textContent = '确定';"
+html = html + "  btn.style.cssText = 'margin-top:16px;padding:6px 24px;background:#0e639c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:14px;';"
+html = html + "  btn.onclick = function() { document.body.removeChild(overlay); };"
+html = html + "  dlg.appendChild(btn);"
+html = html + "  overlay.appendChild(dlg);"
+html = html + "  overlay.onclick = function(e) { if (e.target == overlay) document.body.removeChild(overlay); };"
+html = html + "  document.body.appendChild(overlay);"
 html = html + "}"
 
 html = html + "var TEMPLATES = {};"
