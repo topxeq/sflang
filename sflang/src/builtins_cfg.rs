@@ -2,7 +2,7 @@
 //!
 //! 设计要点：
 //!   - 配置存储在用户目录下的 JSON 文件中（跨平台）
-//!   - 路径：~/.sflang/config.json（或 Windows %USERPROFILE%\.sflang\config.json）
+//!   - 路径：~/.sf/config.json（或 Windows %USERPROFILE%\.sf\config.json）
 //!   - 首次调用自动创建目录和文件
 //!   - 纯标准库实现，复用 jsonEncode/jsonDecode
 //!
@@ -77,9 +77,11 @@ fn config_lock() -> &'static Mutex<crate::ord_map::OrdMap> {
 }
 
 /// config_path 返回配置文件路径。
+///
+/// 配置目录为用户主目录下的 `.sf`（与 `--cloud` 的 cloud.cfg 等共用同一目录）。
 fn config_path() -> std::path::PathBuf {
     let home = dirs_home().unwrap_or_else(|| std::path::PathBuf::from("."));
-    let cfg_dir = home.join(".sflang");
+    let cfg_dir = home.join(".sf");
     cfg_dir.join("config.json")
 }
 
@@ -91,36 +93,71 @@ fn dirs_home() -> Option<std::path::PathBuf> {
 }
 
 /// load_config 从磁盘加载配置文件。
+///
+/// 健壮性：如果 JSON 解析失败（旧版本用 Value::to_str 写入的 "map{...}"
+/// 调试格式），尝试自动修复（把 map{ 替换为 {）后重新解析。
 fn load_config() -> crate::ord_map::OrdMap {
     let path = config_path();
     match std::fs::read_to_string(&path) {
         Ok(content) => {
-            let mut dec = crate::builtins_json::Decoder::new(&content);
-            match dec.parse_value() {
-                Ok(Value::Object(m)) => {
-                    let guard = m.lock().unwrap();
-                    let mut om = crate::ord_map::OrdMap::new();
-                    for (k, v) in guard.data.iter() {
-                        om.set(k.clone(), v.clone());
-                    }
-                    om
-                }
-                Ok(Value::Map(m)) => {
-                    let guard = m.lock().unwrap();
-                    let mut om = crate::ord_map::OrdMap::new();
-                    for (k, v) in guard.entries.iter() {
-                        om.set(k.clone(), v.clone());
-                    }
-                    om
-                }
-                _ => crate::ord_map::OrdMap::new(),
+            // 第一次尝试：直接解析
+            if let Some(om) = parse_json_to_ordmap(&content) {
+                return om;
             }
+            // 第二次尝试：兼容旧版本的 "map{...}" 调试格式
+            // 旧版 save_config 用 Value::to_str 输出，嵌套 Map 显示为 map{...}
+            let fixed: String = content.replace("map{", "{");
+            if let Some(om) = parse_json_to_ordmap(&fixed) {
+                // 自动修复成功，立即重写为合法 JSON
+                let map = new_map();
+                {
+                    let mut guard = map.lock().unwrap();
+                    for (k, v) in om.entries.iter() {
+                        guard.set(k.clone(), v.clone());
+                    }
+                }
+                let mut json = String::new();
+                crate::builtins_json::encode_value(&Value::Object(map), &mut json);
+                let _ = std::fs::write(&path, json);
+                return om;
+            }
+            // 都失败：返回空配置（不报错，避免阻塞用户）
+            crate::ord_map::OrdMap::new()
         }
         Err(_) => crate::ord_map::OrdMap::new(),
     }
 }
 
+/// parse_json_to_ordmap 把 JSON 字符串解析为 OrdMap。
+/// 解析失败返回 None（不报错，让调用方决定如何处理）。
+fn parse_json_to_ordmap(content: &str) -> Option<crate::ord_map::OrdMap> {
+    let mut dec = crate::builtins_json::Decoder::new(content);
+    match dec.parse_value() {
+        Ok(Value::Object(m)) => {
+            let guard = m.lock().unwrap();
+            let mut om = crate::ord_map::OrdMap::new();
+            for (k, v) in guard.data.iter() {
+                om.set(k.clone(), v.clone());
+            }
+            Some(om)
+        }
+        Ok(Value::Map(m)) => {
+            let guard = m.lock().unwrap();
+            let mut om = crate::ord_map::OrdMap::new();
+            for (k, v) in guard.entries.iter() {
+                om.set(k.clone(), v.clone());
+            }
+            Some(om)
+        }
+        _ => None,
+    }
+}
+
 /// save_config 保存配置到磁盘。
+///
+/// 重要：必须用 jsonEncode（encode_value）序列化，不能用 Value::to_str。
+/// to_str 输出的是 Sflang 调试格式（嵌套 Map 显示为 "map{...}"），
+/// 不是合法 JSON，load_config 解析会失败（整个配置读不到）。
 fn save_config(cfg: &crate::ord_map::OrdMap) -> Result<(), Value> {
     let path = config_path();
     if let Some(parent) = path.parent() {
@@ -133,7 +170,9 @@ fn save_config(cfg: &crate::ord_map::OrdMap) -> Result<(), Value> {
             guard.set(k.clone(), v.clone());
         }
     }
-    let json = Value::Object(map).to_str();
+    // 用 JSON 编码器输出合法 JSON（避免调试格式的 "map{...}"）
+    let mut json = String::new();
+    crate::builtins_json::encode_value(&Value::Object(map), &mut json);
     std::fs::write(&path, json).map_err(|e| error_value(format!(
         "setCfgStr() 写入配置文件失败: {} (可能原因：目录无写权限或磁盘已满)", e,
     )))?;

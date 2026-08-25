@@ -1,0 +1,86 @@
+// ip.sf — Sflang IP 反馈微服务（CLI 服务器模式）
+//
+// 部署：放到脚本目录下，访问 http://host/ip.sf
+//   sf -server --dir=<脚本目录> [--certDir=<证书目录>]
+//
+// 功能：返回客户端真实 IP，三种格式任选（?fmt=json|text|html，默认 json）。
+//
+// 取 IP 策略（兼顾直连与反代两种部署）：
+//   1. 优先读代理头 X-Forwarded-For（反代场景，nginx 等转发），
+//      取第一个逗号前的地址（可能是 "client, proxy1, proxy2" 链）；
+//   2. 其次读 X-Real-IP（部分反代只设这个头）；
+//   3. 最后回退到 TCP 对端 IP getReqField(req, "remoteAddr")（直连场景）。
+//
+// 配合 nginx 时建议：
+//   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+//   proxy_set_header X-Real-IP       $remote_addr;
+
+// 取客户端真实 IP：反代优先，直连兜底。
+// remoteIpT(req) -> string  返回 IP 字符串，取不到时为空。
+func remoteIpT(reqA) {
+    // 1. X-Forwarded-For（链式，取第一个）
+    xffT := getReqHeader(reqA, "X-Forwarded-For")
+    if xffT != undefined && xffT != "" {
+        // 形如 "203.0.113.5, 10.0.0.1"，取首个并去空白
+        // strSplit(src, sep)：源串在前，分隔符在后
+        partsT := strSplit(xffT, ",")
+        if len(partsT) > 0 {
+            ipT := trim(partsT[0])
+            if ipT != "" {
+                return ipT
+            }
+        }
+    }
+
+    // 2. X-Real-IP
+    xriT := getReqHeader(reqA, "X-Real-IP")
+    if xriT != undefined && xriT != "" {
+        ipT := trim(xriT)
+        if ipT != "" {
+            return ipT
+        }
+    }
+
+    // 3. TCP 对端 IP（直连场景；CLI 服务器 accept 时取得）
+    return getReqField(reqA, "remoteAddr")
+}
+
+// 解析查询参数 fmt=json|text|html（默认 json）
+func pickFmtT() {
+    fmtT := getReqParam(requestG, "fmt")
+    if fmtT == undefined || fmtT == "" {
+        return "json"
+    }
+    return fmtT
+}
+
+ipT := remoteIpT(requestG)
+fmtT := pickFmtT()
+
+if fmtT == "text" {
+    // 纯文本：只输出 IP，方便 curl/脚本消费
+    setRespHeader(responseG, "Content-Type", "text/plain; charset=utf-8")
+    return ipT
+}
+
+if fmtT == "html" {
+    // HTML：浏览器可直接查看
+    setRespHeader(responseG, "Content-Type", "text/html; charset=utf-8")
+    htmlT := `<html><head><meta charset="utf-8"><title>IP</title></head>
+<body style="font-family:sans-serif;text-align:center;margin-top:80px;">
+<h1>` + ipT + `</h1>
+<p>method=` + reqMethodG + ` path=` + reqPathG + `</p>
+</body></html>`
+    return htmlT
+}
+
+// 默认 json：结构化返回，附带来源说明，便于调试
+setRespHeader(responseG, "Content-Type", "application/json; charset=utf-8")
+return jsonEncode({
+    "ip": ipT,
+    "method": reqMethodG,
+    "path": reqPathG,
+    "uri": reqUriG,
+    "source": "X-Forwarded-For/X-Real-IP/remoteAddr",
+    "time": toStr(now())
+})

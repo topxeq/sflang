@@ -12,5 +12,15 @@ description = "Sflang language interpreter CLI"
 name = "sf"
 path = "src/main.rs"
 
+[features]
+# 默认开启 GUI（保持 Windows 桌面环境下的现有行为）。
+# 交叉编译到无 GUI 系统库的目标（如 Linux 服务器）时，
+# 用 --no-default-features 关闭 GUI，可避免 webkit2gtk 等系统依赖。
+default = ["gui"]
+# GUI 支持，转发到 sflang 的同名 feature。
+gui = ["sflang/gui"]
+
 [dependencies]
-sflang = { path = "../sflang" }
+# default-features = false 让 sf 的 feature 直接控制 sflang 的 feature，
+# 避免 sflang 的 default 被隐式启用（Cargo 的 feature 联合会绕过 --no-default-features）。
+sflang = { path = "../sflang", default-features = false }

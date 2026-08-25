@@ -10,6 +10,7 @@
 //!   hmacSha256(k,m) — HMAC-SHA256（32 字节 → bytes）
 //!   hmacSha256Hex(k,m) — HMAC-SHA256 的十六进制字符串
 //!   getOtpCode(secret, timestamp?) — 生成 TOTP 6 位验证码
+//!   genOtpCode(secret, timestamp?) — getOtpCode 的 Charlang 兼容别名
 //!   checkOtpCode(secret, code, timestamp?) — 验证 TOTP 码
 
 use std::sync::Arc;
@@ -146,6 +147,25 @@ static DOC_GET_OTP_CODE: BuiltinDoc = BuiltinDoc {
     ],
 };
 
+static DOC_GEN_OTP_CODE: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "genOtpCode(secret, timestamp?) -> string",
+    summary: "getOtpCode 的 Charlang 兼容别名：生成 TOTP（RFC 6238）6 位验证码。",
+    params: &[
+        ("secret", "Base32 编码的密钥字符串（字母表 A-Z, 2-7）"),
+        ("timestamp", "可选 int：Unix 秒；省略则用当前系统时间"),
+    ],
+    returns: "string：6 位数字验证码（左侧补零）",
+    examples: &[
+        "genOtpCode(`JBSWY3DPEHPK3PXP`)            → 用当前时间的 6 位码",
+        "genOtpCode(\"JBSWY3DPEHPK3PXP\", 1234567890) → 固定 6 位码",
+    ],
+    errors: &[
+        "secret 必须是合法 Base32（A-Z, 2-7），空格和 = 填充会被忽略",
+        "解码后密钥为空时返回 error",
+    ],
+};
+
 static DOC_CHECK_OTP_CODE: BuiltinDoc = BuiltinDoc {
     category: "hash",
     signature: "checkOtpCode(secret, code, timestamp?) -> bool",
@@ -175,6 +195,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("hmacSha256", bi_hmac_sha256, &DOC_HMAC_SHA256);
     vm.register_builtin_doc("hmacSha256Hex", bi_hmac_sha256_hex, &DOC_HMAC_SHA256_HEX);
     vm.register_builtin_doc("getOtpCode", bi_get_otp_code, &DOC_GET_OTP_CODE);
+    vm.register_builtin_doc("genOtpCode", bi_get_otp_code, &DOC_GEN_OTP_CODE); // Charlang 兼容别名
     vm.register_builtin_doc("checkOtpCode", bi_check_otp_code, &DOC_CHECK_OTP_CODE);
 }
 

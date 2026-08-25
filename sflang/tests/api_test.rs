@@ -1003,6 +1003,18 @@ fn test_hash_builtins() {
     assert!(eval("return md5(\"abc\")").type_name() == "bytes".to_string());
     assert_eq!(eval("return len(sha256(\"abc\"))"), Value::Int(32));  // 32 字节
     assert_eq!(eval("return len(md5(\"abc\"))"), Value::Int(16));     // 16 字节
+    // TOTP（RFC 6238，SHA1/6位/30秒）标准向量：secret "12345678901234567890" 的 Base32
+    //   T=59s         → 8 位 94287082 → 6 位 287082
+    //   T=1111111109s → 8 位 07081804 → 6 位 081804
+    assert_eq!(eval("return getOtpCode(\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\", 59)"), Value::str("287082"));
+    assert_eq!(eval("return genOtpCode(\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\", 59)"), Value::str("287082"));
+    assert_eq!(eval("return genOtpCode(\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\", 1111111109)"), Value::str("081804"));
+    // 别名与原名一致；checkOtpCode 验证往返
+    assert_eq!(eval("return genOtpCode(\"JBSWY3DPEHPK3PXP\", 1234567890)"), eval("return getOtpCode(\"JBSWY3DPEHPK3PXP\", 1234567890)"));
+    assert_eq!(eval("return checkOtpCode(\"JBSWY3DPEHPK3PXP\", genOtpCode(\"JBSWY3DPEHPK3PXP\", 1234567890), 1234567890)"), Value::Bool(true));
+    assert_eq!(eval("return checkOtpCode(\"JBSWY3DPEHPK3PXP\", \"000000\", 1234567890)"), Value::Bool(false));
+    // 6 位左侧补零
+    assert_eq!(eval("return len(genOtpCode(\"JBSWY3DPEHPK3PXP\", 1234567890))"), Value::Int(6));
 }
 
 #[test]
@@ -1629,8 +1641,8 @@ fn test_str_find_contains() {
 #[test]
 fn test_str_replace_split_join() {
     assert_eq!(eval("return strReplace(\"a-b-c\", \"-\", \"+\")"), Value::str("a+b+c"));
-    // strSplit(sep, s)：按分隔符 sep 分割字符串 s
-    let r = eval("return strJoin(strSplit(\",\", \"a,b,c\"), \"-\")");
+    // strSplit(s, sep)：按分隔符 sep 分割字符串 s（源串在前）
+    let r = eval("return strJoin(strSplit(\"a,b,c\", \",\"), \"-\")");
     assert_eq!(r, Value::str("a-b-c"));
 }
 

@@ -10,6 +10,8 @@ Sflang 是一种轻量级、快速的脚本语言，用 Rust 实现，采用字�
 sf                       # 启动 REPL
 sf script.sf             # 执行脚本
 sf -e "println(\"hi\")"  # 执行代码
+sf --remote <url>        # 从 URL 下载并执行脚本
+sf --cloud basic.sf      # 从云端执行脚本（基础 URL 配置于 ~/.sf/cloud.cfg）
 sf -h                    # 帮助
 ```
 
@@ -880,7 +882,7 @@ sf --list-builtins math     # 筛选 math 分类
 | containers | 12 | stack（push/pop/peek/len/clear）+ queue（同） |
 | string | 12 | strToUpper/strSplit/strReplace/strSub/strTrim/strJoin/strFind ... |
 | ring | 11 | 环形缓冲（push/pop/get/set/insert/remove/size/clear/toList） |
-| hash | 10 | md5/sha1/sha256/hmacSha256/getOtpCode/checkOtpCode ... |
+| hash | 11 | md5/sha1/sha256/hmacSha256/getOtpCode/genOtpCode/checkOtpCode ... |
 | encode | 10 | base64/url/html 编解码全套 |
 | datetime | 10 | now/datetime/dtFormat/dtAddDays/runTicker/formatTime ... |
 | math | 10 | abs/floor/ceil/round/sqrt/pow/min/max/random/randInt |

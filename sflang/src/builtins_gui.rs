@@ -196,6 +196,16 @@ pub fn register(vm: &mut VM) {
 /// 用 usize 避免 Send 约束。安全性：guiShow 是同步阻塞的。
 static GUI_VM: Mutex<usize> = Mutex::new(0);
 
+/// 上一次应用到窗口的标题（用于事件循环检测 title 变化）。
+/// bi_gui_set_title 只改 GuiWindow.title 字段，事件循环在 MainEventsCleared
+/// 阶段对比此字段与当前 title，发现不同才调 window.set_title 真正生效。
+static LAST_APPLIED_TITLE: std::sync::OnceLock<Mutex<String>> = std::sync::OnceLock::new();
+
+/// last_applied_title 取全局引用（首次访问时初始化为空串）。
+fn last_applied_title() -> &'static Mutex<String> {
+    LAST_APPLIED_TITLE.get_or_init(|| Mutex::new(String::new()))
+}
+
 /// get_switch 从参数列表中解析 --key=value 格式的开关。
 fn get_switch(args: &[Value], key: &str, default: &str) -> String {
     let prefix = format!("--{}=", key);
@@ -398,26 +408,65 @@ fn bi_gui_show(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             }
         }
 
+        // 标题栏更新：仅在 MainEventsCleared 阶段处理，避免事件重入风险。
+        // 用静态变量记录"上次应用的标题"，与 GuiWindow.title 对比检测变化。
+        // bi_gui_set_title 只改字段，由这里真正调用 window.set_title。
+        if matches!(event, tao::event::Event::MainEventsCleared) {
+            let new_title: Option<String> = {
+                let g = win_arc.lock().unwrap();
+                let last = last_applied_title().lock().unwrap();
+                if *last != g.title {
+                    Some(g.title.clone())
+                } else {
+                    None
+                }
+            };
+            if let Some(t) = new_title {
+                let _ = window.set_title(&t);
+                *last_applied_title().lock().unwrap() = t;
+            }
+        }
+
         // 检查后台异步任务结果，通过 guiEval 回调通知前端
         let async_results = crate::builtins_async::drain_async_results();
         if !async_results.is_empty() {
             for r in async_results {
-                // 构造 JS 回调：window.onAsyncResult(id, result, isError)
-                let val_str = if r.is_error {
-                    format!("\"{}\"", r.result.to_str().replace('\\', "\\\\").replace('"', "\\\""))
-                } else {
-                    match &r.result {
-                        Value::Str(s) => format!("\"{}\"", s.to_string().replace('\\', "\\\\").replace('"', "\\\"")),
-                        Value::Int(n) => n.to_string(),
-                        Value::Float(f) => f.to_string(),
-                        Value::Bool(b) => b.to_string(),
-                        Value::Undefined => "undefined".to_string(),
-                        _ => format!("\"{}\"", r.result.to_str().replace('\\', "\\\\").replace('"', "\\\"")),
-                    }
-                };
+                // 构造 JS 回调：window.onAsyncResult(id, resultJson, isError)
+                //
+                // 用 json_encode_value 统一序列化：
+                //   - 字符串：JSON 字符串字面量（前端得 string）
+                //   - 数组/Map/Object：JSON 字面量（前端得 array/object，无需 parse）
+                //   - int/float/bool：JSON 字面量
+                //   - error：JSON 字符串（携带错误消息，前端 isError=true 已标识）
+                //   - undefined：JSON null
+                let val_str = json_encode_value(&r.result);
                 let js = format!(
                     "if(window.onAsyncResult)window.onAsyncResult({},{},{});",
                     r.id, val_str, r.is_error
+                );
+                let _ = webview.evaluate_script(&js);
+            }
+        }
+
+        // 检查流式事件（SSH PTY 等持续数据流），通过 window.onStreamData 推送前端
+        //
+        // 与 async_results 不同：stream events 是同一 stream_id 的多次推送，
+        // 适配 PTY 长连接场景。kind 数字编码：
+        //   0=Data（普通数据片段）, 1=Eof（正常结束）, 2=Error（异常）, 3=Exit（进程退出）
+        // extra 字段：Exit 时是退出码，其他是 0。
+        let stream_events = crate::builtins_async::drain_stream_events();
+        if !stream_events.is_empty() {
+            for e in stream_events {
+                let data_js = json_encode_value(&e.data);
+                let (kind_num, extra): (u32, u32) = match e.kind {
+                    crate::builtins_async::StreamKind::Data => (0, 0),
+                    crate::builtins_async::StreamKind::Eof => (1, 0),
+                    crate::builtins_async::StreamKind::Error => (2, 0),
+                    crate::builtins_async::StreamKind::Exit(code) => (3, code),
+                };
+                let js = format!(
+                    "if(window.onStreamData)window.onStreamData({},{},{},{});",
+                    e.stream_id, data_js, kind_num, extra
                 );
                 let _ = webview.evaluate_script(&js);
             }
@@ -441,4 +490,50 @@ fn bi_gui_show(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     })
     // event_loop.run() 的签名为 -> !，不会返回
     // GUI_VM 指针的清理由进程退出时自动完成
+}
+
+/// json_encode_value 将 Value 序列化为 JSON 字面量字符串（用于嵌入 JS）。
+///
+/// 用于 `window.onAsyncResult(id, resultJson, isError)` 回调，让前端可直接
+/// 使用结果（无需 JSON.parse：字符串就是 JS 字符串，数组就是 JS 数组等）。
+///
+/// - Str → JSON 字符串字面量（保留原始字符）
+/// - Int/Float/Bool → JSON 数字/布尔字面量
+/// - Undefined → JSON `null`
+/// - Array/Map/Object → JSON 数组/对象（用 builtins_json::encode_value）
+/// - Error → JSON 字符串（错误描述，不含"error:"前缀）
+/// - Bytes/ByteArray/Function/其他 → JSON 字符串（to_str 内容）
+fn json_encode_value(v: &Value) -> String {
+    match v {
+        Value::Str(_) | Value::Array(_) | Value::Map(_) | Value::Object(_) => {
+            let mut out = String::new();
+            crate::builtins_json::encode_value(v, &mut out);
+            out
+        }
+        Value::Int(n) => n.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Undefined => "null".to_string(),
+        Value::Error(e) => json_string_literal(&e.message),
+        _ => json_string_literal(&v.to_str()),
+    }
+}
+
+/// json_string_literal 把任意字符串包装为合法 JSON 字符串字面量。
+fn json_string_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }

@@ -176,6 +176,25 @@ static DOC_GET_REQ_QUERY: BuiltinDoc = BuiltinDoc {
     errors: &["getReqQuery() 参数不是请求对象"],
 };
 
+static DOC_GET_REQ_FIELD: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "getReqField(req, fieldName) -> string",
+    summary: "读取请求的任意字段（通用键值）。支持 method/path/uri/query/remoteAddr/body；HTTP 头请用 getReqHeader。",
+    params: &[
+        ("req", "handler 中的请求对象"),
+        ("fieldName", "字段名（大小写不敏感）：method/path/uri/query/remoteAddr/body"),
+    ],
+    returns: "string 字段值，取不到时为空串",
+    examples: &[
+        "ip := getReqField(req, \"remoteAddr\")  // 直连取 TCP 对端 IP（客户端真实 IP）",
+        "ip := getReqHeader(req, \"X-Forwarded-For\")  // 反代取真实 IP",
+        "m := getReqField(req, \"method\")  // \"GET\"/\"POST\"...",
+    ],
+    errors: &[
+        "getReqField() 参数不是请求对象 / 字段名非字符串 / 未知字段名",
+    ],
+};
+
 static DOC_GET_REQ_HEADER: BuiltinDoc = BuiltinDoc {
     category: "http",
     signature: "getReqHeader(req, name) -> string|undefined",
@@ -604,49 +623,57 @@ static DOC_SAVE_FILE_UPLOADS: BuiltinDoc = BuiltinDoc {
 
 static DOC_GET_WEB: BuiltinDoc = BuiltinDoc {
     category: "http",
-    signature: "getWeb(url [, \"--timeout=N\", \"Header: value\"]) -> string",
+    signature: "getWeb(url [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"Header: value\"]) -> string",
     summary: "发送 HTTP GET，返回响应体字符串。",
     params: &[
         ("url", "目标 URL"),
         ("--timeout", "可选超时秒数，默认 30"),
+        ("--proxy", "可选代理 URL，如 http://host:port 或 socks5://host:port"),
+        ("--retry", "可选重试次数，默认 0 不重试；仅在网络错误/超时/5xx/429 上重试，指数退避"),
         ("header", "可选附加 header，如 \"Content-Type: json\"；支持多行或多参数"),
     ],
     returns: "string 响应体（失败时返回 error 对象）",
     examples: &[
         "body := getWeb(\"https://example.com\")  // 简单 GET",
         "body := getWeb(\"https://api.x.com\", \"--timeout=10\", \"Authorization: Bearer xxx\")  // 带超时和 header",
+        "body := getWeb(\"https://example.com\", \"--proxy=http://127.0.0.1:7890\")  // 通过代理",
+        "body := getWeb(\"https://flaky.api.com\", \"--retry=3\")  // 失败自动重试 3 次",
     ],
     errors: &[
         "getWeb() 第 1 个参数应为 string (URL)",
-        "getWeb() 请求失败（可能原因：URL 格式错误、网络不通、DNS 解析失败、服务器超时）",
+        "getWeb() 请求失败（可能原因：URL 格式错误、网络不通、DNS 解析失败、TLS 证书验证失败、代理配置错误、服务器超时）",
     ],
 };
 
 static DOC_GET_WEB_BYTES: BuiltinDoc = BuiltinDoc {
     category: "http",
-    signature: "getWebBytes(url [, \"--timeout=N\", \"Header: value\"]) -> bytes",
+    signature: "getWebBytes(url [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"Header: value\"]) -> bytes",
     summary: "发送 HTTP GET，返回响应体原始字节（适合二进制内容如图片、压缩包）。",
     params: &[
         ("url", "目标 URL"),
         ("--timeout", "可选超时秒数，默认 30"),
+        ("--proxy", "可选代理 URL，如 http://host:port 或 socks5://host:port"),
+        ("--retry", "可选重试次数，默认 0 不重试"),
         ("header", "可选附加 header"),
     ],
     returns: "bytes 响应体（失败时返回 error 对象）",
     examples: &["img := getWebBytes(\"https://example.com/logo.png\")"],
     errors: &[
         "getWebBytes() 第 1 个参数应为 string (URL)",
-        "getWebBytes() 请求失败（可能原因：URL 格式错误、网络不通、服务器超时）",
+        "getWebBytes() 请求失败（可能原因：URL 格式错误、网络不通、DNS 解析失败、TLS 证书验证失败、代理配置错误、服务器超时）",
     ],
 };
 
 static DOC_GET_WEB_BYTES_WITH_HEADERS: BuiltinDoc = BuiltinDoc {
     category: "http",
-    signature: "getWebBytesWithHeaders(url, headers [, \"--timeout=N\"]) -> bytes",
+    signature: "getWebBytesWithHeaders(url, headers [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\"]) -> bytes",
     summary: "带 header 字典的 HTTP GET，返回响应体字节（用于需要鉴权等场景）。",
     params: &[
         ("url", "目标 URL"),
         ("headers", "Map/Object{key: value}，如 {\"Authorization\": \"Bearer xxx\"}"),
         ("--timeout", "可选超时秒数，默认 30"),
+        ("--proxy", "可选代理 URL，如 http://host:port 或 socks5://host:port"),
+        ("--retry", "可选重试次数，默认 0 不重试"),
     ],
     returns: "bytes 响应体（失败时返回 error 对象）",
     examples: &[
@@ -655,40 +682,45 @@ static DOC_GET_WEB_BYTES_WITH_HEADERS: BuiltinDoc = BuiltinDoc {
     errors: &[
         "getWebBytesWithHeaders() 第 1 个参数应为 string (URL)（可能原因：参数顺序错误）",
         "headers 参数应为 map/object（可能原因：参数类型错误或顺序错误）",
-        "getWebBytesWithHeaders() 请求失败（可能原因：URL 格式错误、网络不通、header 格式错误）",
+        "getWebBytesWithHeaders() 请求失败（可能原因：URL 格式错误、网络不通、TLS 证书验证失败、代理配置错误、header 格式错误）",
     ],
 };
 
 static DOC_POST_WEB: BuiltinDoc = BuiltinDoc {
     category: "http",
-    signature: "postWeb(url, body, contentType [, \"--timeout=N\", \"Header: value\"]) -> string",
+    signature: "postWeb(url, body, contentType [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"Header: value\"]) -> string",
     summary: "发送 HTTP POST，返回响应体字符串。",
     params: &[
         ("url", "目标 URL"),
         ("body", "请求体（string/bytes/byteArray 或可转字符串的值）"),
         ("contentType", "Content-Type，如 application/json"),
         ("--timeout", "可选超时秒数，默认 30"),
+        ("--proxy", "可选代理 URL，如 http://host:port 或 socks5://host:port"),
+        ("--retry", "可选重试次数，默认 0 不重试；4xx（除 429）不重试"),
         ("header", "可选附加 header"),
     ],
     returns: "string 响应体（失败时返回 error 对象）",
     examples: &[
         "resp := postWeb(\"https://api.x.com\", jsonEncode({a:1}), \"application/json\")",
+        "resp := postWeb(\"https://api.x.com\", body, \"application/json\", \"--retry=2\")  // 重试 2 次",
     ],
     errors: &[
         "postWeb() 需要至少 3 个参数 (URL, body, contentType)",
         "postWeb() 第 3 个参数应为 string (Content-Type)",
-        "postWeb() 请求失败（可能原因：URL 格式错误、网络不通、服务器拒绝、Content-Type 不匹配）",
+        "postWeb() 请求失败（可能原因：URL 格式错误、网络不通、TLS 证书验证失败、代理配置错误、服务器拒绝、Content-Type 不匹配）",
     ],
 };
 
 static DOC_DOWNLOAD_FILE: BuiltinDoc = BuiltinDoc {
     category: "http",
-    signature: "downloadFile(url, savePath [, \"--timeout=N\", \"Header: value\"]) -> int",
+    signature: "downloadFile(url, savePath [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"Header: value\"]) -> int",
     summary: "下载远程文件到本地路径，成功返回写入的字节数。",
     params: &[
         ("url", "目标 URL"),
         ("savePath", "本地保存路径"),
         ("--timeout", "可选超时秒数，默认 30"),
+        ("--proxy", "可选代理 URL，如 http://host:port 或 socks5://host:port"),
+        ("--retry", "可选重试次数，默认 0 不重试"),
         ("header", "可选附加 header"),
     ],
     returns: "int 写入字节数（失败时返回 error 对象）",
@@ -697,7 +729,7 @@ static DOC_DOWNLOAD_FILE: BuiltinDoc = BuiltinDoc {
         "downloadFile() 需要至少 2 个参数 (URL, savePath)",
         "downloadFile() 服务器返回错误状态（可能原因：文件不存在、权限不足）",
         "downloadFile() 写入文件 'xxx' 失败（可能原因：目录不存在、权限不足）",
-        "downloadFile() 下载失败（可能原因：URL 格式错误、网络不通、服务器超时）",
+        "downloadFile() 下载失败（可能原因：URL 格式错误、网络不通、DNS 解析失败、TLS 证书验证失败、代理配置错误、服务器超时）",
     ],
 };
 
@@ -709,6 +741,32 @@ static DOC_URL_EXISTS: BuiltinDoc = BuiltinDoc {
     returns: "bool：true 表示状态码 < 400，请求失败返回 false",
     examples: &["if urlExists(\"https://example.com\") { ... }"],
     errors: &["urlExists() 第 1 个参数应为 string (URL)"],
+};
+
+static DOC_HTTP_STATS: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "httpStats() -> object",
+    summary: "获取 HTTP 客户端统计快照（自进程启动或上次 resetHttpStats 以来的累计值）。",
+    params: &[],
+    returns: "object{totalRequests, successCount, failureCount, retryAttempts, agentPoolSize}（字段可用 .xxx 访问）",
+    examples: &[
+        "stats := httpStats()",
+        "println(\"总请求:\", stats.totalRequests, \"成功:\", stats.successCount, \"失败:\", stats.failureCount)",
+        "if stats.failureCount > 0 { println(\"警告：存在失败请求\") }",
+    ],
+    errors: &[],
+};
+
+static DOC_RESET_HTTP_STATS: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "resetHttpStats() -> undefined",
+    summary: "重置 HTTP 客户端统计计数器（不影响 Agent 池）。",
+    params: &[],
+    returns: "undefined",
+    examples: &[
+        "resetHttpStats()  // 重置后 httpStats() 从 0 开始计数",
+    ],
+    errors: &[],
 };
 
 static DOC_PARSE_URL: BuiltinDoc = BuiltinDoc {
@@ -812,6 +870,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("getReqPath", bi_get_req_path, &DOC_GET_REQ_PATH);
     vm.register_builtin_doc("getReqUri", bi_get_req_uri, &DOC_GET_REQ_URI);
     vm.register_builtin_doc("getReqQuery", bi_get_req_query, &DOC_GET_REQ_QUERY);
+    vm.register_builtin_doc("getReqField", bi_get_req_field, &DOC_GET_REQ_FIELD);
     vm.register_builtin_doc("getReqHeader", bi_get_req_header, &DOC_GET_REQ_HEADER);
     vm.register_builtin_doc("getReqHeaders", bi_get_req_headers, &DOC_GET_REQ_HEADERS);
     vm.register_builtin_doc("getReqBody", bi_get_req_body, &DOC_GET_REQ_BODY);
@@ -860,6 +919,8 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("postWeb", bi_post_web, &DOC_POST_WEB);
     vm.register_builtin_doc("downloadFile", bi_download_file, &DOC_DOWNLOAD_FILE);
     vm.register_builtin_doc("urlExists", bi_url_exists, &DOC_URL_EXISTS);
+    vm.register_builtin_doc("httpStats", bi_http_stats, &DOC_HTTP_STATS);
+    vm.register_builtin_doc("resetHttpStats", bi_reset_http_stats, &DOC_RESET_HTTP_STATS);
 
     // URL 与 MIME 工具
     vm.register_builtin_doc("parseUrl", bi_parse_url, &DOC_PARSE_URL);
@@ -1051,7 +1112,7 @@ fn extract_resp<'a>(v: &'a Value) -> Result<&'a Arc<SfHttpResponse>, Value> {
 /// 用法：`httpServer("--port=8080", "--host=0.0.0.0", "--verbose")`
 /// HTTPS：`httpServer("--port=443", "--certDir=./certs")`
 fn bi_http_server(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let port = get_switch(args, "port", "8080");
+    let port = get_switch(args, "port", "80");
     let host = get_switch(args, "host", "0.0.0.0");
     let verbose = has_switch(args, "verbose");
     let admin_token = get_switch(args, "adminToken", "sflang");
@@ -1249,6 +1310,50 @@ fn bi_get_req_query(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let req = extract_req(&args[0])?;
     let query = req.inner.lock().unwrap().query.clone();
     Ok(Value::str(&query))
+}
+
+/// bi_get_req_field 读取请求的任意字段（通用键值读取）。
+///
+/// 支持的字段名（大小写不敏感）：
+///   - "method" / "请求方法"      -> 请求方法（GET/POST...）
+///   - "path"                      -> 请求路径（不含查询串）
+///   - "uri"                       -> 完整 URI（含查询串）
+///   - "query"                     -> 查询串（不含前导 ?）
+///   - "remoteAddr" / "remote_addr"-> TCP 对端 IP（直连即客户端真实 IP）
+///   - "body"                      -> 请求体字符串
+///
+/// 这是请求字段的通用读取入口；HTTP 头请用 getReqHeader（X-Forwarded-For 等）。
+/// 直连部署取客户端真实 IP：getReqField(req, "remoteAddr")
+/// 反代部署取真实 IP：getReqHeader(req, "X-Forwarded-For")
+fn bi_get_req_field(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let req = extract_req(&args[0])?;
+    let name = match args.get(1) {
+        Some(Value::Str(s)) => s.to_lowercase(),
+        Some(v) => {
+            return Err(error_value(format!(
+                "getReqField 第二参数应为字段名字符串，得到 {} (可能原因：误传了非字符串值)",
+                v.type_name()
+            )))
+        }
+        None => return Err(error_value("getReqField 需要两个参数：(req, fieldName)")),
+    };
+
+    let g = req.inner.lock().unwrap();
+    let val = match name.as_str() {
+        "method" | "请求方法" => g.method.clone(),
+        "path" | "路径" => g.path.clone(),
+        "uri" => g.uri.clone(),
+        "query" | "查询串" => g.query.clone(),
+        "remoteaddr" | "remote_addr" | "对端ip" | "客户端ip" => g.remote_addr.clone(),
+        "body" | "请求体" => String::from_utf8_lossy(&g.body).into_owned(),
+        _ => {
+            return Err(error_value(format!(
+                "getReqField 未知字段名 \"{}\" (支持: method/path/uri/query/remoteAddr/body)",
+                name
+            )))
+        }
+    };
+    Ok(Value::str(&val))
 }
 
 /// bi_get_req_header 返回指定 header 的值。
@@ -1680,9 +1785,22 @@ type TlsConfig = Arc<rustls::ServerConfig>;
 /// load_tls_config 从指定目录加载 PEM 格式的证书和私钥，构造 rustls ServerConfig。
 ///
 /// 期望目录下有 `server.crt`（证书链）和 `server.key`（私钥）。
+///
+/// 显式使用 ring 作为 CryptoProvider：
+/// rustls 0.23 默认同时启用 ring 和 aws-lc-rs feature（ureq 用 ring，oracle-rs 用 aws-lc-rs），
+/// 当两个都启用时，::builder() 会 panic "Could not automatically determine CryptoProvider"。
+/// 用 builder_with_provider() 显式选 ring，与 ureq 客户端保持一致。
 fn load_tls_config(cert_dir: &str) -> Result<TlsConfig, String> {
     use std::io::BufReader;
+    use std::sync::OnceLock;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+    // 全局安装 ring 作为默认 CryptoProvider（幂等，重复调用不会出错）
+    // 这样 HTTPS 服务器和 ureq 客户端共用同一个 provider，避免冲突
+    static PROVIDER_INSTALLED: OnceLock<()> = OnceLock::new();
+    PROVIDER_INSTALLED.get_or_init(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
 
     let cert_path = std::path::Path::new(cert_dir).join("server.crt");
     let key_path = std::path::Path::new(cert_dir).join("server.key");
@@ -2180,13 +2298,19 @@ fn match_param_route(pattern: &[Option<String>], param_names: &[String], req_seg
 ///
 /// 支持 keep-alive，循环读取请求直到对端关闭。
 fn handle_connection_thread(stream: std::net::TcpStream, handler: &ServerHandler) {
+    // 在 TLS 包装前获取 TCP 对端地址，注入 requestG.remote_addr，供脚本读取。
+    let peer = stream
+        .peer_addr()
+        .map(|a| a.ip().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+
     // 如果启用了 TLS，用 rustls 包装连接
     if let Some(ref tls_config) = handler.tls_config {
         let conn = rustls::ServerConnection::new(tls_config.clone());
         match conn {
             Ok(server_conn) => {
                 let tls_stream = rustls::StreamOwned::new(server_conn, stream);
-                handle_connection_impl(tls_stream, handler);
+                handle_connection_impl(tls_stream, &peer, handler);
             }
             Err(e) => {
                 if handler.verbose {
@@ -2195,17 +2319,21 @@ fn handle_connection_thread(stream: std::net::TcpStream, handler: &ServerHandler
             }
         }
     } else {
-        handle_connection_impl(stream, handler);
+        handle_connection_impl(stream, &peer, handler);
     }
 }
 
 /// handle_connection_impl 泛型处理一个连接（支持 TcpStream 和 TLS Stream）。
 ///
+/// `peer` 为调用方在 TLS 包装前取得的 TCP 对端 IP 字符串。
 /// 支持 keep-alive，循环读取请求直到对端关闭或出错。
-fn handle_connection_impl<S: std::io::Read + std::io::Write>(stream: S, handler: &ServerHandler) {
+fn handle_connection_impl<S: std::io::Read + std::io::Write>(
+    stream: S,
+    peer: &str,
+    handler: &ServerHandler,
+) {
     use std::io::BufReader;
 
-    let peer = "unknown".to_string(); // TLS 包装后无法直接获取 peer_addr
     let mut reader = BufReader::new(stream);
     // 使用 reader 内部引用来写入（BufReader 不支持 Write，需要 try_clone 方式）
     // 对于 TLS 流，无法 clone，所以使用 by_ref 方式分别读写
@@ -2254,7 +2382,7 @@ fn handle_connection_impl<S: std::io::Read + std::io::Write>(stream: S, handler:
             }
         };
 
-        req.remote_addr = peer.clone();
+        req.remote_addr = peer.to_string();
 
         if handler.verbose {
             eprintln!("{} {} {}", req.method, req.uri, req.remote_addr);
@@ -2322,7 +2450,11 @@ fn format_error_json(e: &SfError) -> String {
 /// 4. 追加 .sf 再试
 /// 5. 无匹配 → 404
 pub fn run_server_cli(args: &[String]) -> i32 {
-    let port = get_switch_str(args, "port", "8080");
+    // 默认值与 Charlang `char -server` 对齐：HTTP 默认 :80，SSL 默认 :443。
+    // 指定 --certDir 且证书加载成功时，会在 SSL 端口额外起一个 HTTPS 服务，
+    // 与 HTTP 主服务并存（单进程双端口），而非把 HTTP 端口切换为 HTTPS。
+    let port = get_switch_str(args, "port", "80");
+    let ssl_port = get_switch_str(args, "sslPort", "443");
     let host = get_switch_str(args, "host", "0.0.0.0");
     let base_dir = get_switch_str(args, "dir", ".");
     let web_dir = get_switch_str(args, "webDir", &base_dir);
@@ -2330,12 +2462,14 @@ pub fn run_server_cli(args: &[String]) -> i32 {
     let verbose = has_switch_str(args, "verbose");
     let cert_dir = get_switch_str(args, "certDir", "");
 
-    let addr = format!("{}:{}", host, port);
+    let http_addr = format!("{}:{}", host, port);
+    let ssl_addr = format!("{}:{}", host, ssl_port);
 
     let base_path = std::path::PathBuf::from(&base_dir);
     let web_path = std::path::PathBuf::from(&web_dir);
 
-    // 加载 TLS 配置（如果指定了 certDir）
+    // 加载 TLS 配置（仅当指定了 --certDir）。
+    // 与 Charlang 一致：证书加载失败只打印警告并降级为纯 HTTP，不中止进程。
     let tls_config = if !cert_dir.is_empty() {
         match load_tls_config(&cert_dir) {
             Ok(cfg) => {
@@ -2343,45 +2477,83 @@ pub fn run_server_cli(args: &[String]) -> i32 {
                 Some(cfg)
             }
             Err(e) => {
-                eprintln!("加载 TLS 证书失败: {}", e);
+                eprintln!("警告: 加载 TLS 证书失败 ({}), 将只启动 HTTP 服务", e);
                 eprintln!("可能原因：certDir 下缺少 server.crt 或 server.key");
-                return 1;
+                None
             }
         }
     } else {
         None
     };
 
-    let proto = if tls_config.is_some() { "HTTPS" } else { "HTTP" };
-    eprintln!("Sflang CLI {} server starting on {}", proto, addr);
+    eprintln!("Sflang CLI HTTP server starting on {}", http_addr);
+    if tls_config.is_some() {
+        eprintln!("Sflang CLI HTTPS server starting on {}", ssl_addr);
+    }
     eprintln!("  script dir: {}", base_dir);
     eprintln!("  web dir: {}", web_dir);
 
-    let listener = match std::net::TcpListener::bind(&addr) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("bind {} failed: {}", addr, e);
-            eprintln!("可能原因：端口被占用、权限不足");
-            return 1;
-        }
-    };
-
-    let _ = listener.set_nonblocking(true);
-
+    // 共享停止标志：HTTP 与 HTTPS 两个 listener 任一检测到停止都会退出。
     let stop = Arc::new(AtomicBool::new(false));
 
     // 设置 Ctrl+C 处理
     let stop_clone = stop.clone();
     let _ = ctrlc_set_handler(stop_clone);
 
+    // 若启用了 TLS，在独立线程中启动 HTTPS 监听（与 HTTP 并行，对齐 Charlang 行为）。
+    if let Some(tls) = tls_config.clone() {
+        let base = base_path.clone();
+        let web = web_path.clone();
+        let token = admin_token.clone();
+        let stop_ss = stop.clone();
+        std::thread::spawn(move || {
+            run_cli_listener(&ssl_addr, base, web, token, verbose, Some(tls), stop_ss);
+        });
+    }
+
+    // HTTP 主服务跑在当前（主）线程，阻塞直到收到停止信号。
+    run_cli_listener(&http_addr, base_path, web_path, admin_token, verbose, None, stop);
+
+    0
+}
+
+/// run_cli_listener 在指定地址上运行 CLI 服务器的 accept 循环。
+///
+/// 抽取出的公共逻辑，供 HTTP 主线程与 HTTPS 子线程复用。
+/// `tls_config` 为 Some 时，每个连接会用 rustls 包装为 TLS 流；为 None 时走明文 TCP。
+/// `stop` 是跨 listener 共享的停止标志，置位后 accept 循环退出。
+fn run_cli_listener(
+    addr: &str,
+    base_path: std::path::PathBuf,
+    web_path: std::path::PathBuf,
+    admin_token: String,
+    verbose: bool,
+    tls_config: Option<TlsConfig>,
+    stop: Arc<AtomicBool>,
+) {
+    let listener = match std::net::TcpListener::bind(addr) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("bind {} failed: {}", addr, e);
+            eprintln!("可能原因：端口被占用、权限不足");
+            return;
+        }
+    };
+
+    let _ = listener.set_nonblocking(true);
+
     loop {
         if stop.load(Ordering::SeqCst) {
-            eprintln!("\nserver stopping...");
+            eprintln!("listener {} stopping...", addr);
             break;
         }
 
         match listener.accept() {
             Ok((stream, _peer)) => {
+                // listener 为 nonblocking 以便轮询 stop 标志，但被接受的连接
+                // 必须切回阻塞模式：http_lite::parse_request 与 rustls 握手都依赖
+                // 阻塞式 read，否则会立刻收到 WouldBlock(10035) 并误判为连接错误。
+                let _ = stream.set_nonblocking(false);
                 let base = base_path.clone();
                 let web = web_path.clone();
                 let token = admin_token.clone();
@@ -2395,13 +2567,11 @@ pub fn run_server_cli(args: &[String]) -> i32 {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
             Err(e) => {
-                eprintln!("accept error: {}", e);
+                eprintln!("accept error on {}: {}", addr, e);
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
         }
     }
-
-    0
 }
 
 /// handle_cli_connection 处理 CLI 服务器的一个连接。
@@ -2413,12 +2583,19 @@ fn handle_cli_connection(
     verbose: bool,
     tls_config: Option<TlsConfig>,
 ) {
+    // 在 TLS 包装前获取 TCP 对端地址；包装后 StreamOwned 不再暴露 peer_addr。
+    // 该地址会注入 requestG.remote_addr，脚本可用 getReqRemoteAddr 读取（如 IP 反馈微服务）。
+    let peer = stream
+        .peer_addr()
+        .map(|a| a.ip().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+
     // 如果启用了 TLS，用 rustls 包装连接
     if let Some(ref tls_cfg) = tls_config {
         match rustls::ServerConnection::new(tls_cfg.clone()) {
             Ok(server_conn) => {
                 let tls_stream = rustls::StreamOwned::new(server_conn, stream);
-                handle_cli_connection_impl(tls_stream, base_dir, web_dir, admin_token, verbose);
+                handle_cli_connection_impl(tls_stream, &peer, base_dir, web_dir, admin_token, verbose);
             }
             Err(e) => {
                 if verbose {
@@ -2427,21 +2604,22 @@ fn handle_cli_connection(
             }
         }
     } else {
-        handle_cli_connection_impl(stream, base_dir, web_dir, admin_token, verbose);
+        handle_cli_connection_impl(stream, &peer, base_dir, web_dir, admin_token, verbose);
     }
 }
 
 /// handle_cli_connection_impl 泛型处理 CLI 服务器的一个连接。
+///
+/// `peer` 为调用方（handle_cli_connection）在 TLS 包装前取得的 TCP 对端 IP 字符串。
 fn handle_cli_connection_impl<S: std::io::Read + std::io::Write>(
     stream: S,
+    peer: &str,
     base_dir: &std::path::Path,
     web_dir: &std::path::Path,
     admin_token: &str,
     verbose: bool,
 ) {
     use std::io::BufReader;
-
-    let peer = "unknown".to_string();
 
     let mut reader = BufReader::new(stream);
 
@@ -2486,7 +2664,7 @@ fn handle_cli_connection_impl<S: std::io::Read + std::io::Write>(
             }
         };
 
-        req.remote_addr = peer.clone();
+        req.remote_addr = peer.to_string();
 
         if verbose {
             eprintln!("{} {} {}", req.method, req.uri, req.remote_addr);
@@ -3610,12 +3788,44 @@ fn get_timeout_from_args(args: &[Value], start_idx: usize) -> u64 {
     30
 }
 
+/// get_proxy_from_args 从参数列表中提取 --proxy= 值。
+/// 返回 Option<String>，None 表示不使用代理。
+/// 支持格式：--proxy=http://host:port、--proxy=socks5://host:port
+fn get_proxy_from_args(args: &[Value], start_idx: usize) -> Option<String> {
+    for i in start_idx..args.len() {
+        if let Value::Str(s) = &args[i] {
+            if let Some(rest) = s.strip_prefix("--proxy=").or_else(|| s.strip_prefix("-proxy=")) {
+                if rest.is_empty() {
+                    return None;
+                }
+                return Some(rest.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// get_retry_from_args 从参数列表中提取 --retry= 值。
+/// 返回 u32，0 表示不重试。
+/// 仅在网络错误、超时、5xx、429 上重试；4xx（除 429）和 2xx/3xx 不重试。
+fn get_retry_from_args(args: &[Value], start_idx: usize) -> u32 {
+    for i in start_idx..args.len() {
+        if let Value::Str(s) = &args[i] {
+            if let Some(rest) = s.strip_prefix("--retry=").or_else(|| s.strip_prefix("-retry=")) {
+                return rest.parse().unwrap_or(0);
+            }
+        }
+    }
+    0
+}
+
 /// bi_get_web 发送 HTTP GET 请求，返回响应体字符串。
 ///
 /// 用法：
 ///   getWeb(url)                          -- 简单 GET
 ///   getWeb(url, "--timeout=30")          -- 带超时
 ///   getWeb(url, "Content-Type: json")    -- 带自定义 header
+///   getWeb(url, "--proxy=http://host:port") -- 通过代理
 fn bi_get_web(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let url = match args.get(0) {
         Some(Value::Str(s)) => s.to_string(),
@@ -3627,14 +3837,19 @@ fn bi_get_web(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
     let headers = parse_headers_from_args(args, 1);
     let timeout = get_timeout_from_args(args, 1);
+    let proxy = get_proxy_from_args(args, 1);
+    let retries = get_retry_from_args(args, 1);
 
-    match http_lite::http_get(&url, &headers, timeout) {
+    let result = http_lite::http_request_with_retry(
+        "GET", &url, &[], "", &headers, timeout, proxy.as_deref(), retries,
+    );
+    match result {
         Ok(resp) => {
             let text = String::from_utf8_lossy(&resp.body).into_owned();
             Ok(Value::str(&text))
         }
         Err(e) => Ok(error_value(format!(
-            "getWeb() 请求失败: {} (可能原因：URL 格式错误、网络不通、DNS 解析失败、服务器超时)",
+            "getWeb() 请求失败: {} (可能原因：URL 格式错误、网络不通、DNS 解析失败、TLS 证书验证失败、代理配置错误、服务器超时)",
             e
         ))),
     }
@@ -3642,7 +3857,7 @@ fn bi_get_web(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_get_web_bytes 发送 HTTP GET 请求，返回响应体字节。
 ///
-/// 用法：`getWebBytes(url, "--timeout=30")`
+/// 用法：`getWebBytes(url, "--timeout=30")` 或 `getWebBytes(url, "--proxy=http://host:port")`
 fn bi_get_web_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let url = match args.get(0) {
         Some(Value::Str(s)) => s.to_string(),
@@ -3654,11 +3869,16 @@ fn bi_get_web_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
     let headers = parse_headers_from_args(args, 1);
     let timeout = get_timeout_from_args(args, 1);
+    let proxy = get_proxy_from_args(args, 1);
+    let retries = get_retry_from_args(args, 1);
 
-    match http_lite::http_get(&url, &headers, timeout) {
+    let result = http_lite::http_request_with_retry(
+        "GET", &url, &[], "", &headers, timeout, proxy.as_deref(), retries,
+    );
+    match result {
         Ok(resp) => Ok(Value::Bytes(Arc::new(resp.body))),
         Err(e) => Ok(error_value(format!(
-            "getWebBytes() 请求失败: {} (可能原因：URL 格式错误、网络不通、服务器超时)",
+            "getWebBytes() 请求失败: {} (可能原因：URL 格式错误、网络不通、DNS 解析失败、TLS 证书验证失败、代理配置错误、服务器超时)",
             e
         ))),
     }
@@ -3670,6 +3890,7 @@ fn bi_get_web_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///   postWeb(url, body, contentType)               -- 基本用法
 ///   postWeb(url, body, contentType, "--timeout=30") -- 带超时
 ///   postWeb(url, body, contentType, "Accept: json") -- 带额外 header
+///   postWeb(url, body, contentType, "--proxy=http://host:port") -- 通过代理
 fn bi_post_web(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let url = match args.get(0) {
         Some(Value::Str(s)) => s.to_string(),
@@ -3697,14 +3918,19 @@ fn bi_post_web(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
     let headers = parse_headers_from_args(args, 3);
     let timeout = get_timeout_from_args(args, 3);
+    let proxy = get_proxy_from_args(args, 3);
+    let retries = get_retry_from_args(args, 3);
 
-    match http_lite::http_post(&url, &body, &content_type, &headers, timeout) {
+    let result = http_lite::http_request_with_retry(
+        "POST", &url, &body, &content_type, &headers, timeout, proxy.as_deref(), retries,
+    );
+    match result {
         Ok(resp) => {
             let text = String::from_utf8_lossy(&resp.body).into_owned();
             Ok(Value::str(&text))
         }
         Err(e) => Ok(error_value(format!(
-            "postWeb() 请求失败: {} (可能原因：URL 格式错误、网络不通、服务器拒绝、Content-Type 不匹配)",
+            "postWeb() 请求失败: {} (可能原因：URL 格式错误、网络不通、TLS 证书验证失败、代理配置错误、服务器拒绝、Content-Type 不匹配)",
             e
         ))),
     }
@@ -3733,8 +3959,13 @@ fn bi_download_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
     let headers = parse_headers_from_args(args, 2);
     let timeout = get_timeout_from_args(args, 2);
+    let proxy = get_proxy_from_args(args, 2);
+    let retries = get_retry_from_args(args, 2);
 
-    match http_lite::http_get(&url, &headers, timeout) {
+    let result = http_lite::http_request_with_retry(
+        "GET", &url, &[], "", &headers, timeout, proxy.as_deref(), retries,
+    );
+    match result {
         Ok(resp) => {
             if resp.status >= 400 {
                 return Ok(error_value(format!(
@@ -3751,7 +3982,7 @@ fn bi_download_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             }
         }
         Err(e) => Ok(error_value(format!(
-            "downloadFile() 下载失败: {} (可能原因：URL 格式错误、网络不通、服务器超时)",
+            "downloadFile() 下载失败: {} (可能原因：URL 格式错误、网络不通、DNS 解析失败、TLS 证书验证失败、代理配置错误、服务器超时)",
             e
         ))),
     }
@@ -3773,6 +4004,27 @@ fn bi_url_exists(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         Ok(resp) => Ok(Value::Bool(resp.status < 400)),
         Err(_) => Ok(Value::Bool(false)),
     }
+}
+
+/// bi_http_stats 返回 HTTP 客户端统计快照。
+///
+/// 返回 Object{totalRequests, successCount, failureCount, retryAttempts, agentPoolSize}。
+/// 使用 Object 而非 Map，便于脚本通过 .xxx 直接访问字段。
+fn bi_http_stats(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
+    let s = http_lite::get_http_stats();
+    let mut m = crate::object_map::Map::new();
+    m.set("totalRequests".to_string(), Value::Int(s.total_requests as i64));
+    m.set("successCount".to_string(), Value::Int(s.success_count as i64));
+    m.set("failureCount".to_string(), Value::Int(s.failure_count as i64));
+    m.set("retryAttempts".to_string(), Value::Int(s.retry_attempts as i64));
+    m.set("agentPoolSize".to_string(), Value::Int(s.agent_pool_size as i64));
+    Ok(Value::Object(Arc::new(Mutex::new(m))))
+}
+
+/// bi_reset_http_stats 重置 HTTP 客户端统计计数器。
+fn bi_reset_http_stats(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
+    http_lite::reset_http_stats();
+    Ok(Value::Undefined)
 }
 
 /// extract_headers_from_map 从 Map/Object 值中提取 header 键值对。
@@ -3836,11 +4088,16 @@ fn bi_get_web_bytes_with_headers(_vm: &mut VM, args: &[Value]) -> Result<Value, 
     };
 
     let timeout = get_timeout_from_args(args, 2);
+    let proxy = get_proxy_from_args(args, 2);
+    let retries = get_retry_from_args(args, 2);
 
-    match http_lite::http_get(&url, &headers, timeout) {
+    let result = http_lite::http_request_with_retry(
+        "GET", &url, &[], "", &headers, timeout, proxy.as_deref(), retries,
+    );
+    match result {
         Ok(resp) => Ok(Value::Bytes(Arc::new(resp.body))),
         Err(e) => Ok(error_value(format!(
-            "getWebBytesWithHeaders() 请求失败: {} (可能原因：URL 格式错误、网络不通、DNS 解析失败、服务器超时、header 格式错误)",
+            "getWebBytesWithHeaders() 请求失败: {} (可能原因：URL 格式错误、网络不通、DNS 解析失败、TLS 证书验证失败、代理配置错误、header 格式错误)",
             e
         ))),
     }

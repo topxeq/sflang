@@ -4,6 +4,8 @@
 //   sf                       启动 REPL
 //   sf <script.sf> [args...] 执行脚本文件，argsG 为参数数组
 //   sf -e "<code>"           执行代码字符串
+//   sf --remote <url>        从 URL 下载并执行脚本
+//   sf --cloud <name>        从云端执行脚本（基础 URL 配置于 ~/.sf/cloud.cfg）
 //   sf -server [options]     启动 HTTP 应用服务器
 //   sf --build <script.sf>   编译脚本为独立可执行文件
 //   sf -h | --help | help    显示帮助
@@ -19,6 +21,7 @@
 //   - 能编译脚本为单一文件的可执行文件
 
 use std::io::{self, BufRead, Write, Read, Seek};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use sflang::value::Value;
@@ -107,6 +110,43 @@ fn real_main() -> ExitCode {
                 }
             }
             build_executable(script_path, &output_path)
+        }
+        "--remote" | "-remote" => {
+            // 从 URL 下载脚本并执行
+            if args.len() < 3 {
+                eprintln!("错误：--remote 需要一个 URL 参数");
+                eprintln!("用法：sf --remote https://example.com/scripts/basic.sf");
+                return ExitCode::from(1);
+            }
+            let script_args: Vec<String> = args[3..].to_vec();
+            run_remote(&args[2], script_args)
+        }
+        "--cloud" | "-cloud" => {
+            // 从云端执行：基础 URL 配置于 ~/.sf/cloud.cfg
+            if args.len() < 3 {
+                eprintln!("错误：--cloud 需要一个脚本名参数");
+                eprintln!("用法：sf --cloud basic.sf");
+                eprintln!("说明：需先在用户目录 .sf 下创建 cloud.cfg，内容为云端基础 URL，");
+                eprintln!("      例如 {} 下的 cloud.cfg 内容为 https://script.example.com/ ，", sf_home_dir().display());
+                eprintln!("      则 sf --cloud basic.sf 等同于 sf --remote https://script.example.com/basic.sf");
+                return ExitCode::from(1);
+            }
+            let name = args[2].trim();
+            if name.is_empty() {
+                eprintln!("错误：--cloud 的脚本名不能为空");
+                return ExitCode::from(1);
+            }
+            let script_args: Vec<String> = args[3..].to_vec();
+            match load_cloud_base_url() {
+                Ok(base) => {
+                    let url = join_cloud_url(&base, name);
+                    run_remote(&url, script_args)
+                }
+                Err(msg) => {
+                    eprintln!("{}", msg);
+                    ExitCode::from(1)
+                }
+            }
         }
         "-v" | "--version" => {
             println!("sf 0.1.0 (Sflang, Rust implementation)");
@@ -366,6 +406,109 @@ fn run_file(path: &str, script_args: Vec<String>) -> ExitCode {
     run_string(&src, path, script_args)
 }
 
+// ---- 云端脚本（--cloud / --remote） ----
+//
+// 配置约定（对标 Charlang 的 ~/.char/cloud.cfg，sflang 使用用户目录下的 .sf）：
+//   ~/.sf/cloud.cfg 内容为云端基础 URL，如 `https://script.example.com/`，
+//   则 `sf --cloud basic.sf` 等同于 `sf --remote https://script.example.com/basic.sf`。
+
+/// sf_home_dir 返回 sflang 配置目录：用户主目录下的 `.sf`。
+///
+/// Windows 下如 `C:\Users\<用户>\.sf`，Linux 下如 `/home/<用户>/.sf`。
+/// 不自动创建目录；由需要写入的一方负责创建。
+fn sf_home_dir() -> PathBuf {
+    let home = std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+        .unwrap_or_else(|| ".".to_string());
+    PathBuf::from(home).join(".sf")
+}
+
+/// load_cloud_base_url 读取云端基础 URL 配置（~/.sf/cloud.cfg）。
+///
+/// 失败时返回带修复指引的错误信息（AI 友好）。
+fn load_cloud_base_url() -> Result<String, String> {
+    let cfg_path = sf_home_dir().join("cloud.cfg");
+    if !cfg_path.exists() {
+        // 顺带提示目录是否存在，帮助定位问题
+        let dir = sf_home_dir();
+        let dir_state = if dir.exists() { "已存在" } else { "不存在" };
+        return Err(format!(
+            "错误：未找到云端配置文件 {}\n\
+             可能原因：尚未创建该文件；配置目录{}；路径拼写错误\n\
+             解决方法：创建文件 {} ，内容为一行云端基础 URL，例如：\n\
+             \x20   https://script.example.com/\n\
+             然后即可运行：sf --cloud basic.sf",
+            cfg_path.display(), dir_state, cfg_path.display(),
+        ));
+    }
+    let content = std::fs::read_to_string(&cfg_path).map_err(|e| {
+        format!(
+            "错误：读取云端配置文件 {} 失败: {}\n可能原因：权限不足；文件被占用；编码不是 UTF-8",
+            cfg_path.display(), e,
+        )
+    })?;
+    match parse_cfg_content(&content) {
+        Some(url) => Ok(url),
+        None => Err(format!(
+            "错误：云端配置文件 {} 中没有有效内容（全部为空行或注释）\n\
+             解决方法：文件内容应为一行基础 URL，例如 https://script.example.com/",
+            cfg_path.display(),
+        )),
+    }
+}
+
+/// parse_cfg_content 从配置文件内容中提取有效值。
+///
+/// 规则：取第一个非空行并去除首尾空白；以 `#` 开头的行视为注释跳过；
+/// 忽略 UTF-8 BOM。不做行内注释截断，避免破坏 URL 中的 `//` 与 `#`。
+/// 无有效内容返回 None。
+fn parse_cfg_content(content: &str) -> Option<String> {
+    let content = content.trim_start_matches('\u{feff}');
+    for line in content.lines() {
+        let val = line.trim();
+        if val.is_empty() || val.starts_with('#') {
+            continue;
+        }
+        return Some(val.to_string());
+    }
+    None
+}
+
+/// join_cloud_url 拼接云端基础 URL 与脚本名。
+///
+/// base 末尾多余的 `/` 与 name 开头的 `/` 不会产生双斜杠。
+fn join_cloud_url(base: &str, name: &str) -> String {
+    format!("{}/{}", base.trim_end_matches('/'), name.trim_start_matches('/'))
+}
+
+/// run_remote 从 URL 下载脚本并执行（--remote 与 --cloud 的公共路径）。
+///
+/// scriptPathG 设为完整 URL，便于脚本内引用自身来源。
+fn run_remote(url: &str, script_args: Vec<String>) -> ExitCode {
+    let resp = match sflang::http_lite::http_get(url, &[], 30) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("下载脚本失败：{} ({})", url, e);
+            eprintln!("可能原因：URL 格式错误；网络不通；DNS 解析失败；TLS 证书验证失败；服务器超时");
+            return ExitCode::from(1);
+        }
+    };
+    if resp.status < 200 || resp.status >= 400 {
+        eprintln!("下载脚本失败：{} (HTTP {})", url, resp.status);
+        eprintln!("可能原因：脚本不存在（404）；服务器错误（5xx）；需要认证（401/403）");
+        return ExitCode::from(1);
+    }
+    let src = match String::from_utf8(resp.body) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("下载的脚本不是有效的 UTF-8 文本：{} ({})", url, e);
+            return ExitCode::from(1);
+        }
+    };
+    run_string(&src, url, script_args)
+}
+
 /// run_string 执行代码字符串，设置 argsG/scriptPathG 全局变量。
 fn run_string(src: &str, file: &str, script_args: Vec<String>) -> ExitCode {
     let mut sf = Sflang::new();
@@ -415,13 +558,19 @@ fn print_help() {
     println!("  sf                       启动 REPL（交互式环境）");
     println!("  sf <script.sf> [args...] 执行脚本文件，参数存入 argsG");
     println!("  sf -e \"<code>\"           执行代码字符串");
+    println!("  sf --remote <url>        从 URL 下载并执行脚本");
+    println!("  sf --cloud <脚本名>      从云端执行脚本（基础 URL 配置于 ~/.sf/cloud.cfg）");
+    println!("      示例：cloud.cfg 内容为 https://script.example.com/ 时，");
+    println!("            sf --cloud basic.sf 等同于 sf --remote https://script.example.com/basic.sf");
     println!("  sf -server [options]     启动 HTTP 应用服务器");
-    println!("      --port=8080          服务端口（默认 8080）");
-    println!("      --host=0.0.0.0       监听地址");
-    println!("      --dir=./scripts      脚本根目录");
-    println!("      --webDir=./web       静态文件目录");
-    println!("      --adminToken=sflang  管理端点令牌");
-    println!("      --verbose            打印请求日志");
+    println!("      --port=80             HTTP 服务端口（默认 80）");
+    println!("      --sslPort=443         HTTPS 服务端口（指定 --certDir 且证书存在时启用，默认 443）");
+    println!("      --certDir=.           证书目录（需含 server.crt + server.key）");
+    println!("      --host=0.0.0.0        监听地址");
+    println!("      --dir=./scripts       脚本根目录");
+    println!("      --webDir=./web        静态文件目录");
+    println!("      --adminToken=sflang   管理端点令牌");
+    println!("      --verbose             打印请求日志");
     println!("  sf --build <script.sf>   编译脚本为独立可执行文件");
     println!("      [--output <路径>]    指定输出路径");
     println!("  sf -h | --help | help    显示此帮助");
@@ -510,4 +659,34 @@ fn print_repl_help() {
     println!("逻辑：&& || !");
     println!("空值：undefined");
     println!("字符串：\"双引号\" `反引号` \"\"\"三引号\"\"\"");
+}
+
+// ---- 单元测试（纯函数部分） ----
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// parse_cfg_content：普通 URL、注释、BOM、空白
+    #[test]
+    fn test_parse_cfg_content() {
+        assert_eq!(parse_cfg_content("https://script.example.com/\n"), Some("https://script.example.com/".to_string()));
+        // 带末尾 CR（Windows 换行）
+        assert_eq!(parse_cfg_content("https://a.com/\r\n"), Some("https://a.com/".to_string()));
+        // # 整行注释跳过，不影响 URL 中的 // 与 #
+        assert_eq!(parse_cfg_content("# 注释\nhttps://a.com/path#frag\n"), Some("https://a.com/path#frag".to_string()));
+        assert_eq!(parse_cfg_content("# 仅注释\n\n"), None);
+        assert_eq!(parse_cfg_content(""), None);
+        // UTF-8 BOM
+        assert_eq!(parse_cfg_content("\u{feff}https://a.com/\n"), Some("https://a.com/".to_string()));
+    }
+
+    /// join_cloud_url：斜杠拼接不重复
+    #[test]
+    fn test_join_cloud_url() {
+        assert_eq!(join_cloud_url("https://a.com/", "basic.sf"), "https://a.com/basic.sf");
+        assert_eq!(join_cloud_url("https://a.com", "basic.sf"), "https://a.com/basic.sf");
+        assert_eq!(join_cloud_url("https://a.com//", "/basic.sf"), "https://a.com/basic.sf");
+        assert_eq!(join_cloud_url("https://a.com/scripts/", "demo/basic.sf"), "https://a.com/scripts/demo/basic.sf");
+    }
 }

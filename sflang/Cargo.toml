@@ -14,6 +14,15 @@ categories = ["compilers", "development-tools"]
 name = "sflang"
 path = "src/lib.rs"
 
+[features]
+# 默认开启全部功能（保持 Windows 桌面环境下的现有行为）。
+# 跨平台编译到无 GUI 系统库的目标（如 Linux 服务器）时，
+# 用 --no-default-features 关闭 GUI，可避免 webkit2gtk 等系统依赖。
+default = ["gui"]
+# GUI 支持（基于 wry/tao WebView）。Linux/macOS 上需要 webkit2gtk/WKWebView 等系统库，
+# 服务器或无头环境通常不需要，编译时关闭即可。
+gui = ["dep:wry", "dep:tao"]
+
 [dependencies]
 # 正则库（rust-lang 官方，workspace 统一管理版本）
 regex = { workspace = true }
@@ -42,23 +51,24 @@ futures-util = { workspace = true }
 oracle-rs = { workspace = true }
 # FTP 客户端（纯 Rust FTP/FTPS）
 suppaftp = { workspace = true }
-# GUI WebView 支持
-wry = { workspace = true }
-tao = { workspace = true }
+# GUI WebView 支持（可选，受 gui feature 控制）
+wry = { workspace = true, optional = true }
+tao = { workspace = true, optional = true }
 # SSH 客户端
 russh = { workspace = true }
 russh-keys = { workspace = true }
 async-trait = { workspace = true }
 russh-sftp = { workspace = true }
-lettre = "0.11.22"
-# HTTPS/TLS 支持（纯 Rust TLS）
+# 邮件发送（rustls 后端，关闭默认 native-tls 以避免拉入 openssl-sys 交叉编译障碍）。
+# webpki-roots 为纯 Rust 内置证书根，跨平台编译无需系统证书库；ring 为 crypto provider，与 sflang 全局一致。
+lettre = { version = "0.11.22", default-features = false, features = ["builder", "hostname", "pool", "smtp-transport", "rustls", "tokio1-rustls", "webpki-roots", "ring"] }
+# HTTPS/TLS 支持（纯 Rust TLS，服务端 TLS 用）
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 # WebSocket 支持（轻量同步库）
 tungstenite = { workspace = true }
-# HTTPS 客户端根证书
-webpki-roots = { workspace = true }
-rustls-native-certs = { workspace = true }
+# ureq HTTP 客户端（替换 http_lite 自研客户端部分，自带 TLS 根证书处理）
+ureq = { workspace = true }
 # 图像处理库（PNG/JPEG/GIF/BMP/WebP 编解码 + 基本操作）
 image = { workspace = true }
 # TrueType 字体渲染（用于 Canvas drawText）

@@ -738,7 +738,7 @@ impl S3Client {
             })
             .unwrap_or_default();
 
-        http_lite::http_request(method, &full_url, &body, &content_type, &header_strs, self.timeout_secs, 0)
+        http_lite::http_request(method, &full_url, &body, &content_type, &header_strs, self.timeout_secs, 0, None)
     }
 
     /// host_with_port 返回 "host:port" 形式（如非默认端口）。

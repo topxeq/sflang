@@ -19,6 +19,7 @@ Sflang is a lightweight, fast interpreted programming language implemented in Ru
 - **Self-documenting**: `help()` builtin + `sf --list-builtins` for AI-friendly introspection
 - **Script embedding**: Usable as a Rust library or standalone CLI (`sf`)
 - **Standalone executable**: `sf --build script.sf` packs a script into a single executable
+- **Remote/cloud scripts**: `sf --remote <url>` runs a script from a URL; `sf --cloud <name>` runs it from a base URL configured in `~/.sf/cloud.cfg`
 
 ## Built-in Function Categories
 
@@ -38,6 +39,7 @@ Sflang is a lightweight, fast interpreted programming language implemented in Ru
 | System | `sys*` (env/dir/exec/clipboard) | 26 |
 | Database | `db*` (SQLite/MySQL/PostgreSQL/MSSQL/Oracle) | 12 |
 | HTTP/Network | httpServer/getWeb*/webSocket | 52 |
+| HTTP Client | getWeb/postWeb/downloadFile/urlExists | TLS 用系统证书库校验，连接池复用，自动重定向 |
 | TCP | tcpListen/Connect/Pipe | 12 |
 | Image | `image*` (load/save/resize/canvas) + `imageGen*` (procedural) | 82 |
 | Excel | `excel*` (read/write xlsx) | 14 |
@@ -60,6 +62,17 @@ sf script.sf
 
 # Eval code
 sf -e "println(\"Hello, Sflang!\")"
+
+# Run a script from a URL
+sf --remote https://example.com/scripts/basic.sf
+
+# Run a script from the cloud
+# Create ~/.sf/cloud.cfg containing one line (the base URL), e.g.:
+#   https://script.example.com/
+# then:
+sf --cloud basic.sf
+# which is equivalent to:
+sf --remote https://script.example.com/basic.sf
 
 # REPL
 sf

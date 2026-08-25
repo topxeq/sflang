@@ -2,7 +2,13 @@
 // 启动：sf examples/server/http_client.sf
 //
 // 演示 getWeb / postWeb / downloadFile / urlExists 等客户端函数。
-// 包含 HTTP 和 HTTPS（rustls）请求。
+// 包含 HTTP 和 HTTPS 请求。
+//
+// 底层实现：ureq（纯 Rust 同步 HTTP 客户端）
+//   - TLS 证书由系统证书库校验（Windows SChannel / Linux ca-certificates / macOS Keychain）
+//   - Agent 连接池按超时秒数缓存复用
+//   - 自动跟随重定向（最多 10 次）
+//   - 更完整的演示见 examples/showcase/http_client_demo.sf
 
 // ============================================================
 // 1. getWeb - HTTP GET 请求（返回字符串）
@@ -18,7 +24,7 @@ if isErr(html) {
     if pos >= 0 {
         endPos := strFind(html, "</title>")
         if endPos > pos {
-            title := substring(html, pos + 7, endPos)
+            title := strSub(html, pos + 7, endPos)
             println("  页面标题: " + title)
         }
     }
@@ -46,8 +52,8 @@ if isErr(imgBytes) {
     println("  失败: " + getErrStr(imgBytes))
 } else {
     println("  成功，获取 " + toStr(len(imgBytes)) + " 字节")
-    // 保存到文件
-    writeFile("temp/favicon.ico", imgBytes)
+    // 保存到文件（二进制内容用 writeFileBytes）
+    writeFileBytes("temp/favicon.ico", imgBytes)
     println("  已保存到 temp/favicon.ico")
 }
 
@@ -61,7 +67,7 @@ jsonBody := jsonEncode({
     "type": "language",
     "version": "0.1.0"
 })
-postResp := postWeb("https://httpbin.org/post", jsonBody, "application/json", "--timeout=15")
+postResp := postWeb("https://postman-echo.com/post", jsonBody, "application/json", "--timeout=15")
 if isErr(postResp) {
     println("  失败: " + getErrStr(postResp))
 } else {
@@ -69,7 +75,7 @@ if isErr(postResp) {
     // 解析返回的 JSON
     parsed := jsonDecode(postResp)
     if !isErr(parsed) {
-        // httpbin.org 会回显请求的 JSON
+        // postman-echo.com 会回显请求的 JSON
         reqBody := parsed["json"]
         if reqBody != undefined {
             println("  服务器回显: " + jsonEncode(reqBody))
@@ -82,7 +88,7 @@ if isErr(postResp) {
 // ============================================================
 println("")
 println("=== postWeb (Form) ===")
-formResp := postWeb("https://httpbin.org/post", "username=admin&password=123456", "application/x-www-form-urlencoded", "--timeout=15")
+formResp := postWeb("https://postman-echo.com/post", "username=admin&password=123456", "application/x-www-form-urlencoded", "--timeout=15")
 if isErr(formResp) {
     println("  失败: " + getErrStr(formResp))
 } else {
@@ -100,7 +106,7 @@ if isErr(size) {
 } else {
     println("  成功，下载 " + toStr(size) + " 字节到 temp/downloaded_example.html")
     content := readFile("temp/downloaded_example.html")
-    println("  文件前 80 字符: " + substring(content, 0, 80))
+    println("  文件前 80 字符: " + strSub(content, 0, 80))
 }
 
 // ============================================================
@@ -120,17 +126,17 @@ for i in range(0, len(urls)) {
 // ============================================================
 println("")
 println("=== getWeb with custom headers ===")
-customResp := getWeb("https://httpbin.org/headers", "Accept: application/json", "X-Custom-Header: Sflang/0.1", "--timeout=15")
+customResp := getWeb("https://postman-echo.com/headers", "Accept: application/json", "X-Custom-Header: Sflang/0.1", "--timeout=15")
 if isErr(customResp) {
     println("  失败: " + getErrStr(customResp))
 } else {
     println("  成功，响应长度: " + toStr(len(customResp)))
-    // httpbin.org/headers 会回显请求头
+    // postman-echo.com/headers 会回显请求头
     parsed := jsonDecode(customResp)
     if !isErr(parsed) {
         headers := parsed["headers"]
         if headers != undefined {
-            customHeader := headers["X-Custom-Header"]
+            customHeader := headers["x-custom-header"]
             if customHeader != undefined {
                 println("  服务器收到自定义头: " + toStr(customHeader))
             }

@@ -75,6 +75,12 @@ handler 返回值的类型决定服务器行为：
 - `downloadFile(url, savePath, ...)` - 下载文件
 - `urlExists(url)` - 检查 URL 是否可访问
 
+HTTPS 客户端底层由 ureq 实现（纯 Rust 同步 HTTP 客户端）：
+- TLS 证书由系统证书库校验（Windows SChannel / Linux ca-certificates / macOS Keychain），跨平台行为一致
+- Agent 连接池按超时秒数缓存复用，重复请求同一主机性能更优
+- 自动跟随重定向（最多 10 次）
+- 错误信息包含可能原因（DNS 失败、网络不通、TLS 证书验证失败等），便于 AI 定位
+
 ### WebSocket
 - `webSocket("ws://host:port/path")` - 客户端连接
 - `wsReadText(ws)` / `wsReadBin(ws)` / `wsReadMsg(ws)`

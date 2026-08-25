@@ -45,7 +45,8 @@ postgres = "0.19"
 # postgres-types：PostgreSQL 类型转换（MIT OR Apache-2.0, postgres crate 的子 crate）。
 postgres-types = "0.2"
 # tiberius：纯 Rust MSSQL/SQL Server 驱动（MIT），异步 API，用 tokio 桥接为同步。
-tiberius = "0.12"
+# 关闭默认的 native-tls/winauth，改用 rustls 后端，避免拉入 openssl-sys（无法跨平台交叉编译）。
+tiberius = { version = "0.12", default-features = false, features = ["tds73", "rustls", "tokio", "tokio-util"] }
 # tokio：异步运行时（MIT），postgres 和 tiberius 间接依赖，显式声明用于 block_on 桥接。
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util"] }
 # tokio-util：tokio 工具（MIT），tiberius 需要 compat 层桥接 tokio TcpStream。
@@ -77,12 +78,13 @@ rustls-pemfile = "2"
 # tungstenite：轻量同步 WebSocket 库（MIT OR Apache-2.0），不引入 async runtime。
 # 契合 Sflang 同步 VM 模型。启用 url（客户端 connect 支持 ws://wss:// URL 解析）。
 tungstenite = { version = "0.24", features = ["url", "handshake"] }
-# webpki-roots：Mozilla 内置根证书（ISC），用于 HTTPS 客户端验证。
-# 作为系统证书不可用时的 fallback。
-webpki-roots = "0.26"
-# rustls-native-certs：从系统证书库加载根证书（Apache-2.0/MIT）。
-# Windows 用 SChannel，Linux 用 /etc/ssl/certs，macOS 用 Keychain。
-rustls-native-certs = "0.7"
+# ureq：轻量级同步 HTTP 客户端（MIT OR Apache-2.0），不引入 async runtime。
+# 用于替换 http_lite 自研客户端部分（getWeb/postWeb/s3Xxx 等）。
+# default-features = false 禁用默认的 gzip（避免 S3 SigV4 签名场景下 Accept-Encoding 头干扰）。
+# features:
+#   - rustls: 用 rustls 做 TLS（与 sflang 已有 rustls 0.23 一致）
+#   - platform-verifier: 用 OS 系统证书校验（Windows SChannel / Linux ca-certificates / macOS Keychain）
+ureq = { version = "3.3", default-features = false, features = ["rustls", "platform-verifier"] }
 # image：Rust 生态最成熟的图像处理库（MIT OR Apache-2.0），纯 Rust 实现。
 # 支持 PNG/JPEG/GIF/BMP/WebP 编解码 + 缩放/裁剪/旋转等基本操作。
 # 用于 imageLoad/imageSave/imageResize 等内置函数。

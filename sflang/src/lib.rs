@@ -56,6 +56,7 @@ pub mod sql_engine;
 pub mod aes;
 pub mod builtins_aes;
 pub mod txde;
+#[cfg(feature = "gui")]
 pub mod builtins_gui;
 pub mod builtins_ssh;
 pub mod builtins_le;

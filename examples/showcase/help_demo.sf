@@ -8,7 +8,7 @@
 // ==================
 pln("--- help() 全部分类（前 15 行）---")
 var all = help()
-var lines = strSplit("\n", all)
+var lines = strSplit(all, "\n")
 for i := 0; i < 15 && i < len(lines); i++ {
     pln("  ", lines[i])
 }
@@ -43,7 +43,7 @@ pln(help("regfind"))
 pln("\n--- 动态学习：strReplace 用法 ---")
 var doc = help("strReplace")
 // 提取签名行（第一行）
-var firstLine = strSplit("\n", doc)[0]
+var firstLine = strSplit(doc, "\n")[0]
 pln("签名:", firstLine)
 
 // 然后直接用这个函数

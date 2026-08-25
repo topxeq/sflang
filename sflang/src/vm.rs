@@ -159,6 +159,7 @@ impl VM {
         crate::builtins_db::register(&mut vm);
         crate::builtins_aes::register(&mut vm);
         crate::txde::register(&mut vm);
+        #[cfg(feature = "gui")]
         crate::builtins_gui::register(&mut vm);
         crate::builtins_ssh::register(&mut vm);
         crate::builtins_le::register(&mut vm);

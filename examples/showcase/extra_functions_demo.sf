@@ -146,7 +146,7 @@ pln("  解析的 name:", getJsonNodeStr(parsed, "name"))
 pln("")
 pln("【8. 持久化配置】")
 
-// setCfgStr 写入配置（持久化到 ~/.sflang/config.json）
+// setCfgStr 写入配置（持久化到 ~/.sf/config.json）
 setCfgStr("lastUser", "张三")
 setCfgStr("theme", "dark")
 setCfgStr("fontSize", "14")

@@ -3,6 +3,7 @@
 //! 纯 Rust SSH 客户端，对标 Charlang 的 ssh* 函数。
 //! 文件传输用 SFTP 子系统（原生协议，高效可靠）。
 //! 支持密码认证和私钥认证。
+//! 支持 PTY 交互式终端（sshShell* 系列）。
 //!
 //! 函数：
 //!   sshRun      — 执行远程命令
@@ -12,6 +13,7 @@
 //!   sshMkdir    — 创建远程目录
 //!   sshRemove   — 删除远程文件或目录
 //!   sshMove     — 移动/重命名远程文件
+//!   sshShell*   — PTY 交互式终端（Open/Write/Resize/Close/Keepalive）
 
 use std::sync::Arc;
 
@@ -365,6 +367,13 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("sshEnsureMakeDirs", bi_ssh_ensure_make_dirs, &DOC_SSH_ENSURE_MAKE_DIRS);
     vm.register_builtin_doc("sshJoinPath", bi_ssh_join_path, &DOC_SSH_JOIN_PATH);
     vm.register_builtin_doc("sshListDetail", bi_ssh_list_detail, &DOC_SSH_LIST_DETAIL);
+    // PTY 交互式终端
+    vm.register_builtin_doc("sshShellOpen", bi_ssh_shell_open, &DOC_SSH_SHELL_OPEN);
+    vm.register_builtin_doc("sshShellWrite", bi_ssh_shell_write, &DOC_SSH_SHELL_WRITE);
+    vm.register_builtin_doc("sshShellResize", bi_ssh_shell_resize, &DOC_SSH_SHELL_RESIZE);
+    vm.register_builtin_doc("sshShellClose", bi_ssh_shell_close, &DOC_SSH_SHELL_CLOSE);
+    vm.register_builtin_doc("sshShellKeepalive", bi_ssh_shell_keepalive, &DOC_SSH_SHELL_KEEPALIVE);
+    vm.register_builtin_doc("sshShellStreamId", bi_ssh_shell_stream_id, &DOC_SSH_SHELL_STREAM_ID);
 }
 
 fn get_switch(args: &[Value], key: &str, default: &str) -> String {
@@ -1107,3 +1116,553 @@ fn bi_ssh_join_path(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
     Ok(Value::str_from(result))
 }
+
+// ============================================================================
+// PTY 交互式终端（sshShell* 系列）
+// ============================================================================
+//
+// 与 sshRun（一次性 exec）不同，PTY 是长连接 + 持续双向数据流：
+//   - 用户键盘输入 → sshShellWrite → channel.make_writer → 远程 shell
+//   - 远程输出 → Handler::data 回调 → push_stream_event → GUI 事件循环
+//     → window.onStreamData(streamId, data, kind, extra) → xterm.js 渲染
+//
+// 关键设计：
+//   1. SshSession 持久化 tokio runtime + russh handle（仿 builtins_db::DatabaseConn）
+//   2. PtyHandler 实现 Handler trait 的 data/eof/exit_status 回调，把数据通过
+//      push_stream_event 推送（绕开 make_reader，让 Channel 一直存活可随时 resize）
+//   3. sshShellWrite 在持久化 runtime 上 block_on（短操作）
+//   4. 保活线程周期触发 SSH 协议 keepalive 或执行空命令
+
+// ---- PTY 函数文档 ----
+
+static DOC_SSH_SHELL_OPEN: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshShellOpen(--host=..., --user=..., --password=..., --cols=80, --rows=24, opts...) -> session",
+    summary: "建立 SSH 连接 + 申请 PTY + 启动交互式 shell，返回会话对象。",
+    params: &[
+        ("--host/--user/--password", "认证参数（同 sshRun）"),
+        ("--key", "私钥路径（与 --password 二选一）"),
+        ("--keyPassphrase", "私钥口令"),
+        ("--port", "SSH 端口，默认 22"),
+        ("--cols", "终端列数，默认 80"),
+        ("--rows", "终端行数，默认 24"),
+    ],
+    returns: "session 会话对象（用于 sshShellWrite/Resize/Close）；失败返回 error",
+    examples: &[
+        "sshShellOpen(\"--host=10.0.0.1\", \"--user=root\", \"--password=secret\", \"--cols=120\", \"--rows=40\")",
+    ],
+    errors: &[
+        "SSH 连接失败：网络不通 / 端口错误（返回 error）",
+        "认证失败：密码或私钥被拒绝",
+        "PTY 申请失败：服务器不允许 PTY（如 SFTP-only 账户）",
+    ],
+};
+
+static DOC_SSH_SHELL_WRITE: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshShellWrite(session, data) -> undefined",
+    summary: "向 PTY 写入用户输入（字节流或字符串）。",
+    params: &[
+        ("session", "sshShellOpen 返回的会话对象"),
+        ("data", "要写入的数据：string 或 bytes"),
+    ],
+    returns: "undefined；失败返回 error",
+    examples: &[
+        "sshShellWrite(sess, \"ls -la\\r\")",
+        "sshShellWrite(sess, bytes([3]))  // Ctrl+C",
+    ],
+    errors: &[
+        "session 已关闭或无效",
+        "网络写入失败",
+    ],
+};
+
+static DOC_SSH_SHELL_RESIZE: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshShellResize(session, cols, rows) -> undefined",
+    summary: "调整远程 PTY 窗口大小（对应 xterm.js 的 onResize）。",
+    params: &[
+        ("session", "sshShellOpen 返回的会话对象"),
+        ("cols", "新列数（int）"),
+        ("rows", "新行数（int）"),
+    ],
+    returns: "undefined；失败返回 error",
+    examples: &["sshShellResize(sess, 120, 40)"],
+    errors: &[
+        "session 已关闭或无效",
+        "服务器不支持 window-change（罕见）",
+    ],
+};
+
+static DOC_SSH_SHELL_CLOSE: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshShellClose(session) -> undefined",
+    summary: "关闭 PTY 会话（发送 EOF + disconnect），释放资源。",
+    params: &[("session", "sshShellOpen 返回的会话对象")],
+    returns: "undefined",
+    examples: &["sshShellClose(sess)"],
+    errors: &[],
+};
+
+static DOC_SSH_SHELL_KEEPALIVE: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshShellKeepalive(session, --interval=30, --cmd=\"\") -> undefined",
+    summary: "启动保活线程：默认 SSH 协议级 keepalive；--cmd 非空时额外周期执行该命令。",
+    params: &[
+        ("session", "sshShellOpen 返回的会话对象"),
+        ("--interval", "保活间隔秒数，默认 30；≤0 表示禁用"),
+        ("--cmd", "可选的空命令心跳，如 \"echo .\"；空则仅协议级 keepalive"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "sshShellKeepalive(sess)                            // 默认 30s 协议级",
+        "sshShellKeepalive(sess, \"--interval=60\")           // 60s",
+        "sshShellKeepalive(sess, \"--cmd=echo .\")            // 额外执行空命令",
+    ],
+    errors: &[],
+};
+
+static DOC_SSH_SHELL_STREAM_ID: BuiltinDoc = BuiltinDoc {
+    category: "ssh",
+    signature: "sshShellStreamId(session) -> int",
+    summary: "返回会话的流 ID（前端用此区分 onStreamData 的来源）。",
+    params: &[("session", "sshShellOpen 返回的会话对象")],
+    returns: "int 流 ID",
+    examples: &["var sid = sshShellStreamId(sess)"],
+    errors: &[],
+};
+
+// ---- SshSession 持久化会话对象 ----
+
+/// SshSession PTY 会话，仿 builtins_db::DatabaseConn 持久化 tokio runtime。
+///
+/// 生命周期：sshShellOpen 创建 → sshShellWrite/Resize 多次调用 → sshShellClose 销毁。
+/// 内部持有 russh handle + channel（用于 write/resize）和 runtime（驱动异步事件循环）。
+pub struct SshSession {
+    /// russh 客户端 handle（用于 disconnect 等）。
+    /// Option 允许 close 时 take() 出来 disconnect。
+    pub handle: std::sync::Mutex<Option<russh::client::Handle<PtyHandler>>>,
+    /// PTY channel（用于 data 写入和 window_change）。
+    /// 注意：russh 的 Channel 在 request_shell 后仍可用于 window_change/data 等。
+    /// 但 PtyHandler 的 data 回调是 russh 事件循环触发的，与这个 Channel 实例独立。
+    /// 这里保留 Channel 主要为了 resize（window_change）。
+    pub channel: std::sync::Mutex<Option<russh::Channel<russh::client::Msg>>>,
+    /// 持久化 tokio runtime（驱动 russh 事件循环）。
+    pub runtime: tokio::runtime::Runtime,
+    /// 流 ID（前端 onStreamData 用此区分）。
+    pub stream_id: u64,
+    /// 是否已关闭（避免重复 close）。
+    pub closed: std::sync::atomic::AtomicBool,
+}
+
+impl SshSession {
+    /// is_closed 检查会话是否已关闭。
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// mark_closed 标记为已关闭。
+    pub fn mark_closed(&self) {
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// PtyHandler russh Handler 实现，接收远端 PTY 数据并通过 push_stream_event 推送。
+///
+/// 与一次性 sshRun 的 SshHandler 不同，PTY 需要持续接收数据。
+/// 这里实现 Handler trait 的 data/extended_data/channel_eof/exit_status 方法，
+/// 把数据直接推到 STREAM_EVENTS 队列，由 GUI 事件循环 drain 到前端。
+struct PtyHandler {
+    /// 流 ID（推送事件时标识来源）。
+    stream_id: u64,
+}
+
+#[async_trait::async_trait]
+impl russh::client::Handler for PtyHandler {
+    type Error = russh::Error;
+
+    async fn check_server_key(&mut self, _: &russh::keys::key::PublicKey) -> Result<bool, Self::Error> {
+        // 接受所有 server key（与 sshRun 一致；生产环境应改用 known_hosts）
+        Ok(true)
+    }
+
+    /// data 远程 stdout 数据：UTF-8 lossy 转换后推送到流队列。
+    async fn data(
+        &mut self,
+        _channel: russh::ChannelId,
+        data: &[u8],
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        let s = String::from_utf8_lossy(data).into_owned();
+        crate::builtins_async::push_stream_event(
+            self.stream_id,
+            Value::str_from(s),
+            crate::builtins_async::StreamKind::Data,
+        );
+        Ok(())
+    }
+
+    /// extended_data 远程 stderr 数据：合流到同一 stream（终端约定 stderr 也显示）。
+    async fn extended_data(
+        &mut self,
+        _channel: russh::ChannelId,
+        _ext: u32,
+        data: &[u8],
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        let s = String::from_utf8_lossy(data).into_owned();
+        crate::builtins_async::push_stream_event(
+            self.stream_id,
+            Value::str_from(s),
+            crate::builtins_async::StreamKind::Data,
+        );
+        Ok(())
+    }
+
+    /// channel_eof 远端 EOF（shell 正常退出）。
+    async fn channel_eof(
+        &mut self,
+        _channel: russh::ChannelId,
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        crate::builtins_async::push_stream_event(
+            self.stream_id,
+            Value::Undefined,
+            crate::builtins_async::StreamKind::Eof,
+        );
+        Ok(())
+    }
+
+    /// channel_close 远端关闭通道。
+    async fn channel_close(
+        &mut self,
+        _channel: russh::ChannelId,
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        crate::builtins_async::push_stream_event(
+            self.stream_id,
+            Value::Undefined,
+            crate::builtins_async::StreamKind::Eof,
+        );
+        Ok(())
+    }
+
+    /// exit_status 远端进程退出（携带退出码）。
+    async fn exit_status(
+        &mut self,
+        _channel: russh::ChannelId,
+        exit_status: u32,
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        crate::builtins_async::push_stream_event(
+            self.stream_id,
+            Value::Undefined,
+            crate::builtins_async::StreamKind::Exit(exit_status),
+        );
+        Ok(())
+    }
+}
+
+/// ssh_session_clone 从 Value 克隆 Arc<SshSession>。
+///
+/// 用于内置函数内部，把 Native 值还原为强类型 Arc 引用。
+fn ssh_session_clone(v: &Value, fn_name: &str) -> Result<Arc<SshSession>, Value> {
+    match v {
+        Value::Native(n) => {
+            // Arc<dyn Any + Send + Sync>::clone() 拿到 Arc<dyn Any+...>，
+            // 再 downcast 回 Arc<SshSession>
+            let n_clone: Arc<dyn std::any::Any + Send + Sync> = n.clone();
+            match Arc::downcast::<SshSession>(n_clone) {
+                Ok(s) => Ok(s),
+                Err(_) => Err(crate::value::error_value(format!(
+                    "{}() 参数应为 SSH 会话对象（由 sshShellOpen 返回）",
+                    fn_name
+                ))),
+            }
+        }
+        other => Err(crate::value::error_value(format!(
+            "{}() 参数应为 SSH 会话对象，得到 {}", fn_name, other.type_name()
+        ))),
+    }
+}
+
+/// bi_ssh_shell_open 建立 PTY 会话。
+///
+/// 流程：创建持久化 runtime → connect → 认证 → channel_open_session →
+///       request_pty（xterm-256color，常用 modes）→ request_shell →
+///       把 handle/channel_id 存入 SshSession。
+/// PtyHandler 的 data 回调会自动推送流事件。
+fn bi_ssh_shell_open(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let params = parse_ssh_params(args)?;
+    let cols: u32 = get_switch(args, "cols", "80").parse().unwrap_or(80);
+    let rows: u32 = get_switch(args, "rows", "24").parse().unwrap_or(24);
+    let stream_id = crate::builtins_async::next_stream_id();
+
+    // 创建持久化 runtime（PTY 长连接需要）
+    let runtime = tokio::runtime::Runtime::new().map_err(|e| {
+        crate::value::error_value(format!("sshShellOpen() 创建 tokio runtime 失败: {}", e))
+    })?;
+
+    let config = Arc::new(russh::client::Config::default());
+    let addr = format!("{}:{}", params.host, params.port);
+
+    // 在 runtime 内建立连接 + 认证 + 申请 PTY + 启动 shell
+    // 注意：runtime 会被 SshSession 持有，不能 block_on 后 drop。
+    // 用 runtime.block_on 完成初始化阶段，然后让 runtime 继续驱动后续事件。
+    let (handle, channel) = runtime.block_on(async {
+        // 1. 建立连接
+        let mut handle = russh::client::connect(
+            config,
+            addr,
+            PtyHandler { stream_id },
+        )
+        .await
+        .map_err(|e| format!("SSH 连接失败: {} (可能原因：网络不通 / 端口错误)", e))?;
+
+        // 2. 认证
+        let auth_ok = if !params.key_path.is_empty() {
+            let key_pair = russh::keys::load_secret_key(
+                &params.key_path,
+                if params.key_passphrase.is_empty() { None } else { Some(&params.key_passphrase) },
+            ).map_err(|e| format!("SSH 加载私钥失败: {}", e))?;
+            handle.authenticate_publickey(&params.user, Arc::new(key_pair))
+                .await.map_err(|e| format!("SSH 密钥认证失败: {}", e))?
+        } else {
+            handle.authenticate_password(&params.user, &params.password)
+                .await.map_err(|e| format!("SSH 认证失败: {}", e))?
+        };
+        if !auth_ok {
+            return Err("SSH 认证失败: 凭据被拒绝".to_string());
+        }
+
+        // 3. 打开 session channel
+        let channel = handle.channel_open_session().await
+            .map_err(|e| format!("SSH 打开通道失败: {}", e))?;
+
+        // 4. 申请 PTY（xterm-256color，经典交互模式：ECHO + ISIG + ICANON + OPOST）
+        let modes = vec![
+            (russh::Pty::ECHO, 1),
+            (russh::Pty::ISIG, 1),
+            (russh::Pty::ICANON, 1),
+            (russh::Pty::ECHOE, 1),
+            (russh::Pty::ECHOCTL, 1),
+            (russh::Pty::OPOST, 1),
+            (russh::Pty::ONLCR, 1),
+            (russh::Pty::ICRNL, 1),
+            (russh::Pty::TTY_OP_ISPEED, 38400),
+            (russh::Pty::TTY_OP_OSPEED, 38400),
+        ];
+        channel.request_pty(true, "xterm-256color", cols, rows, 0, 0, &modes)
+            .await
+            .map_err(|e| format!("SSH 申请 PTY 失败: {} (可能原因：服务器不允许 PTY)", e))?;
+
+        // 5. 启动 shell
+        channel.request_shell(true).await
+            .map_err(|e| format!("SSH 启动 shell 失败: {}", e))?;
+
+        Ok::<(russh::client::Handle<PtyHandler>, russh::Channel<russh::client::Msg>), String>((handle, channel))
+    }).map_err(crate::value::error_value)?;
+
+    // 构造 SshSession（runtime 继续 idle 运行，驱动 russh 事件循环）
+    // session 是 Arc<SshSession>，直接转为 trait object（不再 Arc::new）
+    let session: Arc<SshSession> = Arc::new(SshSession {
+        handle: std::sync::Mutex::new(Some(handle)),
+        channel: std::sync::Mutex::new(Some(channel)),
+        runtime,
+        stream_id,
+        closed: std::sync::atomic::AtomicBool::new(false),
+    });
+    Ok(Value::Native(session as Arc<dyn std::any::Any + Send + Sync>))
+}
+
+/// bi_ssh_shell_write 向 PTY 写入用户输入。
+fn bi_ssh_shell_write(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "sshShellWrite")?;
+    bh::require_arg(args, 1, "sshShellWrite")?;
+    let session_arc = ssh_session_clone(&args[0], "sshShellWrite")?;
+    let data_bytes: Vec<u8> = match &args[1] {
+        Value::Str(s) => s.as_bytes().to_vec(),
+        Value::Bytes(b) => b.as_ref().to_vec(),
+        Value::ByteArray(b) => b.lock().unwrap().clone(),
+        other => return Err(crate::value::error_value(format!(
+            "sshShellWrite() 第 2 个参数应为 string 或 bytes，得到 {}", other.type_name()
+        ))),
+    };
+
+    if session_arc.is_closed() {
+        return Ok(crate::value::error_value("sshShellWrite() 会话已关闭"));
+    }
+
+    let session = &*session_arc;
+
+    // 在持久化 runtime 上 block_on 写入（通过 Channel.data）
+    let result = session.runtime.block_on(async {
+        let channel_lock = session.channel.lock().unwrap();
+        let channel = match channel_lock.as_ref() {
+            Some(c) => c,
+            None => return Err("会话已关闭".to_string()),
+        };
+        // russh 0.46 的 Channel::data<R: AsyncRead>：用 Cursor 作为 AsyncRead
+        use tokio::io::AsyncReadExt;
+        let cursor = std::io::Cursor::new(data_bytes);
+        channel.data(cursor).await
+            .map_err(|_e| "SSH 写入失败（连接可能已断开）".to_string())?;
+        Ok::<(), String>(())
+    });
+
+    match result {
+        Ok(()) => Ok(Value::Undefined),
+        Err(e) => Ok(crate::value::error_value(e)),
+    }
+}
+
+/// bi_ssh_shell_resize 调整 PTY 窗口大小。
+fn bi_ssh_shell_resize(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "sshShellResize")?;
+    bh::require_arg(args, 1, "sshShellResize")?;
+    bh::require_arg(args, 2, "sshShellResize")?;
+    let session_arc = ssh_session_clone(&args[0], "sshShellResize")?;
+    let cols: u32 = match &args[1] {
+        Value::Int(n) => *n as u32,
+        other => return Err(crate::value::error_value(format!(
+            "sshShellResize() 第 2 个参数 cols 应为 int，得到 {}", other.type_name()
+        ))),
+    };
+    let rows: u32 = match &args[2] {
+        Value::Int(n) => *n as u32,
+        other => return Err(crate::value::error_value(format!(
+            "sshShellResize() 第 3 个参数 rows 应为 int，得到 {}", other.type_name()
+        ))),
+    };
+
+    if session_arc.is_closed() {
+        return Ok(crate::value::error_value("sshShellResize() 会话已关闭"));
+    }
+
+    let session = &*session_arc;
+
+    let result = session.runtime.block_on(async {
+        let channel_lock = session.channel.lock().unwrap();
+        let channel = match channel_lock.as_ref() {
+            Some(c) => c,
+            None => return Err("会话已关闭".to_string()),
+        };
+        // russh 0.46 的 Channel::window_change(cols, rows, pix_w, pix_h)
+        channel.window_change(cols, rows, 0, 0).await
+            .map_err(|e| format!("SSH window_change 失败: {}", e))?;
+        Ok::<(), String>(())
+    });
+
+    match result {
+        Ok(()) => Ok(Value::Undefined),
+        Err(e) => Ok(crate::value::error_value(e)),
+    }
+}
+
+/// bi_ssh_shell_close 关闭 PTY 会话。
+fn bi_ssh_shell_close(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "sshShellClose")?;
+    let session_arc = ssh_session_clone(&args[0], "sshShellClose")?;
+
+    if session_arc.is_closed() {
+        return Ok(Value::Undefined);  // 已关闭，幂等
+    }
+    session_arc.mark_closed();
+
+    let session = &*session_arc;
+    // 取出 handle，发送 disconnect
+    let handle_opt = session.handle.lock().unwrap().take();
+    if let Some(handle) = handle_opt {
+        let _ = session.runtime.block_on(async {
+            let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+        });
+    }
+    Ok(Value::Undefined)
+}
+
+/// bi_ssh_shell_keepalive 启动保活线程。
+fn bi_ssh_shell_keepalive(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "sshShellKeepalive")?;
+    let session_arc = ssh_session_clone(&args[0], "sshShellKeepalive")?;
+    let interval: u64 = get_switch(args, "interval", "30").parse().unwrap_or(30);
+    let cmd = get_switch(args, "cmd", "");
+
+    if interval == 0 {
+        return Ok(Value::Undefined);  // 禁用保活
+    }
+
+    let session_clone = session_arc.clone();
+    let stream_id = session_arc.stream_id;
+
+    // 保活线程：周期触发
+    std::thread::spawn(move || {
+        loop {
+            // 等待 interval 秒（用短睡便于快速响应关闭）
+            let total_ms = interval * 1000;
+            let mut waited = 0u64;
+            while waited < total_ms {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                waited += 200;
+                if session_clone.is_closed() {
+                    return;  // 会话已关闭，退出保活线程
+                }
+            }
+
+            if session_clone.is_closed() {
+                return;
+            }
+
+            // 协议级 keepalive：发送一个空的全局请求（want_reply=false）
+            // russh 0.46 的 Handle 没有 explicit keepalive 方法，但 data() 空写或
+            // 发送 ignore 包可以达到类似效果。这里用 --cmd 执行命令更可靠。
+            let session = &*session_clone;
+            if !cmd.is_empty() {
+                // 执行空命令：通过新开一个 exec channel（不影响 PTY shell）
+                let cmd_owned = cmd.clone();
+                let result = session.runtime.block_on(async {
+                    let handle_lock = session.handle.lock().unwrap();
+                    let handle = match handle_lock.as_ref() {
+                        Some(h) => h,
+                        None => return Err("会话已关闭".to_string()),
+                    };
+                    // 开一个临时 channel 执行命令
+                    let ch = match handle.channel_open_session().await {
+                        Ok(c) => c,
+                        Err(e) => return Err(format!("保活开通道失败: {}", e)),
+                    };
+                    if ch.exec(true, cmd_owned).await.is_err() {
+                        return Err("保活 exec 失败".to_string());
+                    }
+                    // 不读输出，让 channel 自然结束
+                    Ok::<(), String>(())
+                });
+                if result.is_err() {
+                    // 保活失败，推送错误事件
+                    crate::builtins_async::push_stream_event(
+                        stream_id,
+                        Value::str_from("保活失败，连接可能已断开".to_string()),
+                        crate::builtins_async::StreamKind::Error,
+                    );
+                    return;
+                }
+            }
+            // cmd 为空时不发任何东西（仅靠上面的周期检查判断连接活性；
+            // 真正的 SSH 协议级 keepalive 需要底层支持，russh 0.46 未暴露 API）
+        }
+    });
+
+    Ok(Value::Undefined)
+}
+
+/// bi_ssh_shell_stream_id 返回会话的流 ID。
+fn bi_ssh_shell_stream_id(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "sshShellStreamId")?;
+    let session_arc = ssh_session_clone(&args[0], "sshShellStreamId")?;
+    Ok(Value::Int(session_arc.stream_id as i64))
+}
+

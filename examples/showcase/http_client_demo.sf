@@ -1,0 +1,228 @@
+// HTTP 客户端完整示例（基于 ureq）
+// 用法：sf examples/showcase/http_client_demo.sf
+//
+// 演示 Sflang HTTP 客户端能力：
+//   1. HTTPS GET（TLS 由系统证书校验，跨平台一致）
+//   2. HTTP GET 与自定义请求头
+//   3. POST JSON / POST 表单
+//   4. 二进制内容下载（Bytes）
+//   5. 文件下载
+//   6. urlExists 资源探测
+//   7. 错误信息友好性（DNS 错误、TLS 证书错误）
+//   8. 超时控制
+//
+// HTTP 客户端底层由 ureq 实现（纯 Rust，无 async runtime）：
+//   - TLS 证书使用系统证书库校验（Windows: SChannel；Linux: ca-certificates；macOS: Keychain）
+//   - Agent 连接池按超时秒数缓存复用，重复请求同一主机性能更优
+//   - 自动跟随重定向（最多 10 次）
+
+// ============================================================
+// 1. HTTPS GET（验证 TLS 系统证书校验）
+// ============================================================
+println("=== 1. HTTPS GET（TLS 系统证书校验） ===")
+secureResp := getWeb("https://example.com", "--timeout=15")
+if isErr(secureResp) {
+    println("  失败: " + getErrStr(secureResp))
+} else {
+    println("  成功，响应长度: " + toStr(len(secureResp)))
+    // 提取 <title>
+    startPos := strFind(secureResp, "<title>")
+    endPos := strFind(secureResp, "</title>")
+    if startPos >= 0 && endPos > startPos {
+        title := strSub(secureResp, startPos + 7, endPos)
+        println("  页面标题: " + title)
+    }
+}
+
+// ============================================================
+// 2. HTTP GET 与自定义请求头
+// ============================================================
+println("")
+println("=== 2. HTTP GET 自定义请求头 ===")
+// 多个 header 作为可选参数传入，格式 "Key: Value"
+headerResp := getWeb("https://httpbin.org/headers",
+    "Accept: application/json",
+    "X-Custom-Header: Sflang/0.1",
+    "X-Trace-Id: " + toStr(now()),
+    "--timeout=15")
+if isErr(headerResp) {
+    println("  失败: " + getErrStr(headerResp))
+} else {
+    println("  成功，响应长度: " + toStr(len(headerResp)))
+    // httpbin.org/headers 会回显请求头
+    parsed := jsonDecode(headerResp)
+    if !isErr(parsed) {
+        headers := parsed["headers"]
+        if headers != undefined {
+            println("  服务器收到 X-Custom-Header: " + toStr(headers["X-Custom-Header"]))
+        }
+    }
+}
+
+// ============================================================
+// 3. POST JSON
+// ============================================================
+println("")
+println("=== 3. POST JSON ===")
+jsonBody := jsonEncode({
+    "name": "Sflang",
+    "type": "language",
+    "version": "0.1.0",
+    "features": ["fast", "lightweight", "embedded"]
+})
+postResp := postWeb("https://httpbin.org/post", jsonBody, "application/json", "--timeout=15")
+if isErr(postResp) {
+    println("  失败: " + getErrStr(postResp))
+} else {
+    println("  成功，响应长度: " + toStr(len(postResp)))
+    parsed := jsonDecode(postResp)
+    if !isErr(parsed) {
+        echoed := parsed["json"]
+        if echoed != undefined {
+            println("  服务器回显 JSON: " + jsonEncode(echoed))
+        }
+    }
+}
+
+// ============================================================
+// 4. POST 表单
+// ============================================================
+println("")
+println("=== 4. POST 表单（application/x-www-form-urlencoded） ===")
+formBody := "username=admin&password=123456&remember=true"
+formResp := postWeb("https://httpbin.org/post", formBody, "application/x-www-form-urlencoded", "--timeout=15")
+if isErr(formResp) {
+    println("  失败: " + getErrStr(formResp))
+} else {
+    println("  成功，响应长度: " + toStr(len(formResp)))
+    parsed := jsonDecode(formResp)
+    if !isErr(parsed) {
+        form := parsed["form"]
+        if form != undefined {
+            println("  服务器解析表单: " + jsonEncode(form))
+        }
+    }
+}
+
+// ============================================================
+// 5. 二进制内容下载（Bytes）
+// ============================================================
+println("")
+println("=== 5. 二进制内容下载（getWebBytes） ===")
+imgBytes := getWebBytes("https://www.google.com/favicon.ico", "--timeout=15")
+if isErr(imgBytes) {
+    println("  失败: " + getErrStr(imgBytes))
+} else {
+    println("  成功，下载 " + toStr(len(imgBytes)) + " 字节")
+    // 保存到 temp 目录（二进制内容用 writeFileBytes）
+    writeFileBytes("temp/google_favicon.ico", imgBytes)
+    println("  已保存到 temp/google_favicon.ico")
+}
+
+// ============================================================
+// 6. 文件下载（downloadFile）
+// ============================================================
+println("")
+println("=== 6. 文件下载（downloadFile） ===")
+downloadSize := downloadFile("https://example.com", "temp/downloaded_example.html", "--timeout=15")
+if isErr(downloadSize) {
+    println("  失败: " + getErrStr(downloadSize))
+} else {
+    println("  成功，下载 " + toStr(downloadSize) + " 字节")
+    content := readFile("temp/downloaded_example.html")
+    if !isErr(content) {
+        // 显示前 80 字符
+        previewLen := 80
+        if len(content) < previewLen {
+            previewLen = len(content)
+        }
+        println("  文件预览: " + strSub(content, 0, previewLen))
+    }
+}
+
+// ============================================================
+// 7. urlExists 资源探测
+// ============================================================
+println("")
+println("=== 7. urlExists 资源探测 ===")
+urls := [
+    "https://example.com",
+    "https://github.com",
+    "https://nonexistent.invalid.domain.xyz"
+]
+for i in range(0, len(urls)) {
+    u := urls[i]
+    exists := urlExists(u)
+    println("  " + u + " -> " + toStr(exists))
+}
+
+// ============================================================
+// 8. 错误信息友好性演示
+// ============================================================
+println("")
+println("=== 8. 错误信息友好性 ===")
+// DNS 不存在的域名
+badResp := getWeb("https://nonexistent.invalid.domain.xyz", "--timeout=5")
+if isErr(badResp) {
+    println("  DNS 错误: " + getErrStr(badResp))
+    // 错误信息包含可能原因提示，便于 AI 自动定位
+} else {
+    println("  意外成功: " + toStr(len(badResp)))
+}
+
+// ============================================================
+// 9. 超时控制
+// ============================================================
+println("")
+println("=== 9. 超时控制 ===")
+// 1 秒超时，对慢响应服务器会触发超时
+slowResp := getWeb("https://httpbin.org/delay/5", "--timeout=1")
+if isErr(slowResp) {
+    println("  超时触发: " + getErrStr(slowResp))
+} else {
+    println("  意外成功（响应长度: " + toStr(len(slowResp)) + "）")
+}
+
+// ============================================================
+println("")
+println("=== 10. 重试机制（--retry=N） ===")
+// 对临时性失败（5xx/429/网络错误/超时）自动重试，指数退避
+// 仅在网络错误/5xx/429 上重试；4xx（除 429）和 2xx/3xx 不重试
+// 对一个不存在的域名做 2 次重试演示
+resetHttpStats()
+badResp := getWeb("https://this-domain-does-not-exist-xyz.invalid", "--timeout=3", "--retry=2")
+if isErr(badResp) {
+    println("  预期失败: " + getErrStr(badResp))
+}
+
+// 查看重试统计
+stats := httpStats()
+println("  重试统计：")
+println("    总请求数 totalRequests:", stats.totalRequests, " (应为 3：1 首次 + 2 重试)")
+println("    失败数   failureCount:", stats.failureCount, " (应为 3)")
+println("    重试次数 retryAttempts:", stats.retryAttempts, " (应为 2)")
+
+println("")
+println("=== 11. HTTP 客户端统计（httpStats） ===")
+resetHttpStats()
+// 发起若干请求
+getWeb("https://example.com", "--timeout=10")
+getWeb("https://example.com", "--timeout=10")
+getWebBytes("https://example.com", "--timeout=10")
+
+stats = httpStats()
+println("  3 次成功请求后的统计：")
+println("    totalRequests:", stats.totalRequests)
+println("    successCount:", stats.successCount)
+println("    failureCount:", stats.failureCount)
+println("    retryAttempts:", stats.retryAttempts)
+println("    agentPoolSize:", stats.agentPoolSize, " (按 timeout 缓存的 Agent 数)")
+
+println("")
+println("=== 所有 HTTP 客户端测试完成 ===")
+println("")
+println("提示：")
+println("  1. help(\"getWeb\") 查看函数详细文档")
+println("  2. help(\"http\") 查看所有 HTTP 分类函数")
+println("  3. sf --list-builtins http 命令行列出 HTTP 函数")
+println("  4. httpStats()/resetHttpStats() 用于客户端统计观测")

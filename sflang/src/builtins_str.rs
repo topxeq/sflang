@@ -68,18 +68,18 @@ static DOC_STR_REPLACE: BuiltinDoc = BuiltinDoc {
 
 static DOC_STR_SPLIT: BuiltinDoc = BuiltinDoc {
     category: "string",
-    signature: "strSplit(sep, s) -> array<string>",
-    summary: "按分隔符 sep 分割字符串 s。",
+    signature: "strSplit(s, sep) -> array<string>",
+    summary: "按分隔符 sep 分割字符串 s（源串在前，与主流语言一致）。",
     params: &[
-        ("sep", "分隔符字符串（非正则）"),
         ("s", "被分割的字符串"),
+        ("sep", "分隔符字符串（非正则）"),
     ],
     returns: "array<string> 分割后的片段",
     examples: &[
-        "strSplit(\",\", \"a,b,c\")    → [\"a\", \"b\", \"c\"]",
-        "strSplit(\"\", \"abc\")       → [\"a\", \"b\", \"c\"]（空分隔符按字符分割）",
+        "strSplit(\"a,b,c\", \",\")    → [\"a\", \"b\", \"c\"]",
+        "strSplit(\"abc\", \"\")       → [\"a\", \"b\", \"c\"]（空分隔符按字符分割）",
     ],
-    errors: &["参数顺序：sep 在前，s 在后"],
+    errors: &["参数顺序：s 在前，sep 在后"],
 };
 
 static DOC_STR_JOIN: BuiltinDoc = BuiltinDoc {
@@ -363,11 +363,11 @@ static DOC_STRSPLITLINES: BuiltinDoc = BuiltinDoc {
 
 static DOC_STRSPLITN: BuiltinDoc = BuiltinDoc {
     category: "string",
-    signature: "strSplitN(sep, s, n) -> array<string>",
-    summary: "分割，最多 n 段。",
-    params: &[("sep", "分隔符"), ("s", "字符串"), ("n", "最大段数")],
+    signature: "strSplitN(s, sep, n) -> array<string>",
+    summary: "分割，最多 n 段（源串在前，与 strSplit 一致）。",
+    params: &[("s", "字符串"), ("sep", "分隔符"), ("n", "最大段数")],
     returns: "array<string>",
-    examples: &[],
+    examples: &["strSplitN(\"a,b,c,d\", \",\", 2)  → [\"a\", \"b,c,d\"]"],
     errors: &[],
 };
 
@@ -644,9 +644,9 @@ fn bi_str_replace(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_split 按分隔符切分为字符串数组。
 fn bi_split(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    // strSplit(sep, s)：按分隔符 sep 分割字符串 s
-    let sep = bh::as_str(args, 0, "strSplit")?;
-    let src = bh::as_str(args, 1, "strSplit")?;
+    // strSplit(s, sep)：按分隔符 sep 分割字符串 s（与主流语言一致，源串在前）
+    let src = bh::as_str(args, 0, "strSplit")?;
+    let sep = bh::as_str(args, 1, "strSplit")?;
     let parts: Vec<Value> = if sep.is_empty() {
         // 空分隔符：按字符切分
         src.chars().map(|c| Value::str_from(c.to_string())).collect()
