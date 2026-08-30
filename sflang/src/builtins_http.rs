@@ -917,6 +917,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("getWebBytes", bi_get_web_bytes, &DOC_GET_WEB_BYTES);
     vm.register_builtin_doc("getWebBytesWithHeaders", bi_get_web_bytes_with_headers, &DOC_GET_WEB_BYTES_WITH_HEADERS);
     vm.register_builtin_doc("postWeb", bi_post_web, &DOC_POST_WEB);
+    vm.register_builtin_doc("postJson", bi_post_json, &DOC_POST_JSON);
     vm.register_builtin_doc("downloadFile", bi_download_file, &DOC_DOWNLOAD_FILE);
     vm.register_builtin_doc("urlExists", bi_url_exists, &DOC_URL_EXISTS);
     vm.register_builtin_doc("httpStats", bi_http_stats, &DOC_HTTP_STATS);
@@ -3997,6 +3998,38 @@ fn bi_get_web_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_post_web 发送 HTTP POST 请求，返回响应体字符串。
 ///
+static DOC_POST_JSON: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "postJson(url, jsonBody [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"Header: value\"]) -> string",
+    summary: "发送 JSON POST（postWeb 的便捷封装，Content-Type 固定为 application/json）。",
+    params: &[
+        ("url", "目标 URL"),
+        ("jsonBody", "JSON 字符串请求体"),
+        ("options", "可选，同 postWeb 的其余参数"),
+    ],
+    returns: "string 响应体（失败时返回 error 对象）",
+    examples: &[
+        "postJson(\"https://api.example.com/login\", \"{\\\"account\\\":\\\"a\\\",\\\"pwd\\\":\\\"b\\\"}\")",
+    ],
+    errors: &["网络失败或非 2xx 返回 error 对象（同 postWeb）"],
+};
+
+/// bi_post_json JSON POST 便捷封装：等价 postWeb(url, jsonBody, "application/json", 其余参数...)。
+///
+/// 用法：postJson(url, jsonBody [, options...])
+fn bi_post_json(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("postJson() 需要至少 2 个参数 (url, jsonBody)"));
+    }
+    // 在 body 之后插入 Content-Type，其余参数原样透传给 postWeb
+    let mut full: Vec<Value> = Vec::with_capacity(args.len() + 1);
+    full.push(args[0].clone());
+    full.push(args[1].clone());
+    full.push(Value::str_from("application/json".to_string()));
+    full.extend_from_slice(&args[2..]);
+    bi_post_web(_vm, &full)
+}
+
 /// 用法：
 ///   postWeb(url, body, contentType)               -- 基本用法
 ///   postWeb(url, body, contentType, "--timeout=30") -- 带超时

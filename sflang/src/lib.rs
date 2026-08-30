@@ -73,6 +73,7 @@ pub mod builtins_async;
 pub mod builtins_test;
 pub mod builtins_pinyin;
 pub mod builtins_jwt;
+pub mod builtins_rsa;
 pub mod builtins_cfg;
 pub mod builtins_template;
 pub mod builtins_tcp;

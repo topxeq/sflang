@@ -646,6 +646,16 @@ dataToBytes(2047, "-endian=B")                               // 8 字节大端�
 dataToBytes(2047, "-endian=B", "-size=2")                    // 2 字节大端 07FF
 ```
 
+### RSA 加密（对标 hlbr/JSEncrypt 服务端约定）
+
+```sflang
+rsaEncryptRaw(pwd, moduleHex, expHex)   // 无填充：明文字节反转后 m^e mod n，最小宽度 hex
+rsaEncrypt(pwd, moduleHex, expHex)      // PKCS#1 v1.5 填充，定宽 hex
+```
+
+模数/指数为 hex 字符串（奇数长度自动左补 0）。`rsaEncryptRaw` 匹配服务端 JS
+`new RSAKey(e, "", n).encrypt(pwd)` 的加密约定。
+
 ### CSV（RFC 4180）
 
 ```sflang
@@ -907,7 +917,7 @@ sf --list-builtins math     # 筛选 math 分类
 | pinyin | 2 | toPinYin/toPinYinInitial |
 | template | 2 | renderMarkdown/replaceHtmlByMap |
 
-共 **215 个函数** 有详细文档（24 个分类）。其余函数（image/http/db/s3/ssh/ftp/xlsx 等专用模块）暂无详细文档，但 help() 会显示"暂无文档"并提示分类。文档将持续补充。
+共 **218 个函数** 有详细文档（25 个分类）。其余函数（image/http/db/s3/ssh/ftp/xlsx 等专用模块）暂无详细文档，但 help() 会显示"暂无文档"并提示分类。文档将持续补充。
 
 ---
 

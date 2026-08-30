@@ -1,0 +1,64 @@
+{
+  "name": "sf",
+  "subtitle": "轻量快速的脚本语言 - 字节码 VM / 680+ 内置函数 / AI 友好 / 跨平台",
+  "category": "开发工具",
+  "tags": [
+    "编程语言",
+    "脚本",
+    "解释器",
+    "跨平台",
+    "AI",
+    "开发工具"
+  ],
+  "description": "### sf 是什么\n\n**Sflang** 的主程序：一个用 Rust 编写的轻量级脚本语言，字节码 VM 架构，目标速度介于 Rust 和 Python 之间、更靠近 Rust。语法接近主流高级语言，内置 680+ 函数覆盖文件、网络、数据库、加密、并发等常见场景——**不依赖第三方包管理，一个可执行文件开箱即用**。\n\n### 亮点\n\n- **极速执行**：编译为字节码 + VM 分发，零 GC 暂停（Arc 引用计数），启动毫秒级\n- **内置函数丰富**：字符串/数组/正则/JSON/XML/CSV/Excel/Word、SQLite/MySQL/PostgreSQL/MSSQL/Oracle、HTTP/FTP/SSH/SFTP、AES/TXDE/RSA 加密哈希、并发（线程/Channel/Mutex）……全部开箱即用\n- **AI 友好设计**：`help(函数名)` 运行时查文档，`help(分类)` 浏览全部函数；错误信息自带参数值、上下文与常见原因列举\n- **可嵌入**：作为 Rust crate 嵌入宿主程序；脚本可 `import` 复用\n- **跨平台**：Windows / Linux（musl 全静态，无依赖直接运行）\n\n### 一键安装\n\n```bash\n# Linux / macOS\ncurl -fsSL https://magicdo.top/install/sf.sh | bash\n\n# Windows (PowerShell)\nirm https://magicdo.top/install/sf.ps1 | iex\n```\n\n### 30 秒上手\n\n```bash\nsf                       # 启动 REPL（exit 或 Ctrl-D 退出）\nsf script.sf             # 执行脚本\nsf -e 'pln(\"1+1=${1+1}\")'  # 直接执行代码\nsf --list-builtins       # 列出全部内置函数\nsf -h                    # 帮助\n```\n\n### 代码长什么样\n\n```javascript\n// 问候：名字取自命令行参数\nvar name = argsG[0] ?? \"Sflang\"\npln(\"你好，${name}！\")\n\n/// fib 求斐波那契数\nfunc fib(n) {\n    if n < 2 { return n }\n    return fib(n - 1) + fib(n - 2)\n}\npln(\"fib(20) = ${fib(20)}\")\n\n// 数组高阶函数与插值\nvar squares = map([1, 2, 3, 4], func(x) { return x * x })\npln(\"平方数：${strJoin(squares, \", \")}\")\n\n// SQLite 查询：rows 是 map 数组，直接用\nvar db = dbConnect(\"sqlite3\", \"data.db\")\nvar rows = dbQuery(db, \"SELECT * FROM users WHERE age > ?\", 18)\nfor i, row in rows {\n    pl(\"%v: %v\", i, row[\"name\"])\n}\ndbClose(db)\n\n// 错误返回 error 值（不抛异常），AI 和人都能稳态处理\nvar resp = getWeb(\"https://api.example.com/data\")\nif isErr(resp) {\n    pln(\"请求失败：\", getErrStr(resp))\n}\n```\n\n### AI 友好（为 AI 编程专门设计）\n\n- **运行时文档**：`help(\"strSplit\")` 查签名/参数/示例/常见错误；`help(\"regex\")` 浏览分类；拼写容错给出相似建议\n- **充分报错**：内置函数失败返回的 error 带函数名、实参值与「可能原因」列举，AI 拿到信息即可自纠\n- **确定性行为**：一般错误返回 error 值而非抛异常，控制流可预期\n\n### 跨平台二进制\n\n| 平台 | 文件 |\n|------|------|\n| Windows x64 | sf.exe |\n| Linux x64 | sf（musl 全静态，无 glibc 版本顾虑） |\n\n### 相关链接\n\n- 开源仓库：https://github.com/topxeq/sflang\n- 语言参考：仓库 `docs/LANGUAGE.md`；REPL 内 `help()` 随查随用",
+  "icon": "sf-icon.png",
+  "screenshots": [],
+  "platforms": [
+    {
+      "name": "Windows",
+      "package": "D:/aiprjs/sflang/repo/target/release/sf.exe",
+      "minOsVersion": "Windows 10+",
+      "arch": "x64"
+    },
+    {
+      "name": "Linux x64",
+      "package": "D:/aiprjs/sflang/result/sf-linux-amd64",
+      "minOsVersion": "Ubuntu 20.04+ (musl 静态，无发行版限制)",
+      "arch": "amd64"
+    }
+  ],
+  "installScripts": [
+    {
+      "platform": "windows",
+      "label": "Windows 一键安装",
+      "type": "script",
+      "content": "irm https://magicdo.top/install/sf.ps1 | iex"
+    },
+    {
+      "platform": "linux",
+      "label": "Linux 一键安装",
+      "type": "script",
+      "content": "curl -fsSL https://magicdo.top/install/sf.sh | bash"
+    }
+  ],
+  "docs": [
+    {
+      "title": "快速开始",
+      "slug": "quickstart",
+      "format": "markdown",
+      "order": 1,
+      "content": "## 一键安装\n\n**Linux / macOS**：\n```bash\ncurl -fsSL https://magicdo.top/install/sf.sh | bash\n```\n\n**Windows (PowerShell)**：\n```powershell\nirm https://magicdo.top/install/sf.ps1 | iex\n```\n\n## REPL\n\n```text\n$ sf\nSflang REPL 0.1.0（.help 查看帮助；exit 或 Ctrl-D 退出）\nsf> 1 + 2 * 3\n7\nsf> pln(\"你好，${env：同名变量可直接插值}\")\nsf> help(\"strSplit\")     // 查任意内置函数文档\nsf> exit\n```\n\n## 执行脚本\n\n```bash\nsf script.sf              # 执行脚本文件（脚本参数从 argsG 读取）\nsf -e 'pln(1 + 2)'        # 直接执行一行代码\nsf --list-builtins        # 全部内置函数清单（可按分类筛选）\n```\n\n## 语法速览\n\n- 变量：`var x = 42`，动态类型，`undefined` 表示空值（`x ?? \"默认\"`）\n- 分支：`if / elif / else`；循环：`for i in range(5)`、`for i, v in arr`、`while`、`switch`\n- 函数：`func add(a, b) { return a + b }`，支持默认参数、可变参数、闭包\n- 集合：数组 `[1,2,3]`、对象 `{k: v}`（可挂方法做轻量 OOP）、有序 Map `map{k: v}`\n- 字符串：`\"插值 ${expr}\"`、反引号 Raw 多行、三引号多行\n- 错误：返回 `error` 值用 `isErr` 判断；也支持 `try/catch/finally` 与 `defer`\n- 并发：`run func() { ... }` 起线程，Channel / Mutex / WaitGroup 全套\n\n## 内置函数（680+，无需 import）\n\n| 分类 | 代表函数 |\n|------|----------|\n| 字符串/数组 | strSplit、strJoin、strReplace、filter、map、sort、contains |\n| 文件/目录 | readFile、writeFile、getFileList、joinPath、copyFile |\n| 网络 | getWeb、postJson、downloadFile、FTP、SSH/SFTP、TCP |\n| 数据库 | dbConnect/dbQuery（SQLite/MySQL/PostgreSQL/MSSQL/Oracle） |\n| 加密哈希 | aesEncrypt、md5、sha256、rsaEncryptRaw、base64、JWT |\n| 时间 | nowDT、formatTime、datetimeParse、dtAddDays |\n| 并发 | run、newChannel、chanSend/chanRecv、newMutex、newWaitGroup |\n| 办公文档 | excel 读写、docx 模板替换、CSV、XML、ZIP |\n\n`help()` 总览、`help(\"分类\")` 浏览、`help(\"函数名\")` 查详情——运行时自省，无需翻文档。"
+    },
+    {
+      "title": "AI 协作指南",
+      "slug": "ai-guide",
+      "format": "markdown",
+      "order": 2,
+      "content": "## 为什么适合 AI 写脚本\n\nsf 把「AI 写脚本最常见的失败模式」在语言层做了消解：\n\n### 1. 运行时自省，不用猜 API\n\n```text\nhelp()                 // 全部分类一览\nhelp(\"http\")           // 网络类函数 + 简介\nhelp(\"rsaEncryptRaw\")  // 签名/参数/返回/示例/常见错误\n```\n\n`--list-builtins` 可全量导出。函数名拼写容错：`help(\"strsplite\")` 会给出最接近的 `strSplit`。\n\n### 2. 报错自带修复线索\n\n内置函数失败返回 error 值，信息包含：函数名、实参回显、期望类型、常见原因。例如：\n\n```text\ndownloadFile() 下载失败: HTTP GET 请求失败: io: Connection refused\n(可能原因：DNS 解析失败、网络不通、TLS 证书验证失败、服务器拒绝连接)\n```\n\nAI 拿到即可判断是地址写错还是服务未启动，无需二次试探。\n\n### 3. 参数顺序容错设计\n\n历史上 AI 常在 `regFind(参数顺序)` 一类调用上反复出错。sf 的函数命名与参数约定稳定一致（目标在前、模式在后），配合 `help` 当场确认，出错即自纠。\n\n### 4. 稳态错误处理\n\n一般错误（IO 失败、参数不匹配）返回 error 值而非抛异常，脚本用 `isErr` 分支处理，控制流确定；只有除零等真正不可恢复的情况才抛异常。\n\n## 嵌入与自动化\n\n- 退出码契约：脚本 `exit(1)` 即退出码 1，`fatalf` 输出到 stderr 并以 1 退出，方便调用方判断\n- `--remote <url>` / `--cloud <名>` 远程脚本执行；`import \"lib.sf\"` 模块化复用\n- 作为 Rust crate（`sflang`）嵌入宿主程序，注入自定义全局与函数"
+    }
+  ],
+  "featured": true,
+  "featuredOrder": 9,
+  "homepageBadge": "v0.1.0",
+  "homepageSection": "downloads"
+}

@@ -225,6 +225,7 @@ impl VM {
         crate::builtins_test::register(&mut vm);
         crate::builtins_pinyin::register(&mut vm);
         crate::builtins_jwt::register(&mut vm);
+        crate::builtins_rsa::register(&mut vm);
         crate::builtins_cfg::register(&mut vm);
         crate::builtins_template::register(&mut vm);
         crate::builtins_tcp::register(&mut vm);
