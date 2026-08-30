@@ -20,8 +20,10 @@ $ICON = "D:\aiprjs\sflang\repo\sf-icon.png"
 
 # ---- 平台 → 二进制文件 映射 ----
 $PLATFORMS = @(
-    (New-Object PSObject -Property @{name="Windows";   file="D:\aiprjs\sflang\repo\target\release\sf.exe";   filename="sf.exe";               platform="Windows";   arch="x64"}),
-    (New-Object PSObject -Property @{name="Linux x64"; file="D:\aiprjs\sflang\result\sf-linux-amd64";        filename="sf-linux-amd64.bin";   platform="Linux x64"; arch="amd64"})
+    (New-Object PSObject -Property @{name="Windows";     file="D:\aiprjs\sflang\repo\target\release\sf.exe"; filename="sf.exe";                 platform="Windows";     arch="x64"}),
+    (New-Object PSObject -Property @{name="Linux x64";   file="D:\aiprjs\sflang\result\sf-linux-amd64";      filename="sf-linux-amd64.bin";     platform="Linux x64";   arch="amd64"}),
+    (New-Object PSObject -Property @{name="Linux ARM64"; file="D:\aiprjs\sflang\result\sf-arm64";            filename="sf-linux-arm64.bin";     platform="Linux ARM64"; arch="arm64"}),
+    (New-Object PSObject -Property @{name="macOS";       file="D:\aiprjs\sflang\result\sf-universal";        filename="sf-macos-universal.bin"; platform="macOS";       arch="universal"})
 )
 
 Write-Host ""

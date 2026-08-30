@@ -25,6 +25,18 @@
       "package": "D:/aiprjs/sflang/result/sf-linux-amd64",
       "minOsVersion": "Ubuntu 20.04+ (musl 静态，无发行版限制)",
       "arch": "amd64"
+    },
+    {
+      "name": "macOS",
+      "package": "D:/aiprjs/sflang/result/sf-universal",
+      "minOsVersion": "macOS 12+",
+      "arch": "universal"
+    },
+    {
+      "name": "Linux ARM64",
+      "package": "D:/aiprjs/sflang/result/sf-arm64",
+      "minOsVersion": "Ubuntu 20.04+ (aarch64)",
+      "arch": "arm64"
     }
   ],
   "installScripts": [
@@ -37,6 +49,12 @@
     {
       "platform": "linux",
       "label": "Linux 一键安装",
+      "type": "script",
+      "content": "curl -fsSL https://magicdo.top/install/sf.sh | bash"
+    },
+    {
+      "platform": "macos",
+      "label": "macOS 一键安装",
       "type": "script",
       "content": "curl -fsSL https://magicdo.top/install/sf.sh | bash"
     }
