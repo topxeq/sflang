@@ -111,8 +111,29 @@ pub fn register(vm: &mut VM) {
 
 // ---- 编码（Value → JSON 字符串）----
 
-/// encode_value 递归编码 Value 到 JSON 字符串。
+/// encode_value 递归编码 Value 到 JSON 字符串（兼容入口，深度从 0 起）。
+///
+/// 深度超限时静默截断（老调用方无法感知错误）；需要错误感知请用
+/// encode_value_checked（jsonEncode/compactJson 等内置函数均走该入口）。
 pub fn encode_value(v: &Value, out: &mut String) {
+    let _ = encode_value_checked(v, out);
+}
+
+/// encode_value_checked 带深度防护的编码入口，超深/循环引用返回 error。
+pub fn encode_value_checked(v: &Value, out: &mut String) -> Result<(), Value> {
+    encode_value_at(v, out, 0)
+}
+
+/// encode_value_at 按当前深度递归编码；容器（array/object/map）每层 +1，
+/// 超过 MAX_DEPTH 返回 error（与解码侧限制一致，防深嵌套/循环引用栈溢出）。
+fn encode_value_at(v: &Value, out: &mut String, depth: usize) -> Result<(), Value> {
+    /// err_depth 深度超限错误（AI 友好提示）。
+    fn err_depth() -> Value {
+        crate::value::error_value(format!(
+            "JSON 编码嵌套深度超过 {} 层 (可能原因：数据嵌套过深或存在循环引用)",
+            MAX_DEPTH,
+        ))
+    }
     match v {
         Value::Undefined => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -150,6 +171,9 @@ pub fn encode_value(v: &Value, out: &mut String) {
             out.push(']');
         }
         Value::Array(a) => {
+            if depth > MAX_DEPTH {
+                return Err(err_depth());
+            }
             out.push('[');
             // 克隆快照后释放锁，再递归（避免持锁死锁）
             let snapshot: Vec<Value> = a.lock().unwrap().clone();
@@ -157,11 +181,14 @@ pub fn encode_value(v: &Value, out: &mut String) {
                 if i > 0 {
                     out.push(',');
                 }
-                encode_value(elem, out);
+                encode_value_at(elem, out, depth + 1)?;
             }
             out.push(']');
         }
         Value::Object(o) => {
+            if depth > MAX_DEPTH {
+                return Err(err_depth());
+            }
             out.push('{');
             let snapshot: Vec<(String, Value)> = o.lock().unwrap().snapshot();
             let mut first = true;
@@ -170,11 +197,14 @@ pub fn encode_value(v: &Value, out: &mut String) {
                 first = false;
                 encode_string(k, out);
                 out.push(':');
-                encode_value(val, out);
+                encode_value_at(val, out, depth + 1)?;
             }
             out.push('}');
         }
         Value::Map(m) => {
+            if depth > MAX_DEPTH {
+                return Err(err_depth());
+            }
             out.push('{');
             let snapshot: Vec<(String, Value)> = m.lock().unwrap().snapshot();
             let mut first = true;
@@ -183,7 +213,7 @@ pub fn encode_value(v: &Value, out: &mut String) {
                 first = false;
                 encode_string(k, out);
                 out.push(':');
-                encode_value(val, out);
+                encode_value_at(val, out, depth + 1)?;
             }
             out.push('}');
         }
@@ -206,6 +236,7 @@ pub fn encode_value(v: &Value, out: &mut String) {
         // HttpReq/HttpResp/WebSocket 无 JSON 表示，编码为 null
         Value::HttpReq(_) | Value::HttpResp(_) | Value::WebSocket(_) => out.push_str("null"),
     }
+    Ok(())
 }
 
 /// encode_string 编码字符串字面量（带转义）。
@@ -229,11 +260,11 @@ fn encode_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
-/// bi_json_encode 将 Value 编码为 JSON 字符串。
+/// bi_json_encode 将 Value 编码为 JSON 字符串（深度防护，超深返回 error）。
 fn bi_json_encode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     bh::require_arg(args, 0, "jsonEncode")?;
     let mut out = String::new();
-    encode_value(&args[0], &mut out);
+    encode_value_checked(&args[0], &mut out)?;
     Ok(Value::str_from(out))
 }
 
@@ -372,7 +403,23 @@ impl<'a> Decoder<'a> {
         Ok(Value::Array(Arc::new(Mutex::new(arr))))
     }
 
+    /// parse_hex4 从当前位置（指向 'u'）解析 \uXXXX 的 4 位十六进制，返回码点。
+    ///
+    /// 成功后 self.pos 保持指向 'u'（由调用方统一推进消费）。
+    fn parse_hex4(&self, pos: usize) -> Result<u32, Value> {
+        if pos + 4 >= self.bytes.len() {
+            return Err(self.err("\\u 转义不完整"));
+        }
+        let hex = std::str::from_utf8(&self.bytes[pos + 1..pos + 5])
+            .map_err(|_| self.err("\\u 转义非 UTF-8"))?;
+        u32::from_str_radix(hex, 16).map_err(|_| self.err("\\u 转义非十六进制"))
+    }
+
     /// parse_string 解析字符串字面量，返回解转义后的 String。
+    ///
+    /// \uXXXX 支持 UTF-16 代理对：高代理（D800-DBFF）后必须紧跟 \uXXXX
+    /// 低代理（DC00-DFFF），二者合成一个增补平面码点（如 emoji）；无法配对
+    /// 或非法码点返回解析错误，而非静默丢弃。
     fn parse_string(&mut self) -> Result<String, Value> {
         self.pos += 1; // 消费开头 '"'
         let mut s = String::new();
@@ -395,18 +442,25 @@ impl<'a> Decoder<'a> {
                         Some(b'b') => s.push('\u{08}'),
                         Some(b'f') => s.push('\u{0C}'),
                         Some(b'u') => {
-                            // \uXXXX
-                            if self.pos + 4 >= self.bytes.len() {
-                                return Err(self.err("\\u 转义不完整"));
-                            }
-                            let hex = std::str::from_utf8(&self.bytes[self.pos + 1..self.pos + 5])
-                                .map_err(|_| self.err("\\u 转义非 UTF-8"))?;
-                            let code = u32::from_str_radix(hex, 16)
-                                .map_err(|_| self.err("\\u 转义非十六进制"))?;
-                            self.pos += 4;
-                            if let Some(ch) = char::from_u32(code) {
-                                s.push(ch);
-                            }
+                            // \uXXXX；当前 self.pos 指向 'u'
+                            let code = self.parse_hex4(self.pos)?;
+                            self.pos += 4; // 指向第 4 个十六进制字符
+                            let ch = if (0xD800..=0xDBFF).contains(&code) {
+                                // 高代理项：预读下一个 \uXXXX，必须是低代理项，合成码点
+                                let hi = code;
+                                let lo = self.parse_pair_low()?;
+                                let cp = 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00);
+                                self.pos += 6; // 越过第二个转义的前 3 个字符（含 'u'）
+                                char::from_u32(cp)
+                                    .ok_or_else(|| self.err("代理对合成的码点非法"))?
+                            } else if (0xDC00..=0xDFFF).contains(&code) {
+                                // 单独出现的低代理项不是合法字符
+                                return Err(self.err("单独的低代理项 \\uDC00-\\uDFFF 不是合法字符"));
+                            } else {
+                                char::from_u32(code)
+                                    .ok_or_else(|| self.err("非法的 Unicode 码点"))?
+                            };
+                            s.push(ch);
                         }
                         Some(_) => return Err(self.err("无效的转义字符")),
                         None => return Err(self.err("转义序列不完整")),
@@ -430,6 +484,27 @@ impl<'a> Decoder<'a> {
             }
         }
         Ok(s)
+    }
+
+    /// parse_pair_low 在高代理项之后预读 "\uXXXX" 低代理项，返回其码点。
+    ///
+    /// 调用时 self.pos 位于高代理项转义的第 4 个十六进制字符上；
+    /// 成功时不推进 pos（由调用方统一 +6 消费整个第二转义）。
+    fn parse_pair_low(&self) -> Result<u32, Value> {
+        // 第二个转义应位于 pos+1（'\\'）、pos+2（'u'）、pos+3..pos+7（4 位十六进制）
+        if self.pos + 6 >= self.bytes.len()
+            || self.bytes[self.pos + 1] != b'\\'
+            || self.bytes[self.pos + 2] != b'u' {
+            return Err(self.err("高代理项 \\uD800-\\uDBFF 后未跟随 \\uXXXX 低代理项"));
+        }
+        let hex = std::str::from_utf8(&self.bytes[self.pos + 3..self.pos + 7])
+            .map_err(|_| self.err("\\u 转义非 UTF-8"))?;
+        let lo = u32::from_str_radix(hex, 16)
+            .map_err(|_| self.err("\\u 转义非十六进制"))?;
+        if !(0xDC00..=0xDFFF).contains(&lo) {
+            return Err(self.err("高代理项后跟随的不是低代理项 \\uDC00-\\uDFFF"));
+        }
+        Ok(lo)
     }
 
     /// parse_bool 解析 true/false。
@@ -482,7 +557,12 @@ impl<'a> Decoder<'a> {
         } else {
             text.parse::<i64>()
                 .map(Value::Int)
-                // 极大整数降级为 float
+                // i64 放不下时先尝试 bigInt（保持任意精度，避免静默降级 f64 丢精度）
+                .or_else(|_| {
+                    crate::bigint::BigInt::from_str_decimal(text)
+                        .map(|b| Value::BigInt(Arc::new(b)))
+                })
+                // 仍失败（空数字等非法形式）最后尝试 f64（如位数溢出的极端写法）
                 .or_else(|_| text.parse::<f64>().map(Value::Float))
                 .map_err(|_| self.err("无效的数字"))
         }
@@ -609,14 +689,25 @@ fn push_indent(out: &mut String, level: usize, indent_str: &str) {
 ///
 /// 与 encode_value 的区别：对象/数组元素各占一行，按 indent 层级缩进。
 /// 标量类型（数字/字符串/布尔/undefined 等）复用 encode_value 的紧凑输出。
-fn pretty_encode(v: &Value, out: &mut String, indent: usize, indent_str: &str) {
+/// 带深度防护（与 encode_value_at 一致，超深返回 error）。
+fn pretty_encode(v: &Value, out: &mut String, indent: usize, indent_str: &str, depth: usize) -> Result<(), Value> {
+    /// err_depth 深度超限错误（AI 友好提示）。
+    fn err_depth() -> Value {
+        crate::value::error_value(format!(
+            "JSON 编码嵌套深度超过 {} 层 (可能原因：数据嵌套过深或存在循环引用)",
+            MAX_DEPTH,
+        ))
+    }
     match v {
         Value::Array(a) => {
+            if depth > MAX_DEPTH {
+                return Err(err_depth());
+            }
             // 克隆快照后释放锁，再递归避免持锁死锁
             let snapshot: Vec<Value> = a.lock().unwrap().clone();
             if snapshot.is_empty() {
                 out.push_str("[]");
-                return;
+                return Ok(());
             }
             out.push('[');
             for (i, elem) in snapshot.iter().enumerate() {
@@ -625,17 +716,20 @@ fn pretty_encode(v: &Value, out: &mut String, indent: usize, indent_str: &str) {
                 }
                 out.push('\n');
                 push_indent(out, indent + 1, indent_str);
-                pretty_encode(elem, out, indent + 1, indent_str);
+                pretty_encode(elem, out, indent + 1, indent_str, depth + 1)?;
             }
             out.push('\n');
             push_indent(out, indent, indent_str);
             out.push(']');
         }
         Value::Object(o) => {
+            if depth > MAX_DEPTH {
+                return Err(err_depth());
+            }
             let snapshot: Vec<(String, Value)> = o.lock().unwrap().snapshot();
             if snapshot.is_empty() {
                 out.push_str("{}");
-                return;
+                return Ok(());
             }
             out.push('{');
             for (i, (k, val)) in snapshot.iter().enumerate() {
@@ -646,17 +740,20 @@ fn pretty_encode(v: &Value, out: &mut String, indent: usize, indent_str: &str) {
                 push_indent(out, indent + 1, indent_str);
                 encode_string(k, out);
                 out.push_str(": ");
-                pretty_encode(val, out, indent + 1, indent_str);
+                pretty_encode(val, out, indent + 1, indent_str, depth + 1)?;
             }
             out.push('\n');
             push_indent(out, indent, indent_str);
             out.push('}');
         }
         Value::Map(m) => {
+            if depth > MAX_DEPTH {
+                return Err(err_depth());
+            }
             let snapshot: Vec<(String, Value)> = m.lock().unwrap().snapshot();
             if snapshot.is_empty() {
                 out.push_str("{}");
-                return;
+                return Ok(());
             }
             out.push('{');
             for (i, (k, val)) in snapshot.iter().enumerate() {
@@ -667,15 +764,16 @@ fn pretty_encode(v: &Value, out: &mut String, indent: usize, indent_str: &str) {
                 push_indent(out, indent + 1, indent_str);
                 encode_string(k, out);
                 out.push_str(": ");
-                pretty_encode(val, out, indent + 1, indent_str);
+                pretty_encode(val, out, indent + 1, indent_str, depth + 1)?;
             }
             out.push('\n');
             push_indent(out, indent, indent_str);
             out.push('}');
         }
-        // 标量类型复用紧凑编码
+        // 标量类型复用紧凑编码（标量不递归，无需深度防护）
         _ => encode_value(v, out),
     }
+    Ok(())
 }
 
 /// bi_format_json 美化 JSON 输出（带换行和缩进）。
@@ -698,17 +796,17 @@ fn bi_format_json(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     };
     let indent_str = " ".repeat(spaces);
     let mut out = String::new();
-    pretty_encode(&args[0], &mut out, 0, &indent_str);
+    pretty_encode(&args[0], &mut out, 0, &indent_str, 0)?;
     Ok(Value::str_from(out))
 }
 
 /// bi_compact_json 紧凑 JSON 输出（无空格无换行）。
 ///
-/// 与 jsonEncode 等价，直接复用 encode_value。
+/// 与 jsonEncode 等价（含深度防护），直接复用 encode_value_checked。
 fn bi_compact_json(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     bh::require_arg(args, 0, "compactJson")?;
     let mut out = String::new();
-    encode_value(&args[0], &mut out);
+    encode_value_checked(&args[0], &mut out)?;
     Ok(Value::str_from(out))
 }
 

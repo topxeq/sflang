@@ -22,25 +22,39 @@ fn sum_bytes(data: &[u8]) -> u8 {
 }
 
 /// random_byte 生成一个伪随机字节。
+///
+/// 多源熵（系统时间 + OS 随机种子的 RandomState 哈希 + 线程 id + 计数器）经
+/// splitmix64 混合（原实现仅纳秒乘常数后取高位，值域恒 < 64 且可预测）。
+/// 非密码学级随机，但字节值域完整、跨次调用不重复。
 fn random_byte() -> u8 {
-    let nanos = std::time::SystemTime::now()
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0) as u64;
-    // 用纳秒时间做简单随机
-    let seed = nanos.wrapping_mul(2654435761u64);
-    (seed >> 56) as u8
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    // OS 随机种子（RandomState 每个进程由操作系统播种）
+    seed ^= {
+        use std::hash::{BuildHasher, Hasher};
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u64(0x5346_4c41_4e47);
+        h.finish()
+    };
+    seed ^= COUNTER.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    // splitmix64 终混
+    seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = seed;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    ((z ^ (z >> 31)) & 0xFF) as u8
 }
 
 /// random_bytes 生成多个伪随机字节。
+///
+/// 每字节独立混合计数器，无需 sleep（原实现每字节 sleep(1ns)，在 Windows
+/// 毫秒级定时器粒度下耗时且可能产生重复字节）。
 fn random_bytes(n: usize) -> Vec<u8> {
-    let mut result = Vec::with_capacity(n);
-    for _ in 0..n {
-        result.push(random_byte());
-        // 微小延迟让纳秒变化
-        std::thread::sleep(std::time::Duration::from_nanos(1));
-    }
-    result
+    (0..n).map(|_| random_byte()).collect()
 }
 
 /// hex_encode 大写 hex 编码。
@@ -121,6 +135,8 @@ pub fn encrypt_data_txdee(src: &[u8], code: &str) -> Vec<u8> {
 
 /// decrypt_data_txdee 数据解密。
 pub fn decrypt_data_txdee(src: &[u8], code: &str) -> Option<Vec<u8>> {
+    // 空输入是加密侧空明文的合法产物，往返闭合返回空（而非"密码错误"）
+    if src.is_empty() { return Some(Vec::new()); }
     if src.len() < 4 { return None; }
     let code = if code.is_empty() { "topxeq" } else { code };
     let code_bytes = code.as_bytes();
@@ -179,6 +195,8 @@ pub fn encrypt_data_txdef(src: &[u8], code: &str, add_head: bool) -> Vec<u8> {
 
 /// decrypt_data_txdef 数据解密。
 pub fn decrypt_data_txdef(src: &[u8], code: &str) -> Option<Vec<u8>> {
+    // 空输入是加密侧空明文的合法产物，往返闭合返回空
+    if src.is_empty() { return Some(Vec::new()); }
     let code = if code.is_empty() { "topxeq" } else { code };
     let code_bytes = code.as_bytes();
     let code_len = code_bytes.len();
@@ -294,6 +312,8 @@ pub fn encrypt_data_txdem(src: &[u8], code_a: &str, code_b: &str) -> Vec<u8> {
 
 /// decrypt_data_txdem 数据解密（需要 code_a 或 code_b 之一）。
 pub fn decrypt_data_txdem(src: &[u8], code_a: &str) -> Option<Vec<u8>> {
+    // 空输入是加密侧空明文的合法产物，往返闭合返回空
+    if src.is_empty() { return Some(Vec::new()); }
     let code_a = if code_a.is_empty() { "topxeq" } else { code_a };
 
     // 去除 magic bytes

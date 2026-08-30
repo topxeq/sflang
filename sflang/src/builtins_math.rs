@@ -66,7 +66,7 @@ static DOC_SQRT: BuiltinDoc = BuiltinDoc {
     params: &[("x", "数值（int/float，≥0）")],
     returns: "float 平方根",
     examples: &["sqrt(9) → 3", "sqrt(2) → 1.4142135623730951"],
-    errors: &["负数返回 NaN"],
+    errors: &["负数返回 error"],
 };
 
 static DOC_POW: BuiltinDoc = BuiltinDoc {
@@ -295,10 +295,11 @@ pub fn register(vm: &mut VM) {
 
 /// 对浮点结果按需装回 Int（若为整数值），否则保持 Float。
 ///
-/// 范围检查用 i64::MAX 的精确浮点表示，避免 9.2e18 这类近似截断导致
-/// [9.2e18, 9.2234e18) 区间的整数值被错误返回为 Float。
+/// 范围检查用严格小于 2^63（即 i64::MAX as f64 的值）：f64 恰好等于 2^63 时
+/// `as i64` 会饱和为 i64::MAX（2^63-1），结果差 1，因此 2^63 及以上一律保持 Float。
+/// 2^63 以下的整数值 f64 均可精确表示，装回 Int 不损失精度。
 fn num(f: f64) -> Value {
-    if f.is_finite() && f.fract() == 0.0 && f.abs() <= (i64::MAX as f64) {
+    if f.is_finite() && f.fract() == 0.0 && f.abs() < (i64::MAX as f64) {
         Value::Int(f as i64)
     } else {
         Value::Float(f)
@@ -309,8 +310,10 @@ fn num(f: f64) -> Value {
 ///
 /// 用于 floor/ceil/round 等"结果必为整数"的函数：输入超出 i64 范围时报错，
 /// 而非静默饱和到 i64::MAX/MIN（避免返回错误结果）。
+/// 上界用严格小于：f == 2^63 时 `as i64` 饱和为 i64::MAX，差 1，应视为越界；
+/// 下界 f == -2^63 可被精确表示为 i64::MIN，允许通过。
 fn to_i64_checked(f: f64) -> Option<i64> {
-    if f.is_finite() && f >= (i64::MIN as f64) && f <= (i64::MAX as f64) {
+    if f.is_finite() && f >= (i64::MIN as f64) && f < (i64::MAX as f64) {
         Some(f as i64)
     } else {
         None
@@ -318,9 +321,20 @@ fn to_i64_checked(f: f64) -> Option<i64> {
 }
 
 /// bi_abs 绝对值。
+///
+/// Int 输入为 i64::MIN 时无法用 i64 表示其绝对值（2^63 超出 i64 范围），
+/// 返回 error（提示转 bigInt 处理），而非静默返回负值。
 fn bi_abs(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "abs")?;
     match &args[0] {
-        Value::Int(i) => Ok(Value::Int(i.wrapping_abs())),
+        Value::Int(i) => {
+            if *i == i64::MIN {
+                return Err(crate::value::error_value(
+                    "abs() 的参数超出 i64 范围：i64::MIN 的绝对值 2^63 无法用 int 表示 (可能原因：传入极小值；可转 bigInt 处理，如 abs(bigInt(x)))",
+                ));
+            }
+            Ok(Value::Int(i.wrapping_abs())) // 已排除 i64::MIN，wrapping_abs 即精确绝对值
+        }
         _ => Ok(num(bh::as_float(args, 0, "abs")?.abs())),
     }
 }
@@ -393,19 +407,38 @@ fn bi_sign(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 }
 
 /// 归约辅助：对一组数值（可变参或单个数组）应用比较，返回极值 Value。
+///
+/// 任一输入为 Float 时结果保持 Float（与文档"类型与输入一致"对齐），
+/// 例如 min(2.0, 3) → 2.0（float），而非降级为 int。
 fn reduce_num<F: Fn(f64, f64) -> f64>(args: &[Value], fn_name: &str, cmp: F) -> Result<Value, Value> {
+    // has_float：输入中是否出现 Float 类型（决定结果类型）
+    let mut has_float = false;
     // 单参数且为数组：按数组元素归约；否则按可变参处理。
     let values: Vec<f64> = if args.len() == 1 {
         if let Value::Array(a) = &args[0] {
-            a.lock().unwrap().iter().map(|v| v.to_f64()).collect::<Option<_>>()
+            let guard = a.lock().unwrap();
+            guard.iter().map(|v| {
+                if matches!(v, Value::Float(_)) {
+                    has_float = true;
+                }
+                v.to_f64()
+            }).collect::<Option<_>>()
                 .ok_or_else(|| crate::value::error_value(format!(
                     "{}() 数组元素需全部为数字 (可能原因：数组含非数字类型)", fn_name)))?
         } else {
+            if matches!(&args[0], Value::Float(_)) {
+                has_float = true;
+            }
             vec![bh::as_float(args, 0, fn_name)?]
         }
     } else {
         (0..args.len())
-            .map(|i| bh::as_float(args, i, fn_name))
+            .map(|i| {
+                if matches!(&args[i], Value::Float(_)) {
+                    has_float = true;
+                }
+                bh::as_float(args, i, fn_name)
+            })
             .collect::<Result<Vec<_>, _>>()?
     };
     if values.is_empty() {
@@ -416,7 +449,11 @@ fn reduce_num<F: Fn(f64, f64) -> f64>(args: &[Value], fn_name: &str, cmp: F) -> 
     for &x in &values[1..] {
         acc = cmp(acc, x);
     }
-    Ok(num(acc))
+    if has_float {
+        Ok(Value::Float(acc))
+    } else {
+        Ok(num(acc))
+    }
 }
 
 /// bi_min 最小值（可变参或单个数组）。
@@ -569,8 +606,10 @@ fn bi_rand_int(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     // 用 u128 计算 span，避免 hi=i64::MAX 时 hi-lo+1 溢出 i64/u64。
     // 最大 span = i64::MAX - i64::MIN + 1 = 2^64，超出 u64 范围，故用 u128。
     let span = (hi as i128 - lo as i128 + 1) as u128;
-    let r = ((next_rand() as u128) % span) as i64;
-    Ok(Value::Int(lo + r))
+    let r = ((next_rand() as u128) % span) as i128;
+    // 用 i128 做加法再转回 i64：lo + r 必落在 [lo, hi] 内，i64 直接相加会在
+    // 大跨度（如 lo 为负、hi 为 i64::MAX）时回绕得到错误结果。
+    Ok(Value::Int((lo as i128 + r) as i64))
 }
 
 // ---- 表达式求值（递归下降解析器）----
@@ -580,17 +619,22 @@ fn bi_rand_int(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 // 返回 int 或 float：若表达式仅含整数且运算结果为整数则返回 int，
 // 否则返回 float。
 
+/// EVAL_MAX_DEPTH 表达式求值最大递归深度（防深嵌套导致 Rust 栈溢出）。
+const EVAL_MAX_DEPTH: usize = 1000;
+
 /// EvalParser 表达式求值解析器。
 struct EvalParser<'a> {
     // 输入字节切片
     src: &'a [u8],
     // 当前位置
     pos: usize,
+    // 当前递归深度（parse_factor 每层 +1）
+    depth: usize,
 }
 
 impl<'a> EvalParser<'a> {
     fn new(src: &'a str) -> Self {
-        EvalParser { src: src.as_bytes(), pos: 0 }
+        EvalParser { src: src.as_bytes(), pos: 0, depth: 0 }
     }
 
     /// skip_ws 跳过空白字符。
@@ -661,7 +705,24 @@ impl<'a> EvalParser<'a> {
     }
 
     /// parse_factor 解析因子（数字 / 括号 / 一元正负号）。
+    ///
+    /// 递归入口（括号嵌套、连续一元正负号都会加深递归），加深度计数：
+    /// 超过 EVAL_MAX_DEPTH 层返回错误，避免深嵌套输入导致栈溢出。
     fn parse_factor(&mut self) -> Result<f64, String> {
+        self.depth += 1;
+        if self.depth > EVAL_MAX_DEPTH {
+            return Err(format!(
+                "表达式嵌套过深（超过 {} 层，可能原因：括号未闭合或连续一元符号过多）",
+                EVAL_MAX_DEPTH,
+            ));
+        }
+        let r = self.parse_factor_body();
+        self.depth -= 1;
+        r
+    }
+
+    /// parse_factor_body 因子解析主体（深度计数由 parse_factor 负责）。
+    fn parse_factor_body(&mut self) -> Result<f64, String> {
         self.skip_ws();
         match self.peek() {
             Some(b'(') => {

@@ -408,6 +408,35 @@ fn test_string_len() {
 }
 
 #[test]
+fn test_format_code() {
+    // 嵌套缩进 + 闭括号行外缩 + 结尾单个换行
+    assert_eq!(
+        eval("return formatCode(\"func f() {\\npln(1)\\n}\")"),
+        Value::str("func f() {\n    pln(1)\n}\n")
+    );
+    // 深层嵌套逐层缩进
+    assert_eq!(
+        eval("return formatCode(\"if a {\\nif b {\\nx\\n}\\n}\")"),
+        Value::str("if a {\n    if b {\n        x\n    }\n}\n")
+    );
+    // 字符串/注释中的大括号不影响深度
+    assert_eq!(
+        eval("return formatCode(\"var s = \\\"{\\\"\\n// {\\npln(1)\")"),
+        Value::str("var s = \"{\"\n// {\npln(1)\n")
+    );
+    // 行尾空白去除、行首原缩进替换
+    assert_eq!(
+        eval("return formatCode(\"    pln(1)   \")"),
+        Value::str("pln(1)\n")
+    );
+    // 幂等：格式化两次结果一致
+    assert_eq!(
+        eval("var a = formatCode(\"func f(){\\nx\\n}\"); return formatCode(a) == a"),
+        Value::Bool(true)
+    );
+}
+
+#[test]
 fn test_raw_string() {
     assert_eq!(eval("var s = `raw`; return s"), Value::str("raw"));
 }

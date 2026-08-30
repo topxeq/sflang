@@ -216,6 +216,11 @@ impl PartialEq for Value {
             (Value::HttpReq(a), Value::HttpReq(b)) => Arc::ptr_eq(a, b),
             (Value::HttpResp(a), Value::HttpResp(b)) => Arc::ptr_eq(a, b),
             (Value::WebSocket(a), Value::WebSocket(b)) => Arc::ptr_eq(a, b),
+            // Builtin 按名字+函数指针判等（Builtin 未包 Arc，ptr_eq 不适用）。
+            // 缺少本分支时 clone 后与自身不相等，违反 PartialEq 自反性，
+            // 会使 Rust 侧 contains/position 等对函数值静默失效。
+            (Value::Builtin(a), Value::Builtin(b)) => a.name == b.name && a.func as usize == b.func as usize,
+            (Value::Native(a), Value::Native(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -526,6 +531,12 @@ impl Value {
             (HttpReq(a), HttpReq(b)) => Arc::ptr_eq(a, b),
             (HttpResp(a), HttpResp(b)) => Arc::ptr_eq(a, b),
             (WebSocket(a), WebSocket(b)) => Arc::ptr_eq(a, b),
+            // StringBuilder 按内容比较（两个构建器内容相同应判等）
+            (StringBuilder(a), StringBuilder(b)) => {
+                let sa = a.lock().unwrap();
+                let sb = b.lock().unwrap();
+                *sa == *sb
+            }
             _ => false,
         }
     }
@@ -614,8 +625,25 @@ fn repr_value(v: &Value) -> String {
 }
 
 /// quote_str 用双引号包裹字符串并转义特殊字符。
+///
+/// 除 `\` 与 `"` 外还转义常见控制字符（\n \r \t），其余 < 0x20 的控制字符
+/// 以 \uXXXX 形式输出，保证容器打印时字符串内容与结构不产生歧义。
 fn quote_str(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// SfError 错误值，用于 try-catch。

@@ -16,7 +16,7 @@
 //!   once:     newOnce / onceDo（onceDo 接收函数值，保证只执行一次）
 
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Condvar, Mutex, Once};
+use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use crate::function::BuiltinDoc;
@@ -62,9 +62,9 @@ static DOC_CHAN_RECV: BuiltinDoc = BuiltinDoc {
 static DOC_CHAN_TRY_RECV: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "chanTryRecv(ch) -> value|undefined",
-    summary: "非阻塞接收：有数据返回值，无数据返回 undefined。",
+    summary: "非阻塞接收：暂无数据或通道已关闭（发送端全部丢弃）均返回 undefined，两者不区分；需要区分时请由发送方在协议上约定结束标记。",
     params: &[("ch", "channel 对象")],
-    returns: "值或 undefined（无数据时）",
+    returns: "值或 undefined（暂无数据或已关闭时）",
     examples: &["var v = chanTryRecv(ch); if v != undefined { pln(v) }"],
     errors: &[],
 };
@@ -95,11 +95,11 @@ static DOC_LOCK: BuiltinDoc = BuiltinDoc {
 static DOC_UNLOCK: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "unlock(m) -> undefined",
-    summary: "释放锁。",
+    summary: "释放锁。不校验属主，任意线程可解锁（与 Go sync.Mutex 一致的宽松语义）；未持锁时调用为无害操作（幂等）。",
     params: &[("m", "mutex 对象")],
     returns: "undefined",
     examples: &["unlock(m)"],
-    errors: &["未持有锁时 unlock 会 panic"],
+    errors: &[],
 };
 
 static DOC_TRY_LOCK: BuiltinDoc = BuiltinDoc {
@@ -179,11 +179,14 @@ static DOC_NEW_WAITGROUP: BuiltinDoc = BuiltinDoc {
 static DOC_WG_ADD: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "wgAdd(wg, n) -> undefined",
-    summary: "增加 WaitGroup 计数 n。",
+    summary: "增加等待计数 n（可为负，对应批量 Done）。",
     params: &[("wg", "waitGroup 对象"), ("n", "增加的计数（int）")],
     returns: "undefined",
     examples: &["wgAdd(wg, 3)"],
-    errors: &[],
+    errors: &[
+        "计数溢出 int 范围时返回错误",
+        "计数变负时返回错误（Done 次数超过 Add）",
+    ],
 };
 
 static DOC_WG_DONE: BuiltinDoc = BuiltinDoc {
@@ -210,10 +213,13 @@ static DOC_NEW_SEMAPHORE: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "newSemaphore(n) -> semaphore",
     summary: "创建信号量，限制同时访问的并发数。",
-    params: &[("n", "最大并发数（int）")],
+    params: &[("n", "最大并发数（正整数，缺省为 1）")],
     returns: "semaphore 对象",
     examples: &["var sem = newSemaphore(5)  // 最多 5 个并发"],
-    errors: &[],
+    errors: &[
+        "参数非整数（如字符串、undefined）时返回错误",
+        "参数 <= 0 时返回错误（合法范围 >= 1）",
+    ],
 };
 
 static DOC_SEM_ACQUIRE: BuiltinDoc = BuiltinDoc {
@@ -251,12 +257,15 @@ static DOC_NEW_ONCE: BuiltinDoc = BuiltinDoc {
 
 static DOC_ONCE_DO: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
-    signature: "onceDo(o, fn) -> undefined",
-    summary: "保证 fn 只在第一次调用时执行（并发安全）。",
+    signature: "onceDo(o, fn) -> value",
+    summary: "保证 fn 只在第一次调用时执行（并发安全）。返回首次执行的结果；fn 出错时该错误会返回给所有调用方（不吞掉）。",
     params: &[("o", "once 对象"), ("fn", "要执行的函数")],
-    returns: "undefined",
+    returns: "首次执行的返回值（后续调用返回同一结果）",
     examples: &["onceDo(o, initFunc)"],
-    errors: &[],
+    errors: &[
+        "fn 执行出错时返回该错误",
+        "回调内递归调用同一 once 时返回错误（而不是永久阻塞）",
+    ],
 };
 
 /// register 注册所有并发相关内置函数。
@@ -315,10 +324,28 @@ fn downcast<'a, T: 'static>(v: &'a Value, what: &str, fn_name: &str) -> Result<&
 
 /// Channel Sflang 的 channel 类型，包装 std::sync::mpsc。
 ///
-/// 发送端 Arc<Mutex<Sender>> 可多份共享；接收端单份。
+/// 发送端 Arc<Mutex<Sender>> 可多份共享（mpsc 为无界 channel，send 不阻塞，
+/// 短暂持锁无碍）。接收端的处理是本类型的关键：
+///
+/// - 不能把 Receiver 包在 Mutex 里直接 `lock().recv()`：阻塞接收期间会持有
+///   互斥锁，导致同 channel 的并发接收被串行化，且与 chanTryRecv 等组合时
+///   可能死锁（这是本次修复的 bug）。
+/// - 也不能直接 `Arc<Receiver>` 共享：本工具链（rustc 1.95）的
+///   `mpsc::Receiver` 未实现 `Sync`，无法放入 Native（要求 Send + Sync）。
+///
+/// 故采用"接收权借出"方案：rx 存于 `Mutex<Option<Receiver>>`，
+/// chanRecv 先把 Receiver 借出（离开锁的作用域后再阻塞 recv，
+///   阻塞期间不持有任何锁），收到数据或关闭后归还并唤醒下一个等待者；
+/// chanTryRecv 只在锁内做非阻塞 try_recv，若接收权正被借出则直接返回
+///   undefined（不会被阻塞的接收卡住）。
+/// 多个线程并发调用 chanRecv 时仍能各取到一条数据（接收权依次交接）。
 pub struct Channel {
+    /// 发送端（mpsc 多生产者）
     pub tx: Arc<Mutex<Sender<Value>>>,
-    pub rx: Arc<Mutex<Receiver<Value>>>,
+    /// 接收端（None 表示接收权正被某个阻塞中的 chanRecv 借出）
+    rx: Mutex<Option<Receiver<Value>>>,
+    /// 等待接收权归还的条件变量
+    rx_cv: Condvar,
 }
 
 /// bi_new_channel 创建新 channel。
@@ -326,7 +353,8 @@ fn bi_new_channel(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
     let (tx, rx) = channel::<Value>();
     let chan = Channel {
         tx: Arc::new(Mutex::new(tx)),
-        rx: Arc::new(Mutex::new(rx)),
+        rx: Mutex::new(Some(rx)),
+        rx_cv: Condvar::new(),
     };
     // 注：用 Native 包装（Arc<dyn Any + Send + Sync>）
     Ok(Value::Native(Arc::new(Arc::new(chan))))
@@ -344,26 +372,52 @@ fn bi_chan_send(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 }
 
 /// bi_chan_recv 从 channel 接收值（阻塞至有数据）。
+///
+/// 实现要点：阻塞的 recv() 在任何互斥锁的作用域之外执行——
+/// 先"借出"接收权，阻塞期间不持锁，因此：
+///   - 其他线程的 chanTryRecv 不会被阻塞的接收卡住；
+///   - 多个线程并发调用 chanRecv 时，接收权依次交接，各取到一条数据。
 fn bi_chan_recv(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("chanRecv() 需要 1 个参数"));
     }
     let chan = downcast::<Channel>(&args[0], "channel", "chanRecv")?;
-    match chan.rx.lock().unwrap().recv() {
+    // 1) 借出接收权（另一接收者借出期间在此等待其归还）
+    let mut g = chan.rx.lock().unwrap();
+    let rx = loop {
+        if let Some(rx) = g.take() {
+            break rx;
+        }
+        g = chan.rx_cv.wait(g).unwrap();
+    };
+    drop(g); // 关键：阻塞接收前释放锁
+    // 2) 无锁阻塞接收
+    let res = rx.recv();
+    // 3) 归还接收权，唤醒下一个等待的接收者
+    let mut g = chan.rx.lock().unwrap();
+    *g = Some(rx);
+    chan.rx_cv.notify_all();
+    match res {
         Ok(v) => Ok(v),
-        Err(_) => Ok(Value::Undefined), // channel 关闭返回 undefined
+        Err(_) => Ok(Value::Undefined), // 所有发送端已关闭，返回 undefined
     }
 }
 
-/// bi_chan_try_recv 非阻塞接收（无数据返回 undefined）。
+/// bi_chan_try_recv 非阻塞接收。
+///
+/// 暂无数据、通道已关闭（发送端全部丢弃）、或接收权正被某个阻塞中的
+/// chanRecv 借出，均返回 undefined（不区分）；需要区分时应由发送方在
+/// 协议层约定（如发送结束标记）。任何情况下都不会被阻塞的接收卡住。
 fn bi_chan_try_recv(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("chanTryRecv() 需要 1 个参数"));
     }
     let chan = downcast::<Channel>(&args[0], "channel", "chanTryRecv")?;
-    match chan.rx.lock().unwrap().try_recv() {
-        Ok(v) => Ok(v),
-        Err(_) => Ok(Value::Undefined),
+    // 仅短暂持锁做非阻塞 try_recv（try_recv 本身立即返回）
+    let g = chan.rx.lock().unwrap();
+    match g.as_ref().map(|rx| rx.try_recv()) {
+        Some(Ok(v)) => Ok(v),
+        _ => Ok(Value::Undefined),
     }
 }
 
@@ -444,62 +498,74 @@ fn bi_try_lock(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 // ============ RWMutex ============
 
+/// RWState 读写锁的内部状态（由单一互斥锁保护）。
+///
+/// 把 readers/writer 合并到同一把锁内，从根本上消除 rlock 与 wlock
+/// 以相反顺序获取两把锁导致的 ABBA 死锁。
+struct RWState {
+    /// 当前持有读锁的读者数
+    readers: u32,
+    /// 是否有写者持有写锁
+    writer: bool,
+    /// 是否有写者正在等待（等待期间新读者排队，防止写者饥饿）
+    writer_pending: bool,
+}
+
 /// RWMutexT 读写锁。
 ///
 /// 实现说明：与 MutexT 同理，无法持有 Rust 的 RwLockReadGuard/WriteGuard 跨调用。
-/// 采用计数实现：readers 记录当前读锁数，writer 标记写锁持有。
-/// - rlock：无写者时 readers+1；有写者则阻塞
-/// - runlock：readers-1，若归零唤醒写者
-/// - 写锁复用语义：用 wlock/wunlock（见下）——为避免与 mutex 的 lock/unlock 混淆，
+/// 内部用单一 Mutex<RWState> + 一个 Condvar 实现（固定锁序，无 ABBA 死锁）：
+/// - rlock：无写者且无写者等待时 readers+1；否则阻塞排队
+/// - runlock：readers-1，归零时唤醒等待的写者
+/// - wlock：先置 writer_pending（阻止新读者插队），等待无写者且读者归零后置 writer
+/// - wunlock：清除 writer 并唤醒全部等待者
+/// 写锁复用语义：用 wlock/wunlock（见下）——为避免与 mutex 的 lock/unlock 混淆，
 ///   rwmutex 的写操作命名为 wlock/wunlock，读操作为 rlock/runlock。
 pub struct RWMutexT {
-    readers: Mutex<i64>,
-    writer: Mutex<bool>,
+    state: Mutex<RWState>,
     cv: Condvar,
 }
 
 impl RWMutexT {
-    /// release 释放锁（写锁优先，无写锁则释放一个读锁）。供通用 close 复用。
+    /// release 释放锁（写锁优先，无写锁则释放一个读锁）。供通用 close 复用。幂等。
     pub fn release(&self) {
-        // 先尝试释放写锁
-        let mut w = self.writer.lock().unwrap();
-        if *w {
-            *w = false;
-            self.cv.notify_all();
-            return;
+        let mut g = self.state.lock().unwrap();
+        if g.writer {
+            // 优先释放写锁
+            g.writer = false;
+        } else if g.readers > 0 {
+            // 无写锁，释放一个读锁
+            g.readers -= 1;
         }
-        drop(w);
-        // 无写锁，释放一个读锁
-        let mut r = self.readers.lock().unwrap();
-        if *r > 0 {
-            *r -= 1;
-            if *r == 0 {
-                self.cv.notify_all();
-            }
+        if g.readers == 0 && !g.writer {
+            g.writer_pending = false;
+            self.cv.notify_all();
         }
     }
 }
 
 fn bi_new_rwmutex(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Native(Arc::new(Arc::new(RWMutexT {
-        readers: Mutex::new(0),
-        writer: Mutex::new(false),
+        state: Mutex::new(RWState { readers: 0, writer: false, writer_pending: false }),
         cv: Condvar::new(),
     }))))
 }
 
-/// bi_rlock 获取读锁（共享，多读者并发；有写者时阻塞）。
+/// bi_rlock 获取读锁（共享，多读者并发）。
+///
+/// 有写者持有或写者正在等待时阻塞排队（写者等待期间新读者不得插队，
+/// 避免连续不断的读者造成写者饥饿）。
 fn bi_rlock(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("rlock() 需要 1 个参数 (rwmutex)"));
     }
     let m = downcast::<RWMutexT>(&args[0], "rwmutex", "rlock")?;
-    let mut g = m.readers.lock().unwrap();
-    // 等待写锁释放
-    while *m.writer.lock().unwrap() {
+    let mut g = m.state.lock().unwrap();
+    // 等待写锁释放且无写者排队
+    while g.writer || g.writer_pending {
         g = m.cv.wait(g).unwrap();
     }
-    *g += 1;
+    g.readers += 1;
     Ok(Value::Undefined)
 }
 
@@ -509,31 +575,33 @@ fn bi_runlock(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         return Err(crate::value::error_value("runlock() 需要 1 个参数 (rwmutex)"));
     }
     let m = downcast::<RWMutexT>(&args[0], "rwmutex", "runlock")?;
-    let mut g = m.readers.lock().unwrap();
-    if *g > 0 {
-        *g -= 1;
+    let mut g = m.state.lock().unwrap();
+    if g.readers > 0 {
+        g.readers -= 1;
     }
-    if *g == 0 {
+    if g.readers == 0 {
         m.cv.notify_all(); // 唤醒可能等待的写者
     }
     Ok(Value::Undefined)
 }
 
 /// bi_wlock 获取写锁（独占；有读者或写者时阻塞）。
+///
+/// 等待期间置 writer_pending，新到达的读者会排队，防止写者饥饿。
 fn bi_wlock(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("wlock() 需要 1 个参数 (rwmutex)"));
     }
     let m = downcast::<RWMutexT>(&args[0], "rwmutex", "wlock")?;
-    let mut wg = m.writer.lock().unwrap();
-    while *wg {
-        wg = m.cv.wait(wg).unwrap();
+    let mut g = m.state.lock().unwrap();
+    // 标记有写者等待，阻止新读者插队
+    g.writer_pending = true;
+    // 等待所有读者退出且无其他写者
+    while g.writer || g.readers > 0 {
+        g = m.cv.wait(g).unwrap();
     }
-    // 等待所有读者退出
-    while *m.readers.lock().unwrap() > 0 {
-        wg = m.cv.wait(wg).unwrap();
-    }
-    *wg = true;
+    g.writer = true;
+    g.writer_pending = false;
     Ok(Value::Undefined)
 }
 
@@ -543,8 +611,8 @@ fn bi_wunlock(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         return Err(crate::value::error_value("wunlock() 需要 1 个参数 (rwmutex)"));
     }
     let m = downcast::<RWMutexT>(&args[0], "rwmutex", "wunlock")?;
-    let mut wg = m.writer.lock().unwrap();
-    *wg = false;
+    let mut g = m.state.lock().unwrap();
+    g.writer = false;
     m.cv.notify_all(); // 唤醒等待的读者/写者
     Ok(Value::Undefined)
 }
@@ -568,6 +636,8 @@ fn bi_new_waitgroup(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
 }
 
 /// bi_wg_add 增加等待计数（n 可为负，对应 Done 批量）。
+///
+/// 计数加 n 溢出 i64 范围、或结果为负时返回错误（Go 语义：Add 不得使计数变负）。
 fn bi_wg_add(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.len() < 2 {
         return Err(crate::value::error_value("wgAdd() 需要 2 个参数 (waitgroup, n)"));
@@ -577,15 +647,21 @@ fn bi_wg_add(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         crate::value::error_value("wgAdd() 第二个参数需为整数 (可能原因：参数顺序错误)")
     })?;
     let _g = wg.mu.lock().unwrap();
-    let prev = wg.counter.fetch_add(n, Ordering::SeqCst);
-    // Go 语义：Add 不得使计数变负
-    if prev + n < 0 {
-        wg.counter.fetch_sub(n, Ordering::SeqCst);
+    let cur = wg.counter.load(Ordering::SeqCst);
+    // 先 checked_add 再写入：直接 fetch_add 溢出时 debug 下会 panic、release 下回绕
+    let new = cur.checked_add(n).ok_or_else(|| {
+        crate::value::error_value(format!(
+            "wgAdd() 计数溢出：{} + {} 超出 int 表示范围 (可能原因：n 过大)",
+            cur, n
+        ))
+    })?;
+    if new < 0 {
         return Err(crate::value::error_value(
             "wgAdd() 会使计数变负 (可能原因：Done 次数超过 Add)",
         ));
     }
-    if wg.counter.load(Ordering::SeqCst) == 0 {
+    wg.counter.store(new, Ordering::SeqCst);
+    if new == 0 {
         wg.cv.notify_all();
     }
     Ok(Value::Undefined)
@@ -634,14 +710,19 @@ pub struct SemaphoreT {
 }
 
 fn bi_new_semaphore(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    // 无参数时默认 1；有参数则必须是整数且 > 0，非法值返回错误（不静默取默认值）
     let n = if args.is_empty() {
         1
     } else {
-        args[0].to_int().unwrap_or(1)
+        args[0].to_int().ok_or_else(|| {
+            crate::value::error_value(
+                "newSemaphore() 参数需为整数 (可能原因：传入了字符串、undefined 等非整数值)",
+            )
+        })?
     };
-    if n < 0 {
+    if n <= 0 {
         return Err(crate::value::error_value(
-            "newSemaphore() 初始计数不能为负 (可能原因：参数错误)",
+            "newSemaphore() 最大并发数必须为正整数（合法范围：>= 1）(可能原因：传入了 0 或负数)",
         ));
     }
     Ok(Value::Native(Arc::new(Arc::new(SemaphoreT {
@@ -679,28 +760,109 @@ fn bi_sem_release(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 // ============ Once ============
 
-/// OnceT 单次执行原语，包装 std::sync::Once。
+/// OnceState once 的内部状态（由单一互斥锁保护）。
+struct OnceState {
+    /// 执行阶段：0 = 未开始，1 = 执行中，2 = 已完成
+    phase: u8,
+    /// 正在执行回调的线程 id（用于检测同线程递归调用，避免永久死锁）
+    executor: Option<std::thread::ThreadId>,
+    /// 首次回调的执行结果（phase == 2 后有效，供后续调用克隆返回）
+    result: Option<Result<Value, Value>>,
+}
+
+/// OnceT 单次执行原语，onceDo(once, func) 保证 func 只执行一次（线程安全）。
 ///
-/// onceDo(once, func) 保证 func 在多次调用中只执行一次（线程安全）。
-pub struct OnceT(pub Once);
+/// 不直接使用 std::sync::Once 的原因：
+///   - Once 的闭包无法把 Result 传出，回调的错误会被吞掉；
+///   - 同一线程在回调内递归调用同一 once 时会永久阻塞。
+/// 此处用 Mutex + Condvar 自行实现，支持错误传播与递归检测。
+pub struct OnceT {
+    state: Mutex<OnceState>,
+    cv: Condvar,
+}
 
 fn bi_new_once(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
-    Ok(Value::Native(Arc::new(Arc::new(OnceT(Once::new())))))
+    Ok(Value::Native(Arc::new(Arc::new(OnceT {
+        state: Mutex::new(OnceState { phase: 0, executor: None, result: None }),
+        cv: Condvar::new(),
+    }))))
+}
+
+/// OncePanicGuard onceDo 回调执行期间的 unwind 保护。
+///
+/// 若回调（用户代码）内部 panic 而被外层 catch_unwind 捕获，此守卫在
+/// 展开时把 phase 从 1 复位为 0 并唤醒等待者，使后续调用可重新执行，
+/// 而不是永远停留在"执行中"导致其他线程永久阻塞。
+struct OncePanicGuard<'a> {
+    once: &'a OnceT,
+    /// 是否仍处于保护状态（正常完成后解除，避免误复位 phase=2）
+    armed: bool,
+}
+
+impl Drop for OncePanicGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let mut g = self.once.state.lock().unwrap();
+            if g.phase == 1 {
+                g.phase = 0;
+                g.executor = None;
+            }
+            self.once.cv.notify_all();
+        }
+    }
 }
 
 /// bi_once_do 保证传入的函数只执行一次（线程安全）。
 ///
-/// 多个线程同时 onceDo 同一 once 时，仅一个线程的 func 会被执行，
-/// 其余线程阻塞直至执行完成。func 的返回值被丢弃（返回 undefined）。
+/// 语义：
+///   - 首次调用执行 fn，其结果（含错误）被记录，并原样返回给调用方；
+///   - 并发调用阻塞等待，后续调用直接返回首次执行的结果（错误同样返回，不吞掉）；
+///   - 回调内同线程递归调用同一 once 时返回错误（提示递归），而不是永久阻塞；
+///   - 回调 panic（unwind）时自动复位状态，后续调用可重试。
 fn bi_once_do(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.len() < 2 {
         return Err(crate::value::error_value("onceDo() 需要 2 个参数 (once, func)"));
     }
     let once = downcast::<OnceT>(&args[0], "once", "onceDo")?;
     let func = args[1].clone();
-    once.0.call_once(|| {
-        // 忽略错误（Once 内不能传播 Result；异常静默）
-        let _ = vm.call_function_value(func, Vec::new());
-    });
-    Ok(Value::Undefined)
+    let mut g = once.state.lock().unwrap();
+    loop {
+        match g.phase {
+            0 => {
+                // 抢到执行权：标记执行中并记录线程，然后释放锁执行回调
+                g.phase = 1;
+                g.executor = Some(std::thread::current().id());
+                drop(g);
+                // 回调 panic 时由守卫复位状态
+                let mut guard = OncePanicGuard { once, armed: true };
+                let res = vm.call_function_value(func, Vec::new());
+                guard.armed = false;
+                drop(guard);
+                // 记录结果并唤醒所有等待者
+                let mut g = once.state.lock().unwrap();
+                g.phase = 2;
+                g.executor = None;
+                g.result = Some(res.clone());
+                once.cv.notify_all();
+                return res;
+            }
+            1 => {
+                if g.executor == Some(std::thread::current().id()) {
+                    // 同一线程递归调用：等自己完成会永久死锁，直接返回错误
+                    return Err(crate::value::error_value(
+                        "onceDo() 回调内不能递归调用同一 once (可能原因：回调函数内部再次 onceDo 了同一个 once 对象)",
+                    ));
+                }
+                // 其他线程正在执行：等待其完成
+                g = once.cv.wait(g).unwrap();
+            }
+            _ => {
+                // 已完成：返回首次执行的结果（错误也照常返回）
+                return g
+                    .result
+                    .clone()
+                    .unwrap_or_else(|| Ok(Value::Undefined));
+            }
+        }
+    }
 }

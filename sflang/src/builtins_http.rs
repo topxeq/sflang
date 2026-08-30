@@ -1142,6 +1142,9 @@ fn bi_http_server(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// handler 为脚本函数 func(req, resp)。
 /// 路径中的 :param 部分会自动提取并注入到 routeParamsG 全局变量
 fn bi_server_set_handler(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 3 {
+        return Err(error_value("serverSetHandler() 需要至少 3 个参数"));
+    }
     let server = extract_server(&args[0])?;
     let path = match &args[1] {
         Value::Str(s) => s.to_string(),
@@ -1186,6 +1189,9 @@ fn bi_server_set_handler(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`serverSetStatic(server, "/path/to/dir")`
 fn bi_server_set_static(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("serverSetStatic() 需要至少 2 个参数"));
+    }
     let server = extract_server(&args[0])?;
     let dir = match &args[1] {
         Value::Str(s) => std::path::PathBuf::from(s.as_ref()),
@@ -1204,6 +1210,9 @@ fn bi_server_set_static(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// 用法：`serverStart(server, "--thread")`
 /// 默认阻塞当前线程；`--thread` 在后台线程运行。
 fn bi_server_start(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 1 {
+        return Err(error_value("serverStart() 需要至少 1 个参数"));
+    }
     let server = extract_server(&args[0])?.clone();
     let in_thread = has_switch(args, "thread") || has_switch(args, "go");
 
@@ -1264,6 +1273,9 @@ fn bi_server_start(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`serverStop(server)`
 fn bi_server_stop(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 1 {
+        return Err(error_value("serverStop() 需要至少 1 个参数"));
+    }
     let server = extract_server(&args[0])?;
     server.stop.store(true, Ordering::SeqCst);
     Ok(Value::Undefined)
@@ -1273,6 +1285,9 @@ fn bi_server_stop(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`serverAddr(server)`
 fn bi_server_addr(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 1 {
+        return Err(error_value("serverAddr() 需要至少 1 个参数"));
+    }
     let server = extract_server(&args[0])?;
     Ok(Value::str(&server.addr))
 }
@@ -1293,6 +1308,9 @@ fn bi_get_req_method(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_get_req_path 返回请求路径。
 fn bi_get_req_path(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.is_empty() {
+        return Err(error_value("getReqPath() 需要至少 1 个参数 (req 对象)"));
+    }
     let req = extract_req(&args[0])?;
     let path = req.inner.lock().unwrap().path.clone();
     Ok(Value::str(&path))
@@ -1300,6 +1318,9 @@ fn bi_get_req_path(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_get_req_uri 返回完整 URI。
 fn bi_get_req_uri(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.is_empty() {
+        return Err(error_value("getReqUri() 需要至少 1 个参数 (req 对象)"));
+    }
     let req = extract_req(&args[0])?;
     let uri = req.inner.lock().unwrap().uri.clone();
     Ok(Value::str(&uri))
@@ -1307,6 +1328,9 @@ fn bi_get_req_uri(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_get_req_query 返回查询串。
 fn bi_get_req_query(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.is_empty() {
+        return Err(error_value("getReqQuery() 需要至少 1 个参数 (req 对象)"));
+    }
     let req = extract_req(&args[0])?;
     let query = req.inner.lock().unwrap().query.clone();
     Ok(Value::str(&query))
@@ -1326,6 +1350,9 @@ fn bi_get_req_query(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// 直连部署取客户端真实 IP：getReqField(req, "remoteAddr")
 /// 反代部署取真实 IP：getReqHeader(req, "X-Forwarded-For")
 fn bi_get_req_field(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.is_empty() {
+        return Err(error_value("getReqField() 需要至少 1 个参数 (req 对象)"));
+    }
     let req = extract_req(&args[0])?;
     let name = match args.get(1) {
         Some(Value::Str(s)) => s.to_lowercase(),
@@ -1360,6 +1387,12 @@ fn bi_get_req_field(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`getReqHeader(req, "Content-Type")`
 fn bi_get_req_header(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("getReqHeader() 需要至少 2 个参数"));
+    }
+    if args.is_empty() {
+        return Err(error_value("getReqHeader() 需要至少 1 个参数 (req 对象)"));
+    }
     let req = extract_req(&args[0])?;
     let key = match &args[1] {
         Value::Str(s) => s.to_string(),
@@ -1377,6 +1410,9 @@ fn bi_get_req_header(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_get_req_headers 返回所有 header（Map 对象）。
 fn bi_get_req_headers(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.is_empty() {
+        return Err(error_value("getReqHeaders() 需要至少 1 个参数 (req 对象)"));
+    }
     let req = extract_req(&args[0])?;
     let req = req.inner.lock().unwrap();
     let mut map = crate::ord_map::OrdMap::new();
@@ -1388,6 +1424,9 @@ fn bi_get_req_headers(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_get_req_body 返回请求体（字符串）。
 fn bi_get_req_body(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.is_empty() {
+        return Err(error_value("getReqBody() 需要至少 1 个参数 (req 对象)"));
+    }
     let req = extract_req(&args[0])?;
     let body = req.inner.lock().unwrap().body.clone();
     let s = String::from_utf8_lossy(&body).into_owned();
@@ -1396,6 +1435,9 @@ fn bi_get_req_body(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_get_req_body_bytes 返回请求体（Bytes）。
 fn bi_get_req_body_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.is_empty() {
+        return Err(error_value("getReqBodyBytes() 需要至少 1 个参数 (req 对象)"));
+    }
     let req = extract_req(&args[0])?;
     let body = req.inner.lock().unwrap().body.clone();
     Ok(Value::Bytes(Arc::new(body)))
@@ -1405,6 +1447,12 @@ fn bi_get_req_body_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`getReqParam(req, "key")`
 fn bi_get_req_param(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("getReqParam() 需要至少 2 个参数"));
+    }
+    if args.is_empty() {
+        return Err(error_value("getReqParam() 需要至少 1 个参数 (req 对象)"));
+    }
     let req = extract_req(&args[0])?;
     let key = match &args[1] {
         Value::Str(s) => s.to_string(),
@@ -1425,6 +1473,9 @@ fn bi_get_req_param(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_get_req_params 返回所有查询参数（Map 对象）。
 fn bi_get_req_params(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.is_empty() {
+        return Err(error_value("getReqParams() 需要至少 1 个参数 (req 对象)"));
+    }
     let req = extract_req(&args[0])?;
     let req = req.inner.lock().unwrap();
     let params = req.parse_query();
@@ -1443,6 +1494,9 @@ fn bi_get_req_params(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`writeResp(resp, "content")`
 fn bi_write_resp(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("writeResp() 需要至少 2 个参数"));
+    }
     let resp = extract_resp(&args[0])?;
     let content = match &args[1] {
         Value::Str(s) => s.as_bytes().to_vec(),
@@ -1456,6 +1510,9 @@ fn bi_write_resp(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`writeRespBytes(resp, bytes)`
 fn bi_write_resp_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("writeRespBytes() 需要至少 2 个参数"));
+    }
     let resp = extract_resp(&args[0])?;
     let content = match &args[1] {
         Value::Bytes(b) => b.as_ref().clone(),
@@ -1475,6 +1532,9 @@ fn bi_write_resp_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// 用法：`writeRespHeader(resp, 200)`
 /// 等价于 setRespStatus。
 fn bi_write_resp_header(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("writeRespHeader() 需要至少 2 个参数"));
+    }
     let resp = extract_resp(&args[0])?;
     let status = match &args[1] {
         Value::Int(i) => *i as u16,
@@ -1492,6 +1552,9 @@ fn bi_write_resp_header(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`setRespHeader(resp, "Content-Type", "application/json")`
 fn bi_set_resp_header(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 3 {
+        return Err(error_value("setRespHeader() 需要至少 3 个参数"));
+    }
     let resp = extract_resp(&args[0])?;
     let key = match &args[1] {
         Value::Str(s) => s.to_string(),
@@ -1512,6 +1575,9 @@ fn bi_set_resp_header(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`setRespStatus(resp, 404)`
 fn bi_set_resp_status(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("setRespStatus() 需要至少 2 个参数"));
+    }
     let resp = extract_resp(&args[0])?;
     let status = match &args[1] {
         Value::Int(i) => *i as u16,
@@ -1529,6 +1595,9 @@ fn bi_set_resp_status(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`setRespContentType(resp, "application/json")`
 fn bi_set_resp_content_type(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("setRespContentType() 需要至少 2 个参数"));
+    }
     let resp = extract_resp(&args[0])?;
     let ct = match &args[1] {
         Value::Str(s) => s.to_string(),
@@ -1545,6 +1614,9 @@ fn bi_set_resp_content_type(_vm: &mut VM, args: &[Value]) -> Result<Value, Value
 ///
 /// 用法：`serveFile(resp, "/path/to/file")`
 fn bi_serve_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("serveFile() 需要至少 2 个参数"));
+    }
     let resp = extract_resp(&args[0])?;
     let path = match &args[1] {
         Value::Str(s) => s.to_string(),
@@ -1576,6 +1648,9 @@ fn bi_serve_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`redirectResp(resp, "https://example.com", 302)` 或 `redirectResp(resp, url)` (默认 302)
 fn bi_redirect_resp(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("redirectResp() 需要至少 2 个参数"));
+    }
     let resp = extract_resp(&args[0])?;
     let url = match &args[1] {
         Value::Str(s) => s.to_string(),
@@ -1600,6 +1675,9 @@ fn bi_redirect_resp(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`genJsonResp(resp, status, message)` → {"status": status, "msg": message}
 fn bi_gen_json_resp(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 1 {
+        return Err(error_value("genJsonResp() 需要至少 1 个参数"));
+    }
     let resp = extract_resp(&args[0])?;
     let status_val = args.get(1).cloned().unwrap_or(Value::Undefined);
     let msg_val = args.get(2).cloned().unwrap_or(Value::Undefined);
@@ -3303,6 +3381,9 @@ fn bi_web_socket(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 返回 [type, data]，type 为 1=文本 2=二进制，data 为内容。
 fn bi_ws_read_msg(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 1 {
+        return Err(error_value("wsReadMsg() 需要至少 1 个参数"));
+    }
     use tungstenite::Message;
     let ws = extract_ws(&args[0])?;
     let mut guard = ws.inner.lock().unwrap();
@@ -3351,6 +3432,9 @@ fn bi_ws_read_msg(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_ws_read_text 读取一条文本消息。
 fn bi_ws_read_text(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 1 {
+        return Err(error_value("wsReadText() 需要至少 1 个参数"));
+    }
     use tungstenite::Message;
     let ws = extract_ws(&args[0])?;
     let mut guard = ws.inner.lock().unwrap();
@@ -3376,6 +3460,9 @@ fn bi_ws_read_text(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_ws_read_bin 读取一条二进制消息。
 fn bi_ws_read_bin(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 1 {
+        return Err(error_value("wsReadBin() 需要至少 1 个参数"));
+    }
     use tungstenite::Message;
     let ws = extract_ws(&args[0])?;
     let mut guard = ws.inner.lock().unwrap();
@@ -3403,6 +3490,9 @@ fn bi_ws_read_bin(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`wsWriteText(ws, "hello")`
 fn bi_ws_write_text(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("wsWriteText() 需要至少 2 个参数"));
+    }
     use tungstenite::Message;
     let ws = extract_ws(&args[0])?;
     let text = match &args[1] {
@@ -3422,6 +3512,9 @@ fn bi_ws_write_text(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`wsWriteBin(ws, bytes)`
 fn bi_ws_write_bin(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("wsWriteBin() 需要至少 2 个参数"));
+    }
     use tungstenite::Message;
     let ws = extract_ws(&args[0])?;
     let data = match &args[1] {
@@ -3446,6 +3539,9 @@ fn bi_ws_write_bin(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`wsWriteMsg(ws, type, data)` type=1 文本, type=2 二进制
 fn bi_ws_write_msg(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 3 {
+        return Err(error_value("wsWriteMsg() 需要至少 3 个参数"));
+    }
     use tungstenite::Message;
     let ws = extract_ws(&args[0])?;
     let msg_type = match &args[1] {
@@ -3487,6 +3583,9 @@ fn bi_ws_write_msg(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_ws_close 关闭 WebSocket 连接。
 fn bi_ws_close(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 1 {
+        return Err(error_value("wsClose() 需要至少 1 个参数"));
+    }
     use tungstenite::Message;
     let ws = extract_ws(&args[0])?;
     let mut guard = ws.inner.lock().unwrap();
@@ -3497,6 +3596,9 @@ fn bi_ws_close(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_ws_local_addr 返回本地地址（如果可获取）。
 fn bi_ws_local_addr(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.is_empty() {
+        return Err(error_value("wsLocalAddr() 需要至少 1 个参数 (req 对象)"));
+    }
     let _ws = extract_ws(&args[0])?;
     // tungstenite 的 WebSocket 内部是 MaybeTlsStream<TcpStream>，
     // 获取 local_addr 需要访问底层 TcpStream，此处简化为返回 undefined
@@ -3514,6 +3616,9 @@ fn bi_ws_local_addr(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：`parseReqForm(req)`
 fn bi_parse_req_form(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.is_empty() {
+        return Err(error_value("parseReqForm() 需要至少 1 个参数 (req 对象)"));
+    }
     let req = extract_req(&args[0])?;
     let req_guard = req.inner.lock().unwrap();
 
@@ -3580,6 +3685,12 @@ fn bi_parse_req_form(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// 返回 Map：字段名 -> object {fileName, savedPath, size}
 /// 非文件字段和空文件名会被跳过。destDir 不存在时自动创建。
 fn bi_save_file_uploads(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("saveFileUploads() 需要至少 2 个参数"));
+    }
+    if args.is_empty() {
+        return Err(error_value("saveFileUploads() 需要至少 1 个参数 (req 对象)"));
+    }
     let req = extract_req(&args[0])?;
     let dest_dir = match &args[1] {
         Value::Str(s) => s.to_string(),

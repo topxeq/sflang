@@ -434,12 +434,18 @@ static DOC_READCHARS: BuiltinDoc = BuiltinDoc {
 
 static DOC_GETFILELIST: BuiltinDoc = BuiltinDoc {
     category: "file",
-    signature: "getFileList(dir, pattern) -> array<string>",
-    summary: "按通配符列出文件。",
-    params: &[("dir", "目录"), ("pattern", "通配符，如 *.txt")],
+    signature: "getFileList(pattern[, \"-minSize=N\"[, \"-maxSize=N\"]]) -> array<string>",
+    summary: "按通配符列出文件，可按文件大小（字节）过滤。",
+    params: &[
+        ("pattern", "通配符路径，如 *.txt / src/*.rs / src/**/*.rs（** 表示递归子目录）"),
+        ("-minSize=N", "可选。最小字节数（含边界）"),
+        ("-maxSize=N", "可选。最大字节数（含边界）"),
+    ],
     returns: "array<string> 匹配的文件路径",
-    examples: &[],
-    errors: &[],
+    examples: &[
+        "getFileList(\"src/**/*.rs\", \"-minSize=1\", \"-maxSize=2000\")",
+    ],
+    errors: &["-minSize=/-maxSize= 后应为非负整数（字节）"],
 };
 
 static DOC_GETFILEREL: BuiltinDoc = BuiltinDoc {
@@ -1239,14 +1245,45 @@ fn walk_dir(dir: &Path, out: &mut Vec<String>) {
     }
 }
 
+/// parse_file_size_opt 解析 getFileList 的 -minSize=/-maxSize= 字节数参数值。
+///
+/// 须为非负整数字符串，否则返回带定位信息的 error。
+fn parse_file_size_opt(val: &str, flag: &str) -> Result<i64, Value> {
+    let n: i64 = val.trim().parse().map_err(|_| {
+        crate::value::error_value(format!(
+            "getFileList() 无法解析 {} 后的字节数 '{}' (可能原因：{} 后应为非负整数，单位为字节)",
+            flag, val, flag,
+        ))
+    })?;
+    if n < 0 {
+        return Err(crate::value::error_value(format!(
+            "getFileList() {} 的字节数不能为负: {} (可能原因：最小尺寸应为 0 或正整数)",
+            flag, n,
+        )));
+    }
+    Ok(n)
+}
+
 /// bi_get_file_list 通配符文件列表。
 ///
 /// 用法：getFileList("*.txt")          — 当前目录下所有 .txt
 ///       getFileList("src/*.rs")        — src 目录下所有 .rs
 ///       getFileList("src/**/*.rs")     — src 及子目录下所有 .rs
+///       getFileList("log/*.txt", "-minSize=1", "-maxSize=2000")  — 按字节大小过滤（含边界）
 /// 支持 * 和 ? 通配符。返回 array<string>（匹配文件的完整路径）。
 fn bi_get_file_list(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let pattern = bh::as_str(args, 0, "getFileList")?;
+    // 解析可选尺寸过滤参数（仅在给出时才读取文件元信息，避免无谓开销）
+    let mut min_size: Option<i64> = None;
+    let mut max_size: Option<i64> = None;
+    for opt in &args[1..] {
+        let s = opt.to_str();
+        if let Some(val) = s.strip_prefix("-minSize=") {
+            min_size = Some(parse_file_size_opt(val, "-minSize=")?);
+        } else if let Some(val) = s.strip_prefix("-maxSize=") {
+            max_size = Some(parse_file_size_opt(val, "-maxSize=")?);
+        }
+    }
     // 规范化路径分隔符为 '/'，便于解析
     let norm = pattern.replace('\\', "/");
     // 拆分目录部分与文件名部分（最后一个 '/' 之前为目录）
@@ -1291,7 +1328,7 @@ fn bi_get_file_list(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             }
         }
     }
-    // 用文件名通配符匹配筛选
+    // 用文件名通配符匹配筛选，再按 -minSize=/-maxSize= 过滤
     let result: Vec<Value> = candidates
         .into_iter()
         .filter(|p| {
@@ -1300,7 +1337,27 @@ fn bi_get_file_list(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            glob_match(name_part, &name)
+            if !glob_match(name_part, &name) {
+                return false;
+            }
+            // 尺寸过滤：元信息读取失败（无权限/已消失）按不匹配处理
+            if min_size.is_some() || max_size.is_some() {
+                let size = match fs::metadata(Path::new(p)) {
+                    Ok(m) => m.len() as i64,
+                    Err(_) => return false,
+                };
+                if let Some(lo) = min_size {
+                    if size < lo {
+                        return false;
+                    }
+                }
+                if let Some(hi) = max_size {
+                    if size > hi {
+                        return false;
+                    }
+                }
+            }
+            true
         })
         .map(Value::str_from)
         .collect();

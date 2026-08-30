@@ -565,6 +565,7 @@ fileExt("z.txt")              // ".txt"
 absPath("relative/path")
 makeDir("newdir") / makeDirAll("a/b/c")
 listDir(".")                  // 目录条目列表
+getFileList("src/**/*.rs")    // 通配符列文件（** 递归；可选 "-minSize=N"/"-maxSize=N" 按字节过滤）
 fileExists("path")
 deleteFile("path")
 getCurDir() / getTempDir() / getHomeDir()
@@ -581,6 +582,7 @@ getCurDir() / getTempDir() / getHomeDir()
 | `printf(fmt, ...)` | `prf` / `fpr` | 格式化打印（不换行） |
 | `printfln(fmt, ...)` | `pl` | 格式化打印+换行 |
 | `sprintf(fmt, ...)` | `spr` | 格式化返回字符串 |
+| `fatalf(fmt, ...)` | — | 格式化错误输出到 stderr 并以退出码 1 终止 |
 
 格式占位符（Go 风格）：`%v %d %s %f %.2f %t %x %c %T %% %5d %-5d %05d`
 
@@ -637,6 +639,11 @@ byteArrayFromBytes(b)          // bytes → byteArray
 bytesXor(data, key)            // 批量 XOR（高效加密）
 bytesXorInPlace(ba, key)       // 原地 XOR
 copy(dst, src)                 // 批量复制字节
+
+// 字节序整数互转（对标 xie 的 bytesToData/dataToBytes，1-16 字节）
+bytesToData(bytesFromHex("00000000000007ff"), "-endian=B")   // 2047（大端；能放入 i64 返回 int，否则 bigInt）
+dataToBytes(2047, "-endian=B")                               // 8 字节大端（默认 size=8，可用 "-size=N" 指定 1-16）
+dataToBytes(2047, "-endian=B", "-size=2")                    // 2 字节大端 07FF
 ```
 
 ### CSV（RFC 4180）
@@ -730,8 +737,11 @@ JSON 对象解码为有序 Map（保持键的原始顺序）。
 
 ## 19. datetime
 
+时间渲染使用本地时区（Windows 取系统时区 API，Linux/macOS 解析 /etc/localtime；
+获取失败时回退 UTC）。
+
 ```sflang
-var now = nowDT()                       // 当前时间
+var now = nowDT()                       // 当前时间（本地时区）
 var dt = datetime(2024, 6, 15, 14, 30)  // 构造
 dt.year / dt.month / dt.day             // 字段访问
 dt.hour / dt.minute / dt.second
@@ -740,7 +750,7 @@ dtFormat(dt, "2006-01-02 15:04:05")    // 格式化（Go 风格）
 dtAddDays(dt, 10)                       // 加天
 dtAddSeconds(dt, 3600)                  // 加秒
 dtToMillis(dt)                          // → Unix 毫秒
-datetimeFromMillis(1704067200000)       // 毫秒 → datetime
+datetimeFromMillis(1704067200000)       // 毫秒 → datetime（本地时区；UTC 用 datetime(ms)）
 datetimeParse("2024-12-25", "2006-01-02")  // 解析
 ```
 
@@ -873,14 +883,14 @@ sf --list-builtins math     # 筛选 math 分类
 
 | 分类 | 函数数 | 说明 |
 |------|--------|------|
-| core | 18 | println/len/typeCode/typeName/help/range/keys/values/push/sprintf/sleep/error/isError/defaultVal/defaultUndef/assert/uuid/deepClone |
+| core | 19 | println/len/typeCode/typeName/help/range/keys/values/push/sprintf/sleep/error/isError/defaultVal/defaultUndef/assert/uuid/deepClone/fatalf |
 | concurrency | 22 | channel/mutex/rwlock/waitGroup/semaphore/once 全套 |
 | file | 16 | readFile/writeFile/openFile/readLine/fileExists/makeDir/getFileList ... |
 | array | 13 | sort/sortByFunc/reverse/contains/indexOf/slice/concat/insert/remove/shuffle |
 | system | 13 | getEnv/setEnv/osName/getCurDir/joinPath/listDir/systemCmd/exit ... |
-| bytes | 12 | byteArray/bytes/strFromBytes/copy/bytesHex/bytesFromHex/hexEncode ... |
+| bytes | 14 | byteArray/bytes/strFromBytes/copy/bytesHex/bytesFromHex/hexEncode/bytesToData/dataToBytes ... |
 | containers | 12 | stack（push/pop/peek/len/clear）+ queue（同） |
-| string | 12 | strToUpper/strSplit/strReplace/strSub/strTrim/strJoin/strFind ... |
+| string | 13 | strToUpper/strSplit/strReplace/formatCode/strSub/strTrim/strJoin/strFind ... |
 | ring | 11 | 环形缓冲（push/pop/get/set/insert/remove/size/clear/toList） |
 | hash | 11 | md5/sha1/sha256/hmacSha256/getOtpCode/genOtpCode/checkOtpCode ... |
 | encode | 10 | base64/url/html 编解码全套 |
@@ -897,7 +907,7 @@ sf --list-builtins math     # 筛选 math 分类
 | pinyin | 2 | toPinYin/toPinYinInitial |
 | template | 2 | renderMarkdown/replaceHtmlByMap |
 
-共 **212 个函数** 有详细文档（24 个分类）。其余函数（image/http/db/s3/ssh/ftp/xlsx 等专用模块）暂无详细文档，但 help() 会显示"暂无文档"并提示分类。文档将持续补充。
+共 **215 个函数** 有详细文档（24 个分类）。其余函数（image/http/db/s3/ssh/ftp/xlsx 等专用模块）暂无详细文档，但 help() 会显示"暂无文档"并提示分类。文档将持续补充。
 
 ---
 

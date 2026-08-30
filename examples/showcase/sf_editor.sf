@@ -1,7 +1,9 @@
 // Sflang GUI 代码编辑器
 // ==================================
 // 一个用 Sflang 自身实现的代码编辑器，支持语法高亮、运行、快速求值、打开/保存。
-// 用法：sf examples/showcase/sf_editor.sf [文件路径]
+// 用法：sf examples/showcase/sf_editor.sf [文件路径] [--debug]
+//       --debug 开启调试：IPC 消息、handler 异常、前端 JS 错误都会
+//       打印到控制台并记录到 temp/sf_editor_debug.log
 
 // ---- 工具函数 ----
 
@@ -12,6 +14,19 @@ func escapeJS(s) {
     s = strReplace(s, "\n", "\\n")
     s = strReplace(s, "\r", "")
     return s
+}
+
+// ---- 调试模式（--debug） ----
+// 所有调试信息同时输出到控制台和 temp/sf_editor_debug.log
+var debugMode = false
+var dbgLogFile = "temp/sf_editor_debug.log"
+
+/// dbg 输出调试日志：仅 --debug 时生效；带时间戳，控制台 + 日志文件双写
+func dbg(msg) {
+    if !debugMode { return }
+    var line = "[dbg " + getNowStr() + "] " + toStr(msg)
+    pln(line)
+    appendFile(dbgLogFile, line + "\n")
 }
 
 // ---- 临时文件和 sf.exe 路径 ----
@@ -169,6 +184,18 @@ func sshGetActiveServer() {
     return sshFindServer(sshActiveName)
 }
 
+/// sshNamesJson 生成服务器名的 JS 数组字面量（同步给前端：下拉切换、状态显示）。
+func sshNamesJson() {
+    var js = "["
+    var first = true
+    for srv in sshServers {
+        if !first { js = js + "," }
+        js = js + "'" + escapeJS(toStr(srv["name"])) + "'"
+        first = false
+    }
+    return js + "]"
+}
+
 /// sshDecryptField 解密单个加密字段。
 ///
 /// 配置中的 password / keyPassphrase 在磁盘上是 encryptText 加密后的 hex。
@@ -225,7 +252,7 @@ func sshBuildArgs(srv) {
 }
 
 // ---- GUI handler：处理来自前端的消息 ----
-func onMessage(msg) {
+func onMessageImpl(msg) {
     // 解析消息类型（用 \n 分隔操作码和数据）
     var nlPos = strFind("\n", msg)
     var op = ""
@@ -256,6 +283,92 @@ func onMessage(msg) {
         // cmd 保持窗口，sfExe 执行脚本
         systemCmdDetached("cmd", "/K", sfExe, tempFile)
         guiEval(win, "setStatus('已在 CMD 窗口启动')")
+    }
+    elif op == "BUILD" {
+        // 编译为独立可执行文件（sf --build）
+        // 数据格式：第1行=当前文件路径（用于推导默认输出名），其余=脚本代码
+        var nlB = strFind("\n", data)
+        var curName = ""
+        var codeB = data
+        if nlB >= 0 {
+            curName = strSub(data, 0, nlB)
+            codeB = strSub(data, nlB + 1)
+        }
+        // 先做语法检查，编译前快速反馈（不弹对话框）
+        var chk = compile(codeB)
+        if isErr(chk) {
+            guiEval(win, "showOutput('" + escapeJS("编译失败（语法错误）:\n" + toStr(chk)) + "', true)")
+            guiEval(win, "setStatus('编译失败：语法错误')")
+            return
+        }
+        // 从当前文件路径推导默认输出名：去目录、去 .sf 扩展名，加 .exe
+        var baseName = curName
+        var segs = strSplit(baseName, "/")
+        if len(segs) > 0 { baseName = segs[len(segs) - 1] }
+        segs = strSplit(baseName, "\\")
+        if len(segs) > 0 { baseName = segs[len(segs) - 1] }
+        if strEndsWith(baseName, ".sf") {
+            baseName = strSub(baseName, 0, len(baseName) - 3)
+        }
+        if baseName == "" { baseName = "sf_build" }
+        ensureTempDir()
+        writeFile(tempFile, codeB)
+        // 原生保存对话框选择输出路径（默认 当前名.exe；取消则中止）
+        var outPath = saveFileDialog(baseName + ".exe")
+        if outPath == undefined {
+            guiEval(win, "setStatus('已取消编译')")
+            return
+        }
+        var output = systemCmd(sfExe, "--build", tempFile, "--output", outPath)
+        var isErrB = strContains(output, "错误") || strContains(output, "error")
+        guiEval(win, "showOutput('" + escapeJS(output) + "', " + toStr(isErrB) + ")")
+        guiEval(win, "setStatus('" + escapeJS(isErrB ? "编译失败" : "编译完成") + "')")
+    }
+    elif op == "CHECK" {
+        // 语法检查：只编译不执行；失败时提取行号并跳转定位
+        var chk = compile(data)
+        if isErr(chk) {
+            var chkText = toStr(chk)
+            // 错误消息中行号格式："语法错误: N:"
+            var errLine = -1
+            var posTag = strFind(chkText, "语法错误: ")
+            if posTag >= 0 {
+                var i = posTag + len("语法错误: ")
+                var digits = ""
+                while i < len(chkText) {
+                    var ch = strSub(chkText, i, 1)
+                    if strContains("0123456789", ch) { digits = digits + ch } else { break }
+                    i = i + 1
+                }
+                if digits != "" { errLine = toInt(digits) }
+            }
+            guiEval(win, "showOutput('" + escapeJS("语法检查未通过:\n" + chkText) + "', true)")
+            if errLine > 0 {
+                guiEval(win, "gotoLine(" + toStr(errLine) + ")")
+                guiEval(win, "setStatus('语法错误：第 " + toStr(errLine) + " 行')")
+            } else {
+                guiEval(win, "setStatus('语法检查未通过')")
+            }
+        } else {
+            guiEval(win, "showOutput('语法正确，未发现错误', false)")
+            guiEval(win, "setStatus('语法正确')")
+        }
+    }
+    elif op == "FORMAT" {
+        // 自动格式化：formatCode 调整缩进/空白后写回编辑器（内容变化标记为已修改）
+        var fmt = formatCode(data)
+        if isErr(fmt) {
+            guiEval(win, "showOutput('" + escapeJS(toStr(fmt)) + "', true)")
+            guiEval(win, "setStatus('格式化失败')")
+            return
+        }
+        if fmt == data {
+            guiEval(win, "setStatus('已是规范格式，无需调整')")
+            return
+        }
+        guiEval(win, "setEditorContent('" + escapeJS(fmt) + "')")
+        var statMsg = "已格式化（" + toStr(len(strSplitLines(data))) + " 行 → " + toStr(len(strSplitLines(fmt))) + " 行）"
+        guiEval(win, "setDirty(true); setStatus('" + escapeJS(statMsg) + "')")
     }
     elif op == "EVAL" {
         // 进程内模式：compile + runCode
@@ -497,6 +610,8 @@ func onMessage(msg) {
             return
         }
         saveSshServers(parsed, activeN)
+        // 同步前端全局（激活名/服务器名列表），终端与浏览器下拉立即生效
+        guiEval(win, "__sshActiveName = '" + escapeJS(sshActiveName) + "'; __sshServerNames = " + sshNamesJson() + ";")
         guiEval(win, "sshCfgSaveResult(true, '已保存 " + len(sshServers) + " 个服务器')")
     }
     elif op == "SSHCFG_TEST" {
@@ -514,6 +629,17 @@ func onMessage(msg) {
             return sshRun(...args, "echo __SSH_OK__")
         })
         guiEval(win, "sshBindTaskId('TEST', '', " + tid + ")")
+    }
+    // 快速切换激活服务器（浏览器下拉等处调用）；同一时间仅一个激活
+    elif op == "SSH_ACTIVATE" {
+        var nameAct = data
+        if sshFindServer(nameAct) == undefined {
+            guiEval(win, "if(window.sshServerActivated) sshServerActivated(false, '" + escapeJS(nameAct) + "')")
+            return
+        }
+        saveSshServers(sshServers, nameAct)
+        guiEval(win, "__sshActiveName = '" + escapeJS(nameAct) + "'; __sshServerNames = " + sshNamesJson() + ";")
+        guiEval(win, "if(window.sshServerActivated) sshServerActivated(true, '" + escapeJS(nameAct) + "')")
     }
     // SSH 文件操作（LIST/OPEN/SAVE/MKDIR/DELETE/RENAME）：全部通过 runAsync 异步执行
     elif op == "SSHOP" {
@@ -541,8 +667,12 @@ func onMessage(msg) {
         }
         elif subCmd == "OPEN" {
             var remotePath = rest
+            // 成功时把 bytes 转成字符串返回（前端直接得到 string，无需再解码）；
+            // 失败时原样返回 error，由 onAsyncResult 的 isError 标记传递
             var tid = runAsync(func() {
-                return sshDownloadBytes(...args, "--remotePath=" + remotePath)
+                var bts = sshDownloadBytes(...args, "--remotePath=" + remotePath)
+                if isErr(bts) { return bts }
+                return strFromBytes(bts)
             })
             guiEval(win, "sshBindTaskId('OPEN', '" + escapeJS(remotePath) + "', " + tid + ")")
         }
@@ -657,6 +787,29 @@ func onMessage(msg) {
     }
 }
 
+/// onMessage IPC 统一入口：包装 onMessageImpl，提供调试日志与错误捕获。
+/// - --debug 时记录每条消息（预览前 100 字符）和处理耗时
+/// - handler 异常不再只打到 stderr：控制台输出 + 前端状态栏提示，
+///   避免"点了没反应"却无任何线索
+func onMessage(msg) {
+    var preview = msg
+    if len(msg) > 100 {
+        preview = strSub(msg, 0, 100) + "...(" + toStr(len(msg)) + " 字节)"
+    }
+    dbg("IPC <- " + strReplace(preview, "\n", "\\n"))
+    var t0 = now()
+    var result = undefined
+    try {
+        result = onMessageImpl(msg)
+    } catch (e) {
+        pln("[sf_editor] 消息处理出错: " + toStr(e))
+        dbg("IPC 异常: " + toStr(e))
+        guiEval(win, "setStatus('处理出错，详见控制台/debug 日志')")
+    }
+    dbg("IPC ok " + toStr(now() - t0) + "ms")
+    return result
+}
+
 // ---- 初始化 ----
 findSfExe()
 ensureTempDir()
@@ -665,11 +818,21 @@ ensureTempDir()
 loadXtermAssets()
 loadSshServers()
 
-// 如果命令行参数指定了文件，预加载
+// 解析命令行参数：--debug/-debug 开启调试；第一个非 -- 开头参数为预加载文件
 var initFile = ""
 var args = argsG
-if len(args) > 0 {
-    initFile = args[0]
+for a in args {
+    if a == "--debug" || a == "-debug" {
+        debugMode = true
+    } elif initFile == "" && strSub(a, 0, 2) != "--" {
+        initFile = a
+    }
+}
+if debugMode {
+    writeFile(dbgLogFile, "==== sf_editor 调试会话 " + getNowStr() + " ====\n")
+    pln("[debug 已开启] IPC/JS 调试信息将打印到控制台并记录到 " + dbgLogFile)
+    dbg("initFile = " + (initFile == "" ? "(无)" : initFile))
+    dbg("sfExe = " + (sfExe == "" ? "(未定位)" : sfExe))
 }
 
 // ---- 构建 HTML ----
@@ -686,6 +849,8 @@ html = html + ".toolbar button:hover { background: #505050; }"
 html = html + ".toolbar button:active { background: #264f78; }"
 html = html + ".toolbar button.run { background: #388e3c; border-color: #4caf50; color: #fff; }"
 html = html + ".toolbar button.run:hover { background: #4caf50; }"
+html = html + ".toolbar button.build { background: #6a4fb3; border-color: #8a6fd4; color: #fff; }"
+html = html + ".toolbar button.build:hover { background: #7d5fc9; }"
 html = html + ".toolbar button.eval { background: #1565c0; border-color: #1976d2; color: #fff; }"
 html = html + ".toolbar button.eval:hover { background: #1976d2; }"
 html = html + ".toolbar .sep { width: 1px; height: 22px; background: #505050; margin: 0 4px; }"
@@ -767,6 +932,9 @@ html = html + "<div class='toolbar'>"
 html = html + "<button class='run' onclick='doRun()' title='运行(F5)'>▶ 运行</button>"
 html = html + "<button class='eval' onclick='doEval()' title='快速求值(F6)'>⚡ 求值</button>"
 html = html + "<button onclick='doCmdRun()' title='CMD窗口运行(F7)'>🖥 CMD</button>"
+html = html + "<button class='build' onclick='doBuild()' title='编译为独立可执行文件(F8)'>📦 编译</button>"
+html = html + "<button onclick='doCheck()' title='语法检查(F9)'>✓ 检查</button>"
+html = html + "<button onclick='doFormat()' title='格式化代码(Ctrl+Shift+F)'>🧹 格式</button>"
 html = html + "<div class='sep'></div>"
 html = html + "<button onclick='doNew()' title='新建(Ctrl+N)'>📄 新建</button>"
 html = html + "<button onclick='doOpen()' title='打开(Ctrl+O)'>📂 打开</button>"
@@ -854,6 +1022,33 @@ html = html + "</div>"
 html = html + "</body>"
 
 // ---- JavaScript ----
+// 调试模式：先注入独立的错误捕获 script 块（必须在业务 JS 之前执行）。
+// 作用：window.onerror / unhandledrejection 捕获页面 JS 错误，
+//       显示在页面底部红色调试条并回传 JSERR；页面就绪后回传 JSREADY
+//       心跳（含 window.ipc 可用性），用于确认前后端链路是否活着。
+if debugMode {
+    html = html + "<script>"
+    html = html + "window.onerror = function(msg, src, line, col) {"
+    html = html + "  try {"
+    html = html + "    var d = document.getElementById('__dbgbar');"
+    html = html + "    if (!d) { d = document.createElement('div'); d.id = '__dbgbar';"
+    html = html + "      d.style.cssText = 'position:fixed;left:0;right:0;bottom:24px;max-height:35%;overflow:auto;background:#5c1a1a;color:#ffb0b0;padding:4px 8px;font:12px Consolas,monospace;z-index:99999;white-space:pre-wrap;border-top:2px solid #f55';"
+    html = html + "      (document.body || document.documentElement).appendChild(d);"
+    html = html + "    }"
+    html = html + "    d.textContent += '[JS错误] ' + msg + '  @ ' + (src || '?') + ':' + line + ':' + col + String.fromCharCode(10);"
+    html = html + "  } catch (e2) {}"
+    html = html + "  try { window.ipc.postMessage('JSERR' + String.fromCharCode(10) + msg + ' @ ' + (src || '?') + ':' + line); } catch (e3) {}"
+    html = html + "  return false;"
+    html = html + "};"
+    html = html + "window.addEventListener('unhandledrejection', function(ev) {"
+    html = html + "  var r = ev && ev.reason; var m = (r && r.message) ? r.message : String(r);"
+    html = html + "  window.onerror('Promise: ' + m, '(promise)', 0, 0);"
+    html = html + "});"
+    html = html + "setTimeout(function() {"
+    html = html + "  try { window.ipc.postMessage('JSREADY' + String.fromCharCode(10) + 'ipc=' + typeof window.ipc); } catch (e) {}"
+    html = html + "}, 0);"
+    html = html + "</script>"
+}
 html = html + "<script>"
 
 // Sflang 关键字
@@ -930,14 +1125,18 @@ html = html + "  return html;"
 html = html + "}"
 
 // HTML 转义
-html = html + "function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }"
+html = html + "function esc(s) { s = String(s == null ? '' : s); return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }"
 
 // 编辑器事件
 html = html + "var isDirty = false; var currentFile = ''; var fileEncoding = 'UTF-8'; var lineEnding = 'LF';"
-html = html + "// SSH 集成相关状态"
+html = html + "// SSH 集成相关状态\n"
 html = html + "var isRemoteFile = false; var remotePathCurrent = ''; var currentServerName = ''; var __sshNewFilePendingPath = null;"
 html = html + "var __sshCallbacks = {}; var __sshBrowserState = {cwd:'/', items:[], selectedIdx:-1, loading:false};"
 html = html + "var __xtermAssets = {js:'', css:'', fit:''};"
+// 注入后端已知状态：激活服务器名与服务器名列表。
+// 终端/浏览器下拉直接使用，无需先打开配置弹窗；保存配置后由后端 guiEval 更新。
+html = html + "var __sshActiveName = '" + escapeJS(sshActiveName) + "';"
+html = html + "var __sshServerNames = " + sshNamesJson() + ";"
 html = html + "var __sshTermState = {term:null, fitAddon:null, streamId:0, dialog:null, reconnectBar:null, serverName:'', closed:false};"
 html = html + "function setDirty(v) { isDirty = v; updateTitle(); }"
 html = html + "function updateTitle() {"
@@ -1027,6 +1226,9 @@ html = html + "function onKey(e) {"
 html = html + "  if (e.key == 'F5') { e.preventDefault(); doRun(); }"
 html = html + "  else if (e.key == 'F6') { e.preventDefault(); doEval(); }"
 html = html + "  else if (e.key == 'F7') { e.preventDefault(); doCmdRun(); }"
+html = html + "  else if (e.key == 'F8') { e.preventDefault(); doBuild(); }"
+html = html + "  else if (e.key == 'F9') { e.preventDefault(); doCheck(); }"
+html = html + "  else if (e.ctrlKey && e.shiftKey && e.key == 'F') { e.preventDefault(); doFormat(); }"
 html = html + "  else if (e.ctrlKey && e.shiftKey && e.key == 'S') { e.preventDefault(); doSaveAs(); }"
 html = html + "  else if (e.ctrlKey && e.key == 's') { e.preventDefault(); doSave(); }"
 html = html + "  else if (e.ctrlKey && e.key == 'o') { e.preventDefault(); doOpen(); }"
@@ -1053,6 +1255,37 @@ html = html + "function doCmdRun() {"
 html = html + "  var code = document.getElementById('editor').value;"
 html = html + "  document.getElementById('status').textContent = 'CMD 运行中...';"
 html = html + "  window.ipc.postMessage('CMDRUN\\n' + code);"
+html = html + "}"
+html = html + "function doBuild() {"
+html = html + "  var code = document.getElementById('editor').value;"
+html = html + "  document.getElementById('status').textContent = '编译中...';"
+html = html + "  // 第1行为当前文件路径（后端据此推导默认输出名），其余为代码\n"
+html = html + "  window.ipc.postMessage('BUILD' + String.fromCharCode(10) + (currentFile || '') + String.fromCharCode(10) + code);"
+html = html + "}"
+
+// 语法检查（不运行）\n
+html = html + "function doCheck() {"
+html = html + "  var code = document.getElementById('editor').value;"
+html = html + "  document.getElementById('status').textContent = '检查中...';"
+html = html + "  window.ipc.postMessage('CHECK' + String.fromCharCode(10) + code);"
+html = html + "}"
+// 自动格式化\n
+html = html + "function doFormat() {"
+html = html + "  var code = document.getElementById('editor').value;"
+html = html + "  document.getElementById('status').textContent = '格式化中...';"
+html = html + "  window.ipc.postMessage('FORMAT' + String.fromCharCode(10) + code);"
+html = html + "}"
+// 跳到指定行（语法错误定位：选中该行并滚动可见）\n
+html = html + "function gotoLine(n) {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var lines = ta.value.split(String.fromCharCode(10));"
+html = html + "  if (n < 1 || n > lines.length) return;"
+html = html + "  var pos = 0; for (var i = 0; i < n - 1; i++) pos += lines[i].length + 1;"
+html = html + "  ta.focus();"
+html = html + "  ta.setSelectionRange(pos, pos + lines[n - 1].length);"
+html = html + "  var lineH = 21;  // 14px * 1.5 行高\n"
+html = html + "  ta.scrollTop = Math.max(0, (n - 1) * lineH - ta.clientHeight / 3);"
+html = html + "  onScroll();"
 html = html + "}"
 
 // 新建文件
@@ -1381,10 +1614,10 @@ html = html + "  document.getElementById('status').textContent = '加载模板�
 html = html + "  var msg = 'TPL' + String.fromCharCode(10) + name;"
 html = html + "  window.ipc.postMessage(msg);"
 html = html + "}"
-html = html + "// ==================== SSH 集成 ===================="
-html = html + "// 通用：把 taskId 与 op/path 绑定，供 onAsyncResult 分发"
+html = html + "// ==================== SSH 集成 ====================\n"
+html = html + "// 通用：把 taskId 与 op/path 绑定，供 onAsyncResult 分发\n"
 html = html + "function sshBindTaskId(op, path, tid) { __sshCallbacks[tid] = {op:op, path:path}; }"
-html = html + "// 后端异步结果回调：根据绑定的 op 分发"
+html = html + "// 后端异步结果回调：根据绑定的 op 分发\n"
 html = html + "window.onAsyncResult = function(tid, resultJson, isError) {"
 html = html + "  var cb = __sshCallbacks[tid];"
 html = html + "  if (!cb) return; delete __sshCallbacks[tid];"
@@ -1398,8 +1631,8 @@ html = html + "    else if (cb.op === 'RENAME') sshRenameResult(resultJson, isEr
 html = html + "    else if (cb.op === 'TEST') sshCfgTestResult(isError, resultJson);"
 html = html + "  } catch(e) { showOutput('SSH 回调异常: ' + e.message, true); }"
 html = html + "};"
-html = html + "// 后端流式数据回调（SSH PTY 远端输出）"
-html = html + "// kindNum: 0=Data, 1=Eof, 2=Error, 3=Exit(code)"
+html = html + "// 后端流式数据回调（SSH PTY 远端输出）\n"
+html = html + "// kindNum: 0=Data, 1=Eof, 2=Error, 3=Exit(code)\n"
 html = html + "window.onStreamData = function(streamId, data, kindNum, extra) {"
 html = html + "  if (streamId !== __sshTermState.streamId) return;"
 html = html + "  if (kindNum === 0) {"
@@ -1410,19 +1643,19 @@ html = html + "  } else if (kindNum === 2) {"
 html = html + "    sshTtyOnDisconnect('错误: ' + data);"
 html = html + "  }"
 html = html + "};"
-html = html + "// 通用：发送 IPC 消息（op + \\n + data）"
+html = html + "// 通用：发送 IPC 消息（op + \\n + data）\n"
 html = html + "function sshSend(op, data) {"
 html = html + "  var msg = op + String.fromCharCode(10) + (data === undefined ? '' : data);"
 html = html + "  window.ipc.postMessage(msg);"
 html = html + "}"
-html = html + "// ---- SSH 配置管理弹窗 ----"
-html = html + "// 配置弹窗内部缓存（仅在弹窗打开期间有效；关闭时通过 SSHCFG_SAVE 持久化）"
+html = html + "// ---- SSH 配置管理弹窗 ----\n"
+html = html + "// 配置弹窗内部缓存（仅在弹窗打开期间有效；关闭时通过 SSHCFG_SAVE 持久化）\n"
 html = html + "var sshCfgServersCache = []; var sshCfgActiveCache = ''; var sshCfgCurIdx = -1;"
 html = html + "function doSshConfig() { sshSend('SSHCFG', ''); }"
-html = html + "// 后端返回配置后渲染"
+html = html + "// 后端返回配置后渲染\n"
 html = html + "function sshCfgRender(cfgJson, activeName) {"
 html = html + "  var servers = [];"
-html = html + "  try { servers = JSON.parse(cfgJson || '[]'); } catch(e) {}"
+html = html + "  try { servers = (typeof cfgJson === 'string') ? JSON.parse(cfgJson || '[]') : (cfgJson || []); } catch(e) {}"
 html = html + "  sshCfgRenderList(servers, activeName);"
 html = html + "  var cfgHtml = '<div class=\\'ssh-cfg\\'><div class=\\'ssh-cfg-left\\' id=\\'sshCfgList\\'>' + sshCfgListHtml(servers, activeName) + '</div>';"
 html = html + "  cfgHtml += '<div class=\\'ssh-cfg-right\\' id=\\'sshCfgForm\\'>请选择或新增服务器</div>';"
@@ -1431,7 +1664,7 @@ html = html + "  cfgHtml += '<div style=\\'padding:8px;text-align:right;border-t
 html = html + "  sshShowDialog('SSH 服务器配置', cfgHtml, '70%', '70%');"
 html = html + "  sshCfgServersCache = servers; sshCfgActiveCache = activeName; sshCfgCurIdx = -1;"
 html = html + "}"
-html = html + "// 生成左侧列表 HTML（抽出共用函数避免重复）"
+html = html + "// 生成左侧列表 HTML（抽出共用函数避免重复）\n"
 html = html + "function sshCfgListHtml(servers, activeName) {"
 html = html + "  var h = '<div style=\\'padding:6px;color:#888;font-size:12px\\'>服务器列表 (' + servers.length + ')</div>';"
 html = html + "  h += '<div class=\\'tpl-item\\' onclick=\\'sshCfgEditNew()\\' style=\\'color:#4caf50\\'>+ 新增服务器</div>';"
@@ -1445,21 +1678,20 @@ html = html + "  }"
 html = html + "  if (servers.length === 0) h += '<div style=\\'padding:10px;color:#666\\'>暂无服务器，点击上方新增</div>';"
 html = html + "  return h;"
 html = html + "}"
-html = html + "// 刷新左侧列表（应用/删除/激活后调用）"
+html = html + "// 刷新左侧列表（应用/删除/激活后调用）\n"
 html = html + "function sshCfgRenderList(servers, activeName) {"
 html = html + "  var listEl = document.getElementById('sshCfgList');"
 html = html + "  if (listEl) listEl.innerHTML = sshCfgListHtml(servers, activeName);"
 html = html + "}"
-html = html + "var sshCfgServersCache = []; var sshCfgActiveCache = ''; var sshCfgCurIdx = -1;"
-html = html + "// （sshCfgServersCache 等已在上方声明，供所有 cfg 函数共享）"
-html = html + "// 选中某个服务器：渲染编辑表单"
+html = html + "// （sshCfgServersCache 等已在上方声明，供所有 cfg 函数共享）\n"
+html = html + "// 选中某个服务器：渲染编辑表单\n"
 html = html + "function sshCfgSelect(idx) {"
 html = html + "  if (idx < 0 || idx >= sshCfgServersCache.length) return;"
 html = html + "  sshCfgCurIdx = idx;"
 html = html + "  var s = sshCfgServersCache[idx];"
 html = html + "  var formHtml = sshCfgFormHtml(s);"
 html = html + "  document.getElementById('sshCfgForm').innerHTML = formHtml;"
-html = html + "  // 更新列表的选中态"
+html = html + "  // 更新列表的选中态\n"
 html = html + "  var items = document.getElementById('sshCfgList').querySelectorAll('.tpl-item');"
 html = html + "  for (var i = 0; i < items.length; i++) { items[i].style.background = ''; }"
 html = html + "  var sel = document.querySelector('.tpl-item[data-idx=\\''+idx+'\\']');"
@@ -1471,7 +1703,7 @@ html = html + "  sshCfgServersCache.push(ns);"
 html = html + "  sshCfgRenderList(sshCfgServersCache, sshCfgActiveCache);"
 html = html + "  sshCfgSelect(sshCfgServersCache.length - 1);"
 html = html + "}"
-html = html + "// 生成编辑表单 HTML"
+html = html + "// 生成编辑表单 HTML\n"
 html = html + "function sshCfgFormHtml(s) {"
 html = html + "  var authType = s.authType || 'password';"
 html = html + "  var h = '<div class=\\'ssh-form\\'>';"
@@ -1501,17 +1733,20 @@ html = html + "  var v = document.getElementById('cfgAuth').value;"
 html = html + "  document.getElementById('cfgKeyRow').style.display = (v==='key')?'block':'none';"
 html = html + "  document.getElementById('cfgKeyPassRow').style.display = (v==='key')?'block':'none';"
 html = html + "}"
-html = html + "// 应用：把表单值写回 cache"
+html = html + "// 应用：把表单值写回 cache\n"
 html = html + "function sshCfgApply() {"
 html = html + "  if (sshCfgCurIdx < 0) return;"
 html = html + "  var s = sshCfgServersCache[sshCfgCurIdx];"
+html = html + "  var oldName = s.name;"
 html = html + "  s.name = document.getElementById('cfgName').value.trim() || ('server' + sshCfgCurIdx);"
+html = html + "  // 重命名的正是当前激活服务器时，激活名跟随新名，避免激活指向不存在的名字\n"
+html = html + "  if (oldName === sshCfgActiveCache) { sshCfgActiveCache = s.name; __sshActiveName = s.name; }"
 html = html + "  s.host = document.getElementById('cfgHost').value.trim();"
 html = html + "  s.port = parseInt(document.getElementById('cfgPort').value) || 22;"
 html = html + "  s.user = document.getElementById('cfgUser').value.trim() || 'root';"
 html = html + "  s.authType = document.getElementById('cfgAuth').value;"
 html = html + "  var pw = document.getElementById('cfgPassword').value;"
-html = html + "  if (pw) s.password = '__ENCRYPT_ME__' + pw;  // 留待后端加密"
+html = html + "  if (pw) s.password = '__ENCRYPT_ME__' + pw;  // 留待后端加密\n"
 html = html + "  s.keyPath = document.getElementById('cfgKeyPath').value.trim();"
 html = html + "  var kp = document.getElementById('cfgKeyPassphrase').value;"
 html = html + "  if (kp) s.keyPassphrase = '__ENCRYPT_ME__' + kp;"
@@ -1526,6 +1761,7 @@ html = html + "}"
 html = html + "function sshCfgActivate() {"
 html = html + "  if (sshCfgCurIdx < 0) return;"
 html = html + "  sshCfgActiveCache = sshCfgServersCache[sshCfgCurIdx].name;"
+html = html + "  __sshActiveName = sshCfgActiveCache;  // 前端即时生效；持久化在关闭弹窗时\n"
 html = html + "  document.getElementById('cfgTestStatus').textContent = '已设为激活: ' + sshCfgActiveCache;"
 html = html + "  sshCfgRenderList(sshCfgServersCache, sshCfgActiveCache);"
 html = html + "  sshCfgSelect(sshCfgCurIdx);"
@@ -1534,19 +1770,19 @@ html = html + "function sshCfgDelete() {"
 html = html + "  if (sshCfgCurIdx < 0) return;"
 html = html + "  if (!confirm('删除服务器配置 \\'' + sshCfgServersCache[sshCfgCurIdx].name + '\\'?')) return;"
 html = html + "  var removed = sshCfgServersCache.splice(sshCfgCurIdx, 1)[0];"
-html = html + "  if (removed && removed.name === sshCfgActiveCache) sshCfgActiveCache = '';"
+html = html + "  if (removed && removed.name === sshCfgActiveCache) { sshCfgActiveCache = ''; __sshActiveName = ''; }"
 html = html + "  sshCfgCurIdx = -1;"
 html = html + "  sshCfgRenderList(sshCfgServersCache, sshCfgActiveCache);"
 html = html + "  document.getElementById('sshCfgForm').innerHTML = '请选择或新增服务器';"
 html = html + "}"
-html = html + "// 测试连接：先 Apply 把字段写回 cache，然后后端测试"
+html = html + "// 测试连接：先 Apply 把字段写回 cache，然后后端测试\n"
 html = html + "function sshCfgTest() {"
 html = html + "  if (sshCfgCurIdx < 0) return;"
 html = html + "  sshCfgApply();"
-html = html + "  // 临时保存以便后端能找到该 server 配置（包括刚输入的密码）"
+html = html + "  // 临时保存以便后端能找到该 server 配置（包括刚输入的密码）\n"
 html = html + "  sshCfgPersistAndTest(sshCfgServersCache[sshCfgCurIdx].name);"
 html = html + "}"
-html = html + "// 先持久化（让后端能读到最新配置），再发起测试"
+html = html + "// 先持久化（让后端能读到最新配置），再发起测试\n"
 html = html + "function sshCfgPersistAndTest(srvName) {"
 html = html + "  var data = JSON.stringify(sshCfgServersCache) + String.fromCharCode(10) + sshCfgActiveCache;"
 html = html + "  __sshTestPendingName = srvName;"
@@ -1555,7 +1791,7 @@ html = html + "}"
 html = html + "var __sshTestPendingName = '';"
 html = html + "function sshCfgSaveResult(ok, msg) {"
 html = html + "  if (!ok) { alert('保存失败: ' + msg); return; }"
-html = html + "  // 如果有待测试的服务器，触发测试"
+html = html + "  // 如果有待测试的服务器，触发测试\n"
 html = html + "  if (__sshTestPendingName) {"
 html = html + "    var name = __sshTestPendingName; __sshTestPendingName = '';"
 html = html + "    sshSend('SSHCFG_TEST', name);"
@@ -1568,7 +1804,7 @@ html = html + "  if (!el) { showOutput('SSH 测试: ' + msg, isError); return; }
 html = html + "  if (isError) {"
 html = html + "    el.innerHTML = '<span style=\\'color:#f44747\\'>❌ ' + esc(msg) + '</span>';"
 html = html + "  } else {"
-html = html + "    // sshRun 成功返回 'echo __SSH_OK__' 的输出，应含 __SSH_OK__"
+html = html + "    // sshRun 成功返回 'echo __SSH_OK__' 的输出，应含 __SSH_OK__\n"
 html = html + "    if (msg && msg.indexOf('__SSH_OK__') >= 0) {"
 html = html + "      el.innerHTML = '<span style=\\'color:#4caf50\\'>✓ 连接成功</span>';"
 html = html + "    } else {"
@@ -1576,15 +1812,15 @@ html = html + "      el.innerHTML = '<span style=\\'color:#4caf50\\'>✓ 连接�
 html = html + "    }"
 html = html + "  }"
 html = html + "}"
-html = html + "// 关闭配置弹窗前持久化"
+html = html + "// 关闭配置弹窗前持久化\n"
 html = html + "function sshCfgClose() {"
 html = html + "  var data = JSON.stringify(sshCfgServersCache) + String.fromCharCode(10) + sshCfgActiveCache;"
 html = html + "  sshSend('SSHCFG_SAVE', data);"
 html = html + "  sshCloseDialog();"
 html = html + "}"
-html = html + "// ---- SSH 通用模态对话框基础设施 ----"
-html = html + "// sshShowDialog 渲染全屏遮罩 + 居中弹窗。content 是 HTML 字符串。"
-html = html + "// 同一时间只允许一个 SSH 弹窗（sshCloseDialog 关闭）。"
+html = html + "// ---- SSH 通用模态对话框基础设施 ----\n"
+html = html + "// sshShowDialog 渲染全屏遮罩 + 居中弹窗。content 是 HTML 字符串。\n"
+html = html + "// 同一时间只允许一个 SSH 弹窗（sshCloseDialog 关闭）。\n"
 html = html + "function sshShowDialog(title, content, width, height) {"
 html = html + "  sshCloseDialog();"
 html = html + "  var overlay = document.createElement('div');"
@@ -1609,20 +1845,48 @@ html = html + "function sshCloseDialog() {"
 html = html + "  var ov = document.getElementById('sshOverlay');"
 html = html + "  if (ov) ov.remove();"
 html = html + "}"
-html = html + "// 无激活服务器时的友好提示"
+html = html + "// 无激活服务器时的友好提示\n"
 html = html + "function sshNoActiveServer(op) {"
 html = html + "  if (op === 'LIST') { var el = document.getElementById('sshBrowserList'); if (el) el.innerHTML = '<div class=\\'ssh-empty\\'>请先在\"服务器配置\"中激活一个服务器</div>'; }"
 html = html + "  alert('请先在\"服务器配置\"中激活一个服务器');"
 html = html + "}"
-html = html + "// ---- SSH 文件浏览器 ----"
+html = html + "// ---- SSH 文件浏览器 ----\n"
 html = html + "function doSshBrowse() {"
 html = html + "  sshBrowseShow('/');"
 html = html + "}"
-html = html + "// 打开浏览器弹窗（渲染骨架）并立即请求给定 cwd 的列表"
+// 服务器下拉选项（当前激活的选中；数据来自后端注入/同步的 __sshServerNames）\n
+html = html + "function sshServerSelOptionsHtml() {"
+html = html + "  var h = '';"
+html = html + "  for (var i = 0; i < __sshServerNames.length; i++) {"
+html = html + "    var n = __sshServerNames[i];"
+html = html + "    h += '<option value=\\'' + esc(n) + '\\'' + (n === __sshActiveName ? ' selected' : '') + '>' + esc(n) + '</option>';"
+html = html + "  }"
+html = html + "  return h;"
+html = html + "}"
+// 下拉切换：发 SSH_ACTIVATE，由后端持久化并回调 sshServerActivated\n
+html = html + "function sshBrowserSwitchServer(name) {"
+html = html + "  if (!name || name === __sshActiveName) return;"
+html = html + "  var st = document.getElementById('sshBrowserStatus');"
+html = html + "  if (st) st.textContent = '切换服务器: ' + name + ' ...';"
+html = html + "  sshSend('SSH_ACTIVATE', name);"
+html = html + "}"
+// 激活切换结果：浏览器打开时重载根目录\n
+html = html + "function sshServerActivated(ok, name) {"
+html = html + "  var st = document.getElementById('sshBrowserStatus');"
+html = html + "  if (!ok) { if (st) st.textContent = '激活失败: ' + name; return; }"
+html = html + "  if (!document.getElementById('sshBrowserList')) return;  // 浏览器未打开时不请求列表\n"
+html = html + "  if (st) st.textContent = '已激活: ' + name + '，加载 / ...';"
+html = html + "  __sshBrowserState.cwd = '/';"
+html = html + "  var pathEl = document.getElementById('sshBrowserPath');"
+html = html + "  if (pathEl) pathEl.value = '/';"
+html = html + "  sshBrowserRequestList('/');"
+html = html + "}"
+html = html + "// 打开浏览器弹窗（渲染骨架）并立即请求给定 cwd 的列表\n"
 html = html + "function sshBrowseShow(cwd) {"
 html = html + "  __sshBrowserState.cwd = cwd; __sshBrowserState.items = []; __sshBrowserState.selectedIdx = -1; __sshBrowserState.loading = true;"
 html = html + "  var browserHtml = '<div class=\\'ssh-browser\\'>';"
 html = html + "  browserHtml += '<div class=\\'ssh-browser-bar\\'>';"
+html = html + "  browserHtml += '<select id=\\'sshServerSel\\' onchange=\\'sshBrowserSwitchServer(this.value)\\' title=\\'切换服务器（同时仅一个激活）\\' style=\\'max-width:110px;background:#3c3c3c;color:#d4d4d4;border:1px solid #505050;border-radius:3px;padding:4px;font-family:inherit;\\'>' + sshServerSelOptionsHtml() + '</select>';"
 html = html + "  browserHtml += '<button class=\\'ssh-btn\\' onclick=\\'sshBrowserUp()\\'>↑ 上级</button>';"
 html = html + "  browserHtml += '<input id=\\'sshBrowserPath\\' value=\\'' + esc(cwd) + '\\' onkeydown=\\'if(event.key===\\\"Enter\\\"){sshBrowserGoto(this.value);}\\'/>';"
 html = html + "  browserHtml += '<button class=\\'ssh-btn\\' onclick=\\'sshBrowserRefresh()\\'>⟳ 刷新</button>';"
@@ -1632,30 +1896,30 @@ html = html + "  browserHtml += '</div>';"
 html = html + "  browserHtml += '<div class=\\'ssh-browser-list\\' id=\\'sshBrowserList\\'><div class=\\'ssh-empty\\'>加载中...</div></div>';"
 html = html + "  browserHtml += '<div style=\\'padding:6px 12px;border-top:1px solid #3c3c3c;font-size:12px;color:#888\\' id=\\'sshBrowserStatus\\'>就绪</div>';"
 html = html + "  browserHtml += '</div>';"
-html = html + "  sshShowDialog('SSH 文件浏览器', browserHtml, '70%', '70%');"
+html = html + "  sshShowDialog('SSH 文件浏览器 [' + (__sshActiveName || '未激活') + ']', browserHtml, '70%', '70%');"
 html = html + "  sshBrowserRequestList(cwd);"
 html = html + "}"
-html = html + "// 请求目录列表（发 SSHOP\\nLIST\\npath）"
+html = html + "// 请求目录列表（发 SSHOP\\nLIST\\npath）\n"
 html = html + "function sshBrowserRequestList(path) {"
 html = html + "  __sshBrowserState.loading = true;"
 html = html + "  var statusEl = document.getElementById('sshBrowserStatus');"
 html = html + "  if (statusEl) statusEl.textContent = '加载中: ' + path;"
 html = html + "  sshSend('SSHOP', 'LIST' + String.fromCharCode(10) + path);"
 html = html + "}"
-html = html + "// LIST 结果回调"
+html = html + "// LIST 结果回调\n"
 html = html + "function sshListResult(resultJson, isError, path) {"
 html = html + "  __sshBrowserState.loading = false;"
 html = html + "  var listEl = document.getElementById('sshBrowserList');"
 html = html + "  var statusEl = document.getElementById('sshBrowserStatus');"
-html = html + "  if (!listEl) return;  // 弹窗已关闭"
+html = html + "  if (!listEl) return;  // 弹窗已关闭\n"
 html = html + "  if (isError) { listEl.innerHTML = '<div class=\\'ssh-empty\\'>❌ ' + esc(resultJson) + '</div>'; if (statusEl) statusEl.textContent = '错误'; return; }"
 html = html + "  var items = [];"
-html = html + "  try { items = JSON.parse(resultJson || '[]'); } catch(e) { listEl.innerHTML = '<div class=\\'ssh-empty\\'>解析失败: ' + esc(e.message) + '</div>'; return; }"
+html = html + "  try { items = (typeof resultJson === 'string') ? JSON.parse(resultJson || '[]') : (resultJson || []); } catch(e) { listEl.innerHTML = '<div class=\\'ssh-empty\\'>解析失败: ' + esc(e.message) + '</div>'; return; }"
 html = html + "  __sshBrowserState.items = items; __sshBrowserState.cwd = path; __sshBrowserState.selectedIdx = -1;"
-html = html + "  // 同步地址栏"
+html = html + "  // 同步地址栏\n"
 html = html + "  var pathEl = document.getElementById('sshBrowserPath'); if (pathEl) pathEl.value = path;"
 html = html + "  if (items.length === 0) { listEl.innerHTML = '<div class=\\'ssh-empty\\'>(空目录)</div>'; if (statusEl) statusEl.textContent = path + ' (0 项)'; return; }"
-html = html + "  // 先目录后文件，目录用 📁，文件用 📄，符号链接用 🔗"
+html = html + "  // 先目录后文件，目录用 📁，文件用 📄，符号链接用 🔗\n"
 html = html + "  var dirs = []; var files = [];"
 html = html + "  for (var i = 0; i < items.length; i++) { var it = items[i]; if (it.isDir) dirs.push(it); else files.push(it); }"
 html = html + "  var renderHtml = '';"
@@ -1673,7 +1937,7 @@ html = html + "  for (var f = 0; f < files.length; f++) renderOne(files[f]);"
 html = html + "  listEl.innerHTML = renderHtml;"
 html = html + "  if (statusEl) statusEl.textContent = path + ' (' + items.length + ' 项)';"
 html = html + "}"
-html = html + "// 拼接 path + name（处理尾斜杠）"
+html = html + "// 拼接 path + name（处理尾斜杠）\n"
 html = html + "function sshEncodePath(base, name) {"
 html = html + "  if (base.endsWith('/')) return base + name;"
 html = html + "  return base + '/' + name;"
@@ -1685,7 +1949,7 @@ html = html + "  if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';"
 html = html + "  if (bytes < 1024*1024*1024) return (bytes/1024/1024).toFixed(1) + ' MB';"
 html = html + "  return (bytes/1024/1024/1024).toFixed(2) + ' GB';"
 html = html + "}"
-html = html + "// 双击：目录进入，文件打开到编辑器"
+html = html + "// 双击：目录进入，文件打开到编辑器\n"
 html = html + "function sshBrowserDblClick(el) {"
 html = html + "  var isDir = el.getAttribute('data-isdir') === '1';"
 html = html + "  var full = el.getAttribute('data-fullpath');"
@@ -1693,20 +1957,20 @@ html = html + "  var name = el.getAttribute('data-name');"
 html = html + "  if (isDir) { sshBrowserRequestList(full); }"
 html = html + "  else { sshBrowserOpenFile(full, name); }"
 html = html + "}"
-html = html + "// 单击：选中"
+html = html + "// 单击：选中\n"
 html = html + "function sshBrowserSelect(el) {"
 html = html + "  var all = document.querySelectorAll('.ssh-item');"
 html = html + "  for (var i = 0; i < all.length; i++) all[i].classList.remove('selected');"
 html = html + "  el.classList.add('selected');"
 html = html + "  __sshBrowserState.selectedIdx = Array.prototype.indexOf.call(all, el);"
 html = html + "}"
-html = html + "// 右键菜单：打开/重命名/删除"
+html = html + "// 右键菜单：打开/重命名/删除\n"
 html = html + "function sshBrowserMenu(el, evt) {"
 html = html + "  sshBrowserSelect(el);"
 html = html + "  var isDir = el.getAttribute('data-isdir') === '1';"
 html = html + "  var full = el.getAttribute('data-fullpath');"
 html = html + "  var name = el.getAttribute('data-name');"
-html = html + "  // 关掉已有菜单"
+html = html + "  // 关掉已有菜单\n"
 html = html + "  var old = document.getElementById('sshCtxtMenu'); if (old) old.remove();"
 html = html + "  var m = document.createElement('div');"
 html = html + "  m.id = 'sshCtxtMenu';"
@@ -1739,13 +2003,13 @@ html = html + "    sshSend('SSHOP', 'DELETE' + String.fromCharCode(10) + full);"
 html = html + "    __sshBrowserState.deleteFromRefresh = true;"
 html = html + "  }, '#f44747');"
 html = html + "  document.body.appendChild(m);"
-html = html + "  // 点击其他地方关闭"
+html = html + "  // 点击其他地方关闭\n"
 html = html + "  setTimeout(function() {"
 html = html + "    var close = function(e) { if (!m.contains(e.target)) { m.remove(); document.removeEventListener('click', close); } };"
 html = html + "    document.addEventListener('click', close);"
 html = html + "  }, 50);"
 html = html + "}"
-html = html + "// 打开远程文件到编辑器（发 SSHOP\\nOPEN，异步回调 sshOpenResult）"
+html = html + "// 打开远程文件到编辑器（发 SSHOP\\nOPEN，异步回调 sshOpenResult）\n"
 html = html + "function sshBrowserOpenFile(fullPath, name) {"
 html = html + "  if (isDirty && !confirm('当前编辑器内容未保存，是否覆盖？')) return;"
 html = html + "  sshSend('SSHOP', 'OPEN' + String.fromCharCode(10) + fullPath);"
@@ -1754,7 +2018,7 @@ html = html + "  __sshBrowserState.openingName = name;"
 html = html + "  var statusEl = document.getElementById('sshBrowserStatus');"
 html = html + "  if (statusEl) statusEl.textContent = '下载中: ' + fullPath;"
 html = html + "}"
-html = html + "// OPEN 结果回调（resultJson 在 isError=false 时是 base64 字符串数组形式——其实后端会传 bytes 数组，前端要重组为字符串）"
+html = html + "// OPEN 结果回调（resultJson 在 isError=false 时是 base64 字符串数组形式——其实后端会传 bytes 数组，前端要重组为字符串）\n"
 html = html + "function sshOpenResult(resultJson, isError, path) {"
 html = html + "  if (isError) {"
 html = html + "    showOutput('打开远程文件失败: ' + resultJson, true);"
@@ -1762,27 +2026,29 @@ html = html + "    var statusEl = document.getElementById('sshBrowserStatus');"
 html = html + "    if (statusEl) statusEl.textContent = '打开失败';"
 html = html + "    return;"
 html = html + "  }"
-html = html + "  // 后端把 bytes 数组序列化为 JSON 数字数组；前端转回字符串"
-html = html + "  var bytes = [];"
-html = html + "  try { bytes = JSON.parse(resultJson || '[]'); } catch(e) { showOutput('解析文件数据失败: ' + e.message, true); return; }"
-html = html + "  // bytes 是数字数组，转 string"
+html = html + "  // 新协议：后端直接传字符串（strFromBytes 已解码）；兼容旧的数字数组格式\n"
 html = html + "  var content = '';"
+html = html + "  if (typeof resultJson === 'string') {"
+html = html + "    content = resultJson;"
+html = html + "  } else {"
+html = html + "  var bytes = (resultJson || []);"
 html = html + "  try {"
-html = html + "    // 用 TextDecoder 优先，回退到 String.fromCharCode 批量"
+html = html + "    // bytes 是数字数组，转 string\n"
 html = html + "    if (window.TextDecoder) { content = new TextDecoder('utf-8').decode(new Uint8Array(bytes)); }"
 html = html + "    else { var CHUNK = 0x8000; var s = ''; for (var i = 0; i < bytes.length; i += CHUNK) { s += String.fromCharCode.apply(null, bytes.slice(i, i+CHUNK)); } content = decodeURIComponent(escape(s)); }"
 html = html + "  } catch(e) { content = '(解码失败: ' + e.message + ')'; }"
-html = html + "  // 写入编辑器"
+html = html + "  }"
+html = html + "  // 写入编辑器\n"
 html = html + "  var ta = document.getElementById('editor');"
 html = html + "  ta.value = content;"
 html = html + "  onEdit(); setDirty(false);"
 html = html + "  isRemoteFile = true;"
 html = html + "  remotePathCurrent = path;"
-html = html + "  currentFile = path;  // 兼容本地编辑器逻辑（显示标题等）"
-html = html + "  currentServerName = sshCfgActiveCache || '';  // 取当前激活名做标题前缀"
+html = html + "  currentFile = path;  // 兼容本地编辑器逻辑（显示标题等）\n"
+html = html + "  currentServerName = sshCfgActiveCache || '';  // 取当前激活名做标题前缀\n"
 html = html + "  __sshNewFilePendingPath = null;"
 html = html + "  updateTitle();"
-html = html + "  // 检测编码/换行符"
+html = html + "  // 检测编码/换行符\n"
 html = html + "  var hasCRLF = content.indexOf('\\r\\n') >= 0;"
 html = html + "  if (hasCRLF) { content = content.replace(/\\r\\n/g, '\\n'); ta.value = content; onEdit(); lineEnding = 'CRLF'; leIdx = 1; } else { lineEnding = 'LF'; leIdx = 0; }"
 html = html + "  document.getElementById('lineEndingInfo').textContent = lineEnding;"
@@ -1792,12 +2058,12 @@ html = html + "  showOutput('已加载远程文件: ' + path, false);"
 html = html + "  var statusEl = document.getElementById('sshBrowserStatus');"
 html = html + "  if (statusEl) statusEl.textContent = '已加载: ' + path;"
 html = html + "}"
-html = html + "// 工具栏按钮"
+html = html + "// 工具栏按钮\n"
 html = html + "function sshBrowserUp() {"
 html = html + "  var cwd = __sshBrowserState.cwd || '/';"
 html = html + "  if (cwd === '/' || cwd === '') return;"
-html = html + "  // 取上级目录"
-html = html + "  var trimmed = cwd.replace(/\\\\/$/, '');"
+html = html + "  // 取上级目录\n"
+html = html + "  var trimmed = cwd.replace(/\\/$/, '');"
 html = html + "  var idx = trimmed.lastIndexOf('/');"
 html = html + "  var parent = idx <= 0 ? '/' : trimmed.substring(0, idx);"
 html = html + "  sshBrowserRequestList(parent);"
@@ -1812,33 +2078,33 @@ html = html + "}"
 html = html + "function sshBrowserNewFile() {"
 html = html + "  var name = prompt('新建文件名:');"
 html = html + "  if (!name) return;"
-html = html + "  var full = sshEncodePath(__sshBrowserState.cwd.replace(/\\\\/$/, ''), name);"
-html = html + "  // 创建空文件：调 SSHOP SAVE with empty content"
+html = html + "  var full = sshEncodePath(__sshBrowserState.cwd.replace(/\\/$/, ''), name);"
+html = html + "  // 创建空文件：调 SSHOP SAVE with empty content\n"
 html = html + "  __sshNewFilePendingPath = full;"
 html = html + "  sshSend('SSHOP', 'SAVE' + String.fromCharCode(10) + full + String.fromCharCode(10) + '');"
 html = html + "}"
 html = html + "function sshBrowserNewDir() {"
 html = html + "  var name = prompt('新建目录名:');"
 html = html + "  if (!name) return;"
-html = html + "  var full = sshEncodePath(__sshBrowserState.cwd.replace(/\\\\/$/, ''), name);"
+html = html + "  var full = sshEncodePath(__sshBrowserState.cwd.replace(/\\/$/, ''), name);"
 html = html + "  sshSend('SSHOP', 'MKDIR' + String.fromCharCode(10) + full);"
 html = html + "  __sshBrowserState.mkdirFromRefresh = true;"
 html = html + "}"
-html = html + "// SAVE / MKDIR / DELETE / RENAME 结果回调"
+html = html + "// SAVE / MKDIR / DELETE / RENAME 结果回调\n"
 html = html + "function sshSaveResult(resultJson, isError, path) {"
 html = html + "  if (isError) { showOutput('保存到远程失败: ' + resultJson, true); return; }"
 html = html + "  showOutput('已保存到远程: ' + path, false);"
 html = html + "  document.getElementById('status').textContent = '已保存: ' + path;"
 html = html + "  isRemoteFile = true; remotePathCurrent = path; setDirty(false); updateTitle();"
-html = html + "  // 若是浏览器新建文件触发，完成后打开到编辑器"
+html = html + "  // 若是浏览器新建文件触发，完成后打开到编辑器\n"
 html = html + "  if (__sshNewFilePendingPath === path) {"
 html = html + "    __sshNewFilePendingPath = null;"
-html = html + "    // 清空编辑器等待新文件"
+html = html + "    // 清空编辑器等待新文件\n"
 html = html + "    document.getElementById('editor').value = ''; onEdit(); setDirty(false);"
 html = html + "    isRemoteFile = true; remotePathCurrent = path; currentFile = path;"
 html = html + "    currentServerName = sshCfgActiveCache || ''; updateTitle();"
 html = html + "  }"
-html = html + "  // 若弹窗在开，刷新列表"
+html = html + "  // 若弹窗在开，刷新列表\n"
 html = html + "  if (document.getElementById('sshBrowserList')) sshBrowserRefresh();"
 html = html + "}"
 html = html + "function sshMkdirResult(resultJson, isError, path) {"
@@ -1856,20 +2122,20 @@ html = html + "  if (isError) { showOutput('重命名失败: ' + resultJson, tru
 html = html + "  showOutput('已重命名: ' + path, false);"
 html = html + "  if (document.getElementById('sshBrowserList')) sshBrowserRefresh();"
 html = html + "}"
-html = html + "// ---- 保存当前编辑器内容到远程 ----"
-html = html + "// doSshSaveCurrent：保存到当前已打开的远程路径（isRemoteFile=true 时）"
+html = html + "// ---- 保存当前编辑器内容到远程 ----\n"
+html = html + "// doSshSaveCurrent：保存到当前已打开的远程路径（isRemoteFile=true 时）\n"
 html = html + "function doSshSaveCurrent() {"
 html = html + "  if (!isRemoteFile || !remotePathCurrent) {"
 html = html + "    alert('当前不是远程文件，请使用\"另存到远程\"');"
 html = html + "    return;"
 html = html + "  }"
-html = html + "  __sshNewFilePendingPath = null;  // 防止触发新建文件回调"
+html = html + "  __sshNewFilePendingPath = null;  // 防止触发新建文件回调\n"
 html = html + "  var content = document.getElementById('editor').value;"
-html = html + "  // 换行符按当前 lineEnding 设置转换"
+html = html + "  // 换行符按当前 lineEnding 设置转换\n"
 html = html + "  if (lineEnding === 'CRLF') content = content.replace(/\\n/g, '\\r\\n');"
 html = html + "  sshSend('SSHOP', 'SAVE' + String.fromCharCode(10) + remotePathCurrent + String.fromCharCode(10) + content);"
 html = html + "}"
-html = html + "// doSshSaveAs：另存到新路径（提示用户输入）"
+html = html + "// doSshSaveAs：另存到新路径（提示用户输入）\n"
 html = html + "function doSshSaveAs() {"
 html = html + "  var srvName = sshCfgActiveCache;"
 html = html + "  if (!srvName) { alert('请先在\"服务器配置\"中激活一个服务器'); return; }"
@@ -1880,19 +2146,19 @@ html = html + "  var content = document.getElementById('editor').value;"
 html = html + "  if (lineEnding === 'CRLF') content = content.replace(/\\n/g, '\\r\\n');"
 html = html + "  sshSend('SSHOP', 'SAVE' + String.fromCharCode(10) + newPath + String.fromCharCode(10) + content);"
 html = html + "}"
-html = html + "// ---- SSH 终端（xterm.js）----"
+html = html + "// ---- SSH 终端（xterm.js）----\n"
 html = html + "function doSshTerminal() {"
-html = html + "  var srvName = sshCfgActiveCache;"
-html = html + "  if (!srvName) { alert('请先在\"服务器配置\"中激活一个服务器'); return; }"
+html = html + "  var srvName = __sshActiveName || sshCfgActiveCache;"
+html = html + "  if (!srvName) { alert('请先在\"服务器配置\"中激活一个服务器，或在文件浏览器顶部的下拉中切换'); return; }"
 html = html + "  __sshTermState.serverName = srvName;"
 html = html + "  __sshTermState.closed = false;"
-html = html + "  // 准备终端弹窗骨架"
+html = html + "  // 准备终端弹窗骨架\n"
 html = html + "  var termHtml = '<div class=\\'ssh-term\\'>';"
 html = html + "  termHtml += '<div class=\\'ssh-term-container\\' id=\\'sshTermContainer\\'></div>';"
 html = html + "  termHtml += '<div class=\\'ssh-term-bar\\' id=\\'sshTermBar\\'><span id=\\'sshTermStatus\\'>连接中...</span><span style=\\'margin-left:auto\\'></span></div>';"
 html = html + "  termHtml += '</div>';"
 html = html + "  sshShowDialog('SSH 终端: ' + srvName, termHtml, '80%', '80%');"
-html = html + "  // 第一次打开：先 LOADXTERM 拉资源，注入到 DOM 后再 init"
+html = html + "  // 第一次打开：先 LOADXTERM 拉资源，注入到 DOM 后再 init\n"
 html = html + "  if (!window.Terminal) {"
 html = html + "    window.__onXtermLoaded = function() {"
 html = html + "      window.__onXtermLoaded = null;"
@@ -1903,31 +2169,31 @@ html = html + "  } else {"
 html = html + "    sshTermInit();"
 html = html + "  }"
 html = html + "}"
-html = html + "// 注入 xterm 资源到 DOM（在 __onXtermLoaded 回调中调用）"
-html = html + "// 后端通过 LOADXTERM 把 window.__xtermAssets 设置好"
-html = html + "// 本函数由 doSshTerminal 直接调用（LOADXTERM 回调时也走同一函数）"
+html = html + "// 注入 xterm 资源到 DOM（在 __onXtermLoaded 回调中调用）\n"
+html = html + "// 后端通过 LOADXTERM 把 window.__xtermAssets 设置好\n"
+html = html + "// 本函数由 doSshTerminal 直接调用（LOADXTERM 回调时也走同一函数）\n"
 html = html + "function sshTermInjectAssets() {"
 html = html + "  if (window.__xtermAssetsInjected) return true;"
 html = html + "  var a = window.__xtermAssets; if (!a) return false;"
-html = html + "  // 注入 CSS"
+html = html + "  // 注入 CSS\n"
 html = html + "  var style = document.createElement('style');"
 html = html + "  style.id = 'xtermCss';"
 html = html + "  style.textContent = a.css;"
 html = html + "  document.head.appendChild(style);"
-html = html + "  // 注入 xterm.js 主库"
+html = html + "  // 注入 xterm.js 主库\n"
 html = html + "  var s1 = document.createElement('script');"
 html = html + "  s1.textContent = a.js;"
 html = html + "  document.body.appendChild(s1);"
-html = html + "  // 注入 FitAddon"
+html = html + "  // 注入 FitAddon\n"
 html = html + "  var s2 = document.createElement('script');"
 html = html + "  s2.textContent = a.fit;"
 html = html + "  document.body.appendChild(s2);"
 html = html + "  window.__xtermAssetsInjected = true;"
 html = html + "  return true;"
 html = html + "}"
-html = html + "// 初始化 xterm Terminal 并发 SSHTTY_OPEN"
+html = html + "// 初始化 xterm Terminal 并发 SSHTTY_OPEN\n"
 html = html + "function sshTermInit() {"
-html = html + "  // 确保 assets 已注入（LOADXTERM 回调时已注入；后续重连时 window.Terminal 已存在）"
+html = html + "  // 确保 assets 已注入（LOADXTERM 回调时已注入；后续重连时 window.Terminal 已存在）\n"
 html = html + "  if (!window.Terminal) {"
 html = html + "    if (!sshTermInjectAssets()) {"
 html = html + "      var st = document.getElementById('sshTermStatus'); if (st) st.textContent = 'xterm 资源加载失败';"
@@ -1936,7 +2202,7 @@ html = html + "    }"
 html = html + "  }"
 html = html + "  var container = document.getElementById('sshTermContainer');"
 html = html + "  if (!container) return;"
-html = html + "  // 若已有 term 实例先销毁"
+html = html + "  // 若已有 term 实例先销毁\n"
 html = html + "  if (__sshTermState.term) { try { __sshTermState.term.dispose(); } catch(e){} __sshTermState.term = null; }"
 html = html + "  __sshTermState.fitAddon = null;"
 html = html + "  var term = new Terminal({ cursorBlink:true, fontSize:14, fontFamily:'Consolas, Monaco, Courier New, monospace', theme:{background:'#000', foreground:'#d4d4d4', cursor:'#fff'} });"
@@ -1946,26 +2212,26 @@ html = html + "  term.open(container);"
 html = html + "  try { fitAddon.fit(); } catch(e){}"
 html = html + "  __sshTermState.term = term;"
 html = html + "  __sshTermState.fitAddon = fitAddon;"
-html = html + "  // 用户输入 → SSHTTY_WRITE"
+html = html + "  // 用户输入 → SSHTTY_WRITE\n"
 html = html + "  term.onData(function(data) {"
 html = html + "    sshSend('SSHTTY_WRITE', data);"
 html = html + "  });"
-html = html + "  // 窗口大小变化 → SSHTTY_RESIZE"
+html = html + "  // 窗口大小变化 → SSHTTY_RESIZE\n"
 html = html + "  term.onResize(function(size) {"
 html = html + "    sshSend('SSHTTY_RESIZE', size.cols + String.fromCharCode(10) + size.rows);"
 html = html + "  });"
-html = html + "  // 监听容器尺寸变化（窗口 resize）"
+html = html + "  // 监听容器尺寸变化（窗口 resize）\n"
 html = html + "  if (!window.__sshTermResizeObserver) {"
 html = html + "    window.__sshTermResizeObserver = new ResizeObserver(function() {"
 html = html + "      if (__sshTermState.fitAddon && __sshTermState.term) { try { __sshTermState.fitAddon.fit(); } catch(e){} }"
 html = html + "    });"
 html = html + "  }"
 html = html + "  window.__sshTermResizeObserver.observe(container);"
-html = html + "  // 发起 SSH PTY 连接"
+html = html + "  // 发起 SSH PTY 连接\n"
 html = html + "  var st2 = document.getElementById('sshTermStatus'); if (st2) st2.textContent = '连接中: ' + __sshTermState.serverName;"
 html = html + "  sshSend('SSHTTY_OPEN', __sshTermState.serverName);"
 html = html + "}"
-html = html + "// 后端 SSHTTY_OPEN 结果回调"
+html = html + "// 后端 SSHTTY_OPEN 结果回调\n"
 html = html + "function sshTtyOpenResult(streamId, ok, errMsg) {"
 html = html + "  var statusEl = document.getElementById('sshTermStatus');"
 html = html + "  if (!ok) {"
@@ -1976,20 +2242,20 @@ html = html + "  }"
 html = html + "  __sshTermState.streamId = streamId;"
 html = html + "  __sshTermState.closed = false;"
 html = html + "  if (statusEl) statusEl.innerHTML = '<span style=\\'color:#4caf50\\'>● 已连接 (streamId=' + streamId + ')</span>';"
-html = html + "  // 移除断线重连提示"
+html = html + "  // 移除断线重连提示\n"
 html = html + "  var rb = document.getElementById('sshReconnectBar'); if (rb) rb.remove();"
 html = html + "  if (__sshTermState.term) { __sshTermState.term.focus(); }"
 html = html + "}"
-html = html + "// 断线处理（onStreamData kindNum=1/2/3 触发）"
+html = html + "// 断线处理（onStreamData kindNum=1/2/3 触发）\n"
 html = html + "function sshTtyOnDisconnect(reason) {"
-html = html + "  if (__sshTermState.closed) return;  // 防止重复触发"
+html = html + "  if (__sshTermState.closed) return;  // 防止重复触发\n"
 html = html + "  __sshTermState.closed = true;"
 html = html + "  __sshTermState.streamId = 0;"
 html = html + "  var statusEl = document.getElementById('sshTermStatus');"
 html = html + "  if (statusEl) statusEl.innerHTML = '<span style=\\'color:#f44747\\'>● 断线: ' + esc(reason||'') + '</span>';"
 html = html + "  sshTermShowReconnect(reason||'');"
 html = html + "}"
-html = html + "// 显示断线重连提示条"
+html = html + "// 显示断线重连提示条\n"
 html = html + "function sshTermShowReconnect(reason) {"
 html = html + "  var bar = document.getElementById('sshReconnectBar');"
 html = html + "  if (bar) bar.remove();"
@@ -2000,20 +2266,20 @@ html = html + "  bar2.style.margin = '0 8px';"
 html = html + "  bar2.textContent = '⟳ 重连';"
 html = html + "  bar2.title = '断线原因: ' + reason;"
 html = html + "  bar2.onclick = function() {"
-html = html + "    // 关闭旧的 session（后端会幂等处理）"
+html = html + "    // 关闭旧的 session（后端会幂等处理）\n"
 html = html + "    sshSend('SSHTTY_CLOSE', '');"
 html = html + "    if (__sshTermState.term) { try { __sshTermState.term.clear(); __sshTermState.term.reset(); } catch(e){} }"
 html = html + "    __sshTermState.closed = false;"
 html = html + "    bar2.remove();"
-html = html + "    sshTermInit();  // 重新建连"
+html = html + "    sshTermInit();  // 重新建连\n"
 html = html + "  };"
 html = html + "  var termBar = document.getElementById('sshTermBar');"
 html = html + "  if (termBar) termBar.appendChild(bar2);"
 html = html + "}"
-html = html + "// 弹窗关闭时（点✕或遮罩）会调 sshCloseDialog；这里挂钩关闭前的清理"
+html = html + "// 弹窗关闭时（点✕或遮罩）会调 sshCloseDialog；这里挂钩关闭前的清理\n"
 html = html + "var __sshOrigCloseDialog = sshCloseDialog;"
 html = html + "sshCloseDialog = function() {"
-html = html + "  // 若是终端弹窗关闭，主动断开 SSH PTY"
+html = html + "  // 若是终端弹窗关闭，主动断开 SSH PTY\n"
 html = html + "  if (__sshTermState.term) {"
 html = html + "    sshSend('SSHTTY_CLOSE', '');"
 html = html + "    try { __sshTermState.term.dispose(); } catch(e){}"
@@ -2030,7 +2296,31 @@ html = html + "  setDirty(false);"
 html = html + "  document.getElementById('editor').focus();"
 html = html + "};"
 
-html = html + "</script></html>"
+html = html + "</script>"
+// 调试模式：在主 JS 之后注入回调包装。
+// 后端通过 window.onAsyncResult / window.onStreamData 直接推送结果，
+// 不经过 onMessage，此前的 --debug 日志看不到这个方向的数据与异常；
+// 包装后每次回调的参数（类型+预览）都会以 JSLOG 回传进调试日志，
+// 回调内部的异常也会进入 onerror（红色调试条 + JSERR 日志）。
+if debugMode {
+    html = html + "<script>"
+    html = html + "(function() {"
+    html = html + "  function jslog(m) { try { window.ipc.postMessage('JSLOG' + String.fromCharCode(10) + String(m).substring(0, 200)); } catch(e) {} }"
+    html = html + "  function wrap(name) {"
+    html = html + "    var f = window[name];"
+    html = html + "    if (typeof f !== 'function') return;"
+    html = html + "    window[name] = function(a, b, c) {"
+    html = html + "      jslog(name + '(' + a + (c ? ', ERR' : '') + ') ' + typeof b + ' : ' + String(b).substring(0, 120));"
+    html = html + "      try { return f(a, b, c); }"
+    html = html + "      catch(e) { try { window.onerror(name + ' 回调异常: ' + e.message, '(callback)', 0, 0); } catch(e2) {} }"
+    html = html + "    };"
+    html = html + "  }"
+    html = html + "  wrap('onAsyncResult'); wrap('onStreamData');"
+    html = html + "  jslog('回调包装完成 onAsyncResult=' + typeof window.onAsyncResult + ' onStreamData=' + typeof window.onStreamData);"
+    html = html + "})();"
+    html = html + "</script>"
+}
+html = html + "</html>"
 
 // ---- 创建窗口 ----
 var win = guiNewWindow("--title=Sflang 代码编辑器", "--width=1100", "--height=750")
@@ -2048,4 +2338,6 @@ if initFile != "" && fileExists(initFile) {
     win = guiSetHtml(win, html)
 }
 
+dbg("窗口已创建，即将进入 guiShow 事件循环（关闭窗口后才会返回）")
 guiShow(win)
+dbg("事件循环结束，窗口已关闭")

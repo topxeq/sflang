@@ -52,7 +52,10 @@ impl Parser {
         Ok(Program { file: self.file.clone(), stmts })
     }
 
-    fn peek(&self) -> &Token { &self.tokens[self.pos] }
+    fn peek(&self) -> &Token {
+        // 越界保护：非 tokenize 产物（无 EOF 哨兵）构造的 Parser 不至于 panic
+        self.tokens.get(self.pos).unwrap_or_else(|| self.tokens.last().expect("token 流为空"))
+    }
     fn peek_at(&self, n: usize) -> &Token {
         let i = self.pos + n;
         if i < self.tokens.len() { &self.tokens[i] } else { self.peek() }
@@ -69,16 +72,24 @@ impl Parser {
     fn match_token(&mut self, kind: TokenKind) -> bool {
         if self.check(kind) { self.advance(); true } else { false }
     }
+    /// tok_desc 生成 token 的可读描述（运算符 token 的 value 为空串，回退到类型名）。
+    fn tok_desc(t: &Token) -> String {
+        if t.value.is_empty() { format!("{:?}", t.kind) } else { t.value.clone() }
+    }
     fn expect(&mut self, kind: TokenKind, what: &str) -> Result<Token, ParseError> {
         if self.check(kind) { Ok(self.advance()) } else {
             Err(ParseError {
-                msg: format!("期望 {}，但得到 '{}' (可能原因：语法结构不完整)", what, self.peek().value),
+                msg: format!("期望 {}，但得到 '{}' (可能原因：语法结构不完整)", what, Self::tok_desc(self.peek())),
                 line: self.peek().line,
             })
         }
     }
     fn err(&self, msg: impl Into<String>) -> ParseError {
         ParseError { msg: msg.into(), line: self.peek().line }
+    }
+    /// err_at 在指定行号处报错（用于语句起始 token 处的错误信息）。
+    fn err_at(&self, line: u32, msg: impl Into<String>) -> ParseError {
+        ParseError { msg: msg.into(), line }
     }
 
     // ---- 语句 ----
@@ -277,15 +288,29 @@ impl Parser {
         let mut defaults = Vec::new();
         let mut variadic = false;
         while !self.check(TokenKind::RParen) {
-            if self.match_token(TokenKind::Ellipsis) { variadic = true; }
+            if self.match_token(TokenKind::Ellipsis) {
+                if variadic {
+                    return Err(self.err("参数列表中 ...rest 只能出现一次且必须在末尾"));
+                }
+                variadic = true;
+            }
+            if variadic && self.check(TokenKind::RParen) {
+                return Err(self.err("... 后必须有参数名 (可能原因：写成 func(...args) 形式)"));
+            }
             let p = self.expect(TokenKind::Ident, "参数名")?.value;
             params.push(p.clone());
             if self.match_token(TokenKind::Assign) {
+                if variadic {
+                    return Err(self.err("...rest 参数不能带默认值"));
+                }
                 defaults.push(Some(self.parse_expr()?));
             } else {
                 defaults.push(None);
             }
             if !self.match_token(TokenKind::Comma) { break; }
+            if variadic {
+                return Err(self.err("...rest 参数必须是参数列表的最后一项"));
+            }
         }
         self.expect(TokenKind::RParen, "')'")?;
         let body = self.parse_block()?;
@@ -433,8 +458,12 @@ impl Parser {
 
         // C 风格 for (init; cond; post)
         let init = if !self.check(TokenKind::Semicolon) {
-            // parse_simple_stmt 会消费 init 后的 ;
-            Some(Box::new(self.parse_simple_stmt()?))
+            // parse_simple_stmt 的 var/const/:= 分支会顺带消费 init 后的 ";"，
+            // 普通表达式分支不消费——这里统一补消费（已消费则无事发生），
+            // 修复 for (i = 0; ...) 类普通表达式初始化的分号错位。
+            let s = self.parse_simple_stmt()?;
+            self.match_token(TokenKind::Semicolon);
+            Some(Box::new(s))
         } else {
             // init 为空，手动消费第一个 ;
             if has_paren { self.expect(TokenKind::Semicolon, "';'")?; } else { self.match_token(TokenKind::Semicolon); }
@@ -498,6 +527,11 @@ impl Parser {
             self.advance();
             finally_block = Some(self.parse_block()?);
         }
+        // 裸 try（既无 catch 也无 finally）没有处理意义且会静默吞异常，直接拒绝
+        if catch_block.is_none() && finally_block.is_none() {
+            return Err(self.err_at(tok.line,
+                "try 后必须有 catch 或 finally 块 (可能原因：漏写了 catch/finally，或块的花括号不匹配)"));
+        }
         Ok(Stmt::TryStmt { tok, try_block, catch_var, catch_block, finally_block })
     }
 
@@ -534,7 +568,12 @@ impl Parser {
     /// 加载并执行目标脚本，其顶层 var/func 合并到当前全局环境。
     fn parse_import(&mut self) -> Result<Stmt, ParseError> {
         let tok = self.advance();
-        let path_tok = self.expect(TokenKind::String, "import 后必须是字符串路径")?;
+        // raw string 同样接受（Windows 路径 `C:\lib.sf` 无需转义）
+        let path_tok = if self.check(TokenKind::String) || self.check(TokenKind::RawString) {
+            self.advance()
+        } else {
+            return Err(self.err("import 后必须是字符串路径 (可能原因：路径需用双引号或反引号 raw string 括起)"));
+        };
         self.consume_semicolon();
         Ok(Stmt::ImportStmt { tok, path: path_tok.value })
     }
@@ -563,14 +602,16 @@ impl Parser {
         if self.check(TokenKind::Assign) {
             let tok = self.advance();
             let value = self.parse_assign()?;
-            let target = expr_to_target(expr);
+            let target = expr_to_target(expr)
+                .ok_or_else(|| self.err("无效的赋值目标 (可能原因：= 左侧必须是变量/索引/成员；对字面量或表达式赋值没有意义)"))?;
             return Ok(Expr::Assign { tok, target, value: Box::new(value) });
         }
         // 复合赋值 op= （+= -= *= /= %= ??= &= |= ^= <<= >>=）
         if let Some(op) = compound_assign_op(self.peek().kind) {
             let tok = self.advance();
             let value = self.parse_assign()?;
-            let target = expr_to_target(expr);
+            let target = expr_to_target(expr)
+                .ok_or_else(|| self.err("无效的复合赋值目标 (可能原因：op= 左侧必须是变量/索引/成员)"))?;
             return Ok(Expr::CompoundAssign { tok, target, op, value: Box::new(value) });
         }
         Ok(expr)
@@ -748,6 +789,18 @@ impl Parser {
         match self.peek().kind {
             TokenKind::Minus => {
                 let tok = self.advance();
+                // 特判 -9223372036854775808（i64::MIN）：字面量本身超出 i64 正数范围，
+                // 直接按 u64 解析会失败，这里折叠为 IntLit(i64::MIN)
+                {
+                    let next = self.peek().clone();
+                    if next.kind == TokenKind::Int {
+                        let cleaned: String = next.value.chars().filter(|c| *c != '_').collect();
+                        if cleaned == "9223372036854775808" {
+                            self.advance();
+                            return Ok(Expr::IntLit { tok, value: i64::MIN });
+                        }
+                    }
+                }
                 let operand = self.parse_unary()?;
                 Ok(Expr::UnaryExpr { tok, op: UnaryOp::Neg, operand: Box::new(operand) })
             }
@@ -765,13 +818,15 @@ impl Parser {
             TokenKind::Plus2 => {
                 let tok = self.advance();
                 let operand = self.parse_unary()?;
-                let target = expr_to_target(operand);
+                let target = expr_to_target(operand)
+                    .ok_or_else(|| self.err("++ 的目标必须是变量/索引/成员 (可能原因：对字面量或表达式自增没有意义)"))?;
                 Ok(Expr::IncDec { tok, target, op: IncDecOp::Inc, prefix: true })
             }
             TokenKind::Minus2 => {
                 let tok = self.advance();
                 let operand = self.parse_unary()?;
-                let target = expr_to_target(operand);
+                let target = expr_to_target(operand)
+                    .ok_or_else(|| self.err("-- 的目标必须是变量/索引/成员 (可能原因：对字面量或表达式自减没有意义)"))?;
                 Ok(Expr::IncDec { tok, target, op: IncDecOp::Dec, prefix: true })
             }
             _ => self.parse_postfix(),
@@ -856,12 +911,14 @@ impl Parser {
                 // 后缀 ++ / --（返回旧值）
                 TokenKind::Plus2 => {
                     let tok = self.advance();
-                    let target = expr_to_target(expr);
+                    let target = expr_to_target(expr)
+                        .ok_or_else(|| self.err("++ 的目标必须是变量/索引/成员 (可能原因：对字面量或表达式自增没有意义)"))?;
                     expr = Expr::IncDec { tok, target, op: IncDecOp::Inc, prefix: false };
                 }
                 TokenKind::Minus2 => {
                     let tok = self.advance();
-                    let target = expr_to_target(expr);
+                    let target = expr_to_target(expr)
+                        .ok_or_else(|| self.err("-- 的目标必须是变量/索引/成员 (可能原因：对字面量或表达式自减没有意义)"))?;
                     expr = Expr::IncDec { tok, target, op: IncDecOp::Dec, prefix: false };
                 }
                 _ => break,
@@ -897,8 +954,13 @@ impl Parser {
             }
             TokenKind::InterpString => {
                 self.advance();
-                // 按 NUL 分隔解码段：偶数=文本，奇数=表达式源码
-                let segments: Vec<&str> = tok.value.split('\0').collect();
+                // 解码长度前缀编码的段：偶数=文本，奇数=表达式源码
+                // （不再用 NUL 分隔——文本段可含 \0 转义字符）
+                let segments = crate::lexer::decode_interp_parts(&tok.value)
+                    .ok_or_else(|| ParseError {
+                        msg: "插值字符串内部编码损坏 (可能原因：源码含非法字符)".into(),
+                        line: tok.line,
+                    })?;
                 let mut parts: Vec<InterpPart> = Vec::new();
                 for (i, seg) in segments.iter().enumerate() {
                     if i % 2 == 0 {
@@ -993,12 +1055,16 @@ impl Parser {
 }
 
 /// expr_to_target 将表达式转为赋值目标。
-fn expr_to_target(expr: Expr) -> AssignTarget {
+///
+/// 非法目标（字面量、函数调用、二元表达式等）返回 None，
+/// 由调用方报"无效的赋值目标"（此前兜底为空名变量会被静默编译，掩盖错误）。
+fn expr_to_target(expr: Expr) -> Option<AssignTarget> {
     match expr {
-        Expr::Ident { name, .. } => AssignTarget::Name(name),
-        Expr::IndexExpr { obj, index, .. } => AssignTarget::Index { obj, index },
-        Expr::MemberExpr { obj, name, .. } => AssignTarget::Member { obj, name },
-        _ => AssignTarget::Name(String::new()),
+        Expr::Ident { name, .. } => Some(AssignTarget::Name(name)),
+        Expr::IndexExpr { obj, index, .. } => Some(AssignTarget::Index { obj, index }),
+        Expr::MemberExpr { obj, name, .. } => Some(AssignTarget::Member { obj, name }),
+        Expr::Deref { expr, .. } => Some(AssignTarget::Deref { expr }),
+        _ => None,
     }
 }
 

@@ -4,11 +4,15 @@
 //!   - 变量四分类：local（slot 数组）/free（闭包捕获）/global（globals）/dynamic（回退）
 //!   - 函数内 var 走 OpStoreLocal，顶层 var 走 OpStoreGlobal
 //!   - 闭包捕获：编译期标记 captured，运行时 OpClosure 提取到 free_vars
-//!   - 循环 break/continue 用跳转回填
-//!   - try/catch/finally 用 PushTry/PopTry/ExitFinally
+//!   - 循环 break/continue 用跳转回填；若穿越 try 语句则改用 OpLeaveLoop，
+//!     由 VM 保证穿越的 finally 块仍然执行
+//!   - try/catch/finally 用 PushTry/TryBodyEnd/CatchEnd/ExitFinally 三阶段状态机：
+//!     try 入口常驻 try 栈直到整条语句结束，finally 在任何离场路径（正常/异常/
+//!     return/break/continue）上必然执行
 //!
 //! 闭包实现：
-//!   - 子编译器克隆父作用域链用于 free_vars 解析
+//!   - 子编译器克隆父作用域链用于 free_vars 解析，编译完成后把克隆链上
+//!     新增的 free_vars 回补到父链（支持任意层级嵌套捕获的逐层传递）
 //!   - 运行时 OpClosure 按需创建 box（被捕获的 local 装箱共享）
 //!   - 一旦 local 被装箱，后续读写自动走 box，实现 live 共享
 
@@ -48,6 +52,11 @@ pub struct Compiler {
     scopes: Vec<Scope>,
     /// func_local_count 当前函数局部变量总数（用于 slot 分配，函数级唯一）。
     func_local_count: usize,
+    /// open_tries 当前词法嵌套中的 try 语句层数。
+    ///
+    /// break/continue 跳出循环时需要知道穿越了多少层 try（这些 try 的 finally
+    /// 必须执行），据此决定发普通 Jump 还是 LeaveLoop。
+    open_tries: usize,
 }
 
 /// LoopCtx 循环上下文（break/continue 跳转回填）。
@@ -63,6 +72,10 @@ struct LoopCtx {
     label: Option<String>,
     /// is_switch 是否为 switch 帧。switch 帧接受 break，但 continue 会穿透到外层循环。
     is_switch: bool,
+    /// try_depth 进入本循环时的 try 语句嵌套层数。
+    ///
+    /// break/continue 穿越 try 层数 = 当前 open_tries - 本值。
+    try_depth: usize,
 }
 
 /// Scope 一层作用域（函数作用域或块作用域）。
@@ -108,6 +121,7 @@ impl Compiler {
             loops: Vec::new(),
             scopes: Vec::new(),
             func_local_count: 0,
+            open_tries: 0,
         }
     }
 
@@ -133,6 +147,63 @@ impl Compiler {
 
     fn err(&self, tok_line: u32, msg: impl Into<String>) -> CompileError {
         CompileError { msg: msg.into(), line: tok_line }
+    }
+
+    /// emit_break_continue 发射 break/continue 跳转并登记回填。
+    ///
+    /// 目标循环由 target_idx 指定。若跳转会穿越 try 语句（目标循环的 try_depth
+    /// 小于当前嵌套层数），这些 try 的 finally 必须执行，改发 OpLeaveLoop，
+    /// 由 VM 逐层离开 try 入口（有 finally 的先进入并挂起本跳转）；
+    /// 否则发普通 Jump。两种布局的跳转目标都在 off+1..off+3，统一用 patch_u16 回填。
+    fn emit_break_continue(&mut self, target_idx: usize, is_break: bool) {
+        let crossed = self.open_tries.saturating_sub(self.loops[target_idx].try_depth);
+        let off = if crossed > 0 {
+            self.code.emit_leave_loop(crossed as u8)
+        } else {
+            self.code.emit_u16(Opcode::Jump, 0)
+        };
+        if is_break {
+            self.loops[target_idx].break_jumps.push(off);
+        } else {
+            self.loops[target_idx].continue_jumps.push(off);
+        }
+    }
+
+    /// emit_const_checked 添加常量并发射 Const 指令（含索引上限检查）。
+    fn emit_const_checked(&mut self, v: Value, line: u32) -> Result<(), CompileError> {
+        let idx = self.code.add_const(v);
+        if idx > u16::MAX as usize {
+            return Err(self.err(line, "常量池过大（超过 65535 项），请拆分函数或减少字面量"));
+        }
+        self.code.emit_u16(Opcode::Const, idx as u16);
+        Ok(())
+    }
+
+    /// add_name_checked 添加名字并检查 u16 索引上限。
+    fn add_name_checked(&mut self, name: &str, line: u32) -> Result<usize, CompileError> {
+        let idx = self.code.add_name(name);
+        if idx > u16::MAX as usize {
+            return Err(self.err(line, "名字池过大（超过 65535 项），请拆分函数"));
+        }
+        Ok(idx)
+    }
+
+    /// emit_jump_checked 发射跳转指令并检查 u16 地址上限。
+    fn emit_jump_checked(&mut self, op: Opcode, line: u32) -> Result<usize, CompileError> {
+        if self.code.insts.len() > u16::MAX as usize {
+            return Err(self.err(line, "函数体过大（字节码超过 64KB），请拆分函数"));
+        }
+        Ok(self.code.emit_u16(op, 0))
+    }
+
+    /// patch_jump_checked 回填跳转目标并检查 u16 地址上限。
+    fn patch_jump_checked(&mut self, off: usize, line: u32) -> Result<(), CompileError> {
+        let target = self.code.insts.len();
+        if target > u16::MAX as usize {
+            return Err(self.err(line, "函数体过大（字节码超过 64KB），请拆分函数"));
+        }
+        self.code.patch_u16(off, target as u16);
+        Ok(())
     }
 
     // ---- 作用域管理 ----
@@ -354,7 +425,7 @@ impl Compiler {
             Stmt::WhileStmt { cond, body, tok, label } => {
                 self.set_line(tok.line);
                 let start = self.code.insts.len();
-                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone(), is_switch: false });
+                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone(), is_switch: false, try_depth: self.open_tries });
                 self.compile_expr(cond)?;
                 let j_end = self.code.emit_u16(Opcode::JumpIfFalse, 0);
                 self.compile_scoped_block(body)?;
@@ -375,7 +446,7 @@ impl Compiler {
                     self.compile_stmt(s)?;
                 }
                 let start = self.code.insts.len();
-                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone(), is_switch: false });
+                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone(), is_switch: false, try_depth: self.open_tries });
                 if let Some(c) = cond {
                     self.compile_expr(c)?;
                     let j_end = self.code.emit_u16(Opcode::JumpIfFalse, 0);
@@ -426,17 +497,19 @@ impl Compiler {
                 self.push_scope(false);
                 let iter_slot = self.declare_local("__forin_iter");
                 let idx_slot = self.declare_local("__forin_idx");
+
+                // 先编译 iter 表达式再声明循环变量，避免 `for x in x` 中
+                // 迭代对象被刚声明的（运行时仍为 undefined 的）局部变量遮蔽。
+                self.compile_expr(iter)?;
+                // 存到 __iter
+                self.code.emit_u16(Opcode::StoreLocal, iter_slot as u16);
+                // 循环变量与下标变量的声明推迟到 iter 求值之后
                 let var_slot = self.declare_local(var);
                 let index_slot_opt = if let Some(iv) = index_var {
                     Some(self.declare_local(iv))
                 } else {
                     None
                 };
-
-                // 编译 iter，留栈
-                self.compile_expr(iter)?;
-                // 存到 __iter
-                self.code.emit_u16(Opcode::StoreLocal, iter_slot as u16);
                 // __keys = keys(__iter) —— 统一用 keys() 获取索引数组
                 //   object → string 键数组；array → [0,1,2...]；string → [0,1,2...]
                 // 这样后续用 __keys[__idx] 取 key，再用 __iter[key] 取 value
@@ -454,7 +527,7 @@ impl Compiler {
                 self.code.emit_u16(Opcode::StoreLocal, idx_slot as u16);
 
                 let start = self.code.insts.len();
-                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone(), is_switch: false });
+                self.loops.push(LoopCtx { break_jumps: vec![], continue_jumps: vec![], label: label.clone(), is_switch: false, try_depth: self.open_tries });
 
                 // 压入 __idx（LT 的左操作数先压）
                 self.code.emit_u16(Opcode::LoadLocal, idx_slot as u16);
@@ -509,59 +582,63 @@ impl Compiler {
             }
             Stmt::BreakStmt { tok, label } => {
                 self.set_line(tok.line);
-                if let Some(lbl) = label {
-                    // break label：从内到外查找匹配标签的循环
-                    let mut found_idx = None;
-                    for (i, lc) in self.loops.iter().enumerate().rev() {
-                        if lc.label.as_deref() == Some(lbl.as_str()) {
-                            found_idx = Some(i);
-                            break;
+                // break label：从内到外查找匹配标签的循环；普通 break：最内层循环。
+                let target_idx = match label {
+                    Some(lbl) => {
+                        let mut found = None;
+                        for (i, lc) in self.loops.iter().enumerate().rev() {
+                            if lc.label.as_deref() == Some(lbl.as_str()) {
+                                found = Some(i);
+                                break;
+                            }
+                        }
+                        match found {
+                            Some(i) => i,
+                            None => return Err(self.err(tok.line, format!("break {} 找不到对应的标签循环", lbl))),
                         }
                     }
-                    if let Some(idx) = found_idx {
-                        let j = self.code.emit_u16(Opcode::Jump, 0);
-                        self.loops[idx].break_jumps.push(j);
-                    } else {
-                        return Err(self.err(tok.line, &format!("break {} 找不到对应的标签循环", lbl)));
+                    None => {
+                        if self.loops.is_empty() {
+                            return Err(self.err(tok.line, "break 不在循环内"));
+                        }
+                        self.loops.len() - 1
                     }
-                } else {
-                    // 普通 break：跳到最内层循环
-                    if let Some(lc) = self.loops.last_mut() {
-                        let j = self.code.emit_u16(Opcode::Jump, 0);
-                        lc.break_jumps.push(j);
-                    } else {
-                        return Err(self.err(tok.line, "break 不在循环内"));
-                    }
-                }
+                };
+                self.emit_break_continue(target_idx, true);
             }
             Stmt::ContinueStmt { tok, label } => {
                 self.set_line(tok.line);
-                if let Some(lbl) = label {
-                    // continue label：从内到外查找匹配标签的循环
-                    let mut found_idx = None;
-                    for (i, lc) in self.loops.iter().enumerate().rev() {
-                        if lc.label.as_deref() == Some(lbl.as_str()) {
-                            found_idx = Some(i);
-                            break;
+                // continue label：从内到外查找匹配标签的循环；
+                // 普通 continue：最内层非 switch 的循环（continue 穿透 switch 帧，C 语义）。
+                let target_idx = match label {
+                    Some(lbl) => {
+                        let mut found = None;
+                        for (i, lc) in self.loops.iter().enumerate().rev() {
+                            if lc.label.as_deref() == Some(lbl.as_str()) {
+                                found = Some(i);
+                                break;
+                            }
+                        }
+                        match found {
+                            Some(i) => i,
+                            None => return Err(self.err(tok.line, format!("continue {} 找不到对应的标签循环", lbl))),
                         }
                     }
-                    if let Some(idx) = found_idx {
-                        let j = self.code.emit_u16(Opcode::Jump, 0);
-                        self.loops[idx].continue_jumps.push(j);
-                    } else {
-                        return Err(self.err(tok.line, &format!("continue {} 找不到对应的标签循环", lbl)));
+                    None => {
+                        let mut found = None;
+                        for i in (0..self.loops.len()).rev() {
+                            if !self.loops[i].is_switch {
+                                found = Some(i);
+                                break;
+                            }
+                        }
+                        match found {
+                            Some(i) => i,
+                            None => return Err(self.err(tok.line, "continue 不在循环内")),
+                        }
                     }
-                } else {
-                    // 普通 continue：跳到最内层循环。
-                    // continue 会穿透 switch 帧（switch 不是循环，continue 应作用于外层循环）。
-                    let target = self.loops.iter_mut().rev().find(|lc| !lc.is_switch);
-                    if let Some(lc) = target {
-                        let j = self.code.emit_u16(Opcode::Jump, 0);
-                        lc.continue_jumps.push(j);
-                    } else {
-                        return Err(self.err(tok.line, "continue 不在循环内"));
-                    }
-                }
+                };
+                self.emit_break_continue(target_idx, false);
             }
             Stmt::ReturnStmt { value, tok } => {
                 self.set_line(tok.line);
@@ -573,70 +650,62 @@ impl Compiler {
             }
             Stmt::TryStmt { try_block, catch_var, catch_block, finally_block, tok } => {
                 self.set_line(tok.line);
-                // 编译 try/catch/finally 结构：
-                //   PushTry catch_ip finally_ip
-                //   <try block>
-                //   PopTry
-                //   Jump end
-                //   catch_ip: <catch block>  // 栈顶已是异常值
-                //   Jump end (or finally)
-                //   finally_ip: <finally block>
-                //   ExitFinally
-                //   end:
-                // 用块作用域包裹，确保 catch_var 等变量是 local
-                self.push_scope(false);
-                let push_try_off = self.code.emit_push_try(0, 0);
-                self.compile_block(try_block)?;
-                self.code.emit(Opcode::PopTry);
-                let jump_after_try = self.code.emit_u16(Opcode::Jump, 0);
-                // catch 块
-                let catch_ip = self.code.insts.len() as u16;
-                if let (Some(var), Some(block)) = (catch_var, catch_block) {
-                    // 异常值在栈顶，存入 catch_var
-                    let slot = self.declare_local(var);
-                    self.code.emit_u16(Opcode::StoreLocal, slot as u16);
-                    self.compile_block(block)?;
-                    // catch 块结束，跳到 finally 或 end
-                    let jump_after_catch = self.code.emit_u16(Opcode::Jump, 0);
-                    // finally 块
-                    let finally_ip = self.code.insts.len() as u16;
-                    if let Some(fb) = finally_block {
-                        // patch jump_after_catch -> 跳过 finally 到 end
-                        // 实际上 catch 末尾应跳到 end，不应进入 finally
-                        // 但若 finally 存在，正常路径也要执行 finally
-                        // 简化处理：catch 末尾跳到 finally 入口
-                        self.code.patch_u16(jump_after_catch, finally_ip);
-                        self.compile_block(fb)?;
-                        self.code.emit(Opcode::ExitFinally);
-                        // end:
-                        let end = self.code.insts.len() as u16;
-                        self.code.patch_u16(jump_after_try, end);
-                        self.code.patch_push_try(push_try_off, catch_ip, finally_ip);
-                    } else {
-                        // 无 finally：finally_ip 设为 end
-                        let end = self.code.insts.len() as u16;
-                        self.code.patch_u16(jump_after_catch, end);
-                        self.code.patch_u16(jump_after_try, end);
-                        self.code.patch_push_try(push_try_off, catch_ip, end);
-                    }
-                } else {
-                    // 无 catch：catch_ip 和 finally_ip 都指向 end（无 catch 标记为 catch_ip >= finally_ip）
-                    let finally_ip = self.code.insts.len() as u16;
-                    if let Some(fb) = finally_block {
-                        // try 正常完成应跳到 finally（不是 end）
-                        self.code.patch_u16(jump_after_try, finally_ip);
-                        self.compile_block(fb)?;
-                        self.code.emit(Opcode::ExitFinally);
-                        let end = self.code.insts.len() as u16;
-                        // catch_ip = end（>= finally_ip 表示无 catch），finally_ip 正常
-                        self.code.patch_push_try(push_try_off, end, finally_ip);
-                    } else {
-                        // 既无 catch 也无 finally：实际上 try 无意义
-                        let end = self.code.insts.len() as u16;
-                        self.code.patch_u16(jump_after_try, end);
-                        self.code.patch_push_try(push_try_off, end, end);
-                    }
+                // 编译 try/catch/finally 结构（三阶段状态机，入口常驻 try 栈）：
+                //
+                //   PushTry catch_ip, finally_ip, end_ip   ; 0xFFFF 表示对应块不存在
+                //   <try body>
+                //   TryBodyEnd        ; body 正常结束 → 进 finally（若有，挂起为空）或弹出入口
+                //   Jump end          ; 无 finally 时由 TryBodyEnd 弹出入口后顺序执行
+                // catch_ip:
+                //   StoreLocal var / Pop   ; 绑定异常值到 catch 变量，或丢弃（catch 无变量）
+                //   <catch body>
+                //   CatchEnd          ; catch 正常结束 → 进 finally（若有）或弹出入口
+                // finally_ip:
+                //   <finally body>
+                //   ExitFinally       ; 弹出入口：恢复挂起的 return/throw/跳转，或继续到 end
+                // end:
+                //
+                // 语义保证：body/catch 中的 throw、return、break/continue 都会先经过
+                // finally（由 VM 的 LeaveLoop/PushTry 状态机挂起与恢复）；finally 自身的
+                // return/throw 覆盖先前挂起的控制流（与 JS/Java 语义一致）。
+                if catch_block.is_none() && finally_block.is_none() {
+                    return Err(self.err(tok.line, "try 后必须有 catch 或 finally 块"));
                 }
+                self.push_scope(false);
+                self.open_tries += 1;
+                let push_try_off = self.code.emit_push_try();
+                self.compile_block(try_block)?;
+                self.code.emit(Opcode::TryBodyEnd);
+                let jump_after_body = self.emit_jump_checked(Opcode::Jump, tok.line)?;
+                // catch 块（可能无 catch，catch_ip 用占位值先记位置）
+                let catch_ip = self.code.insts.len() as u16;
+                let has_catch = catch_block.is_some();
+                if let Some(block) = catch_block {
+                    // 异常值已在栈顶：有变量则绑定，无变量则弹出丢弃
+                    match catch_var {
+                        Some(var) => {
+                            let slot = self.declare_local(var);
+                            self.code.emit_u16(Opcode::StoreLocal, slot as u16);
+                        }
+                        None => { self.code.emit(Opcode::Pop); }
+                    }
+                    self.compile_block(block)?;
+                    self.code.emit(Opcode::CatchEnd);
+                }
+                // finally 块
+                let finally_ip = self.code.insts.len() as u16;
+                let has_finally = finally_block.is_some();
+                if let Some(fb) = finally_block {
+                    self.compile_block(fb)?;
+                    self.code.emit(Opcode::ExitFinally);
+                }
+                // end：回填
+                let end = self.code.insts.len() as u16;
+                self.patch_jump_checked(jump_after_body, tok.line)?;
+                let catch_enc = if has_catch { catch_ip } else { u16::MAX };
+                let finally_enc = if has_finally { finally_ip } else { u16::MAX };
+                self.code.patch_push_try(push_try_off, catch_enc, finally_enc, end);
+                self.open_tries -= 1;
                 self.pop_scope();
             }
             Stmt::DeferStmt { call, tok } => {
@@ -713,6 +782,7 @@ impl Compiler {
                     continue_jumps: vec![],
                     label: None,
                     is_switch: true,
+                    try_depth: self.open_tries,
                 });
 
                 // 收集每个 case 测试的 JumpIfFalse 占位偏移，稍后回填到下一测试起点。
@@ -809,18 +879,15 @@ impl Compiler {
         match expr {
             Expr::IntLit { value, tok } => {
                 self.set_line(tok.line);
-                let idx = self.code.add_const(Value::Int(*value));
-                self.code.emit_u16(Opcode::Const, idx as u16);
+                self.emit_const_checked(Value::Int(*value), tok.line)?;
             }
             Expr::FloatLit { value, tok } => {
                 self.set_line(tok.line);
-                let idx = self.code.add_const(Value::Float(*value));
-                self.code.emit_u16(Opcode::Const, idx as u16);
+                self.emit_const_checked(Value::Float(*value), tok.line)?;
             }
             Expr::StringLit { value, tok } => {
                 self.set_line(tok.line);
-                let idx = self.code.add_const(Value::str(value));
-                self.code.emit_u16(Opcode::Const, idx as u16);
+                self.emit_const_checked(Value::str(value), tok.line)?;
             }
             Expr::InterpStringLit { parts, tok } => {
                 self.set_line(tok.line);
@@ -846,8 +913,7 @@ impl Compiler {
             }
             Expr::BoolLit { value, tok } => {
                 self.set_line(tok.line);
-                let idx = self.code.add_const(Value::Bool(*value));
-                self.code.emit_u16(Opcode::Const, idx as u16);
+                self.emit_const_checked(Value::Bool(*value), tok.line)?;
             }
             Expr::UndefinedLit { tok } => {
                 self.set_line(tok.line);
@@ -952,12 +1018,12 @@ impl Compiler {
                     AssignTarget::Member { obj, name } => {
                         // obj.k++：地址只求值一次，用 IncDecMember
                         self.compile_expr(obj)?;
-                        let name_idx = self.code.add_name(name);
+                        let name_idx = self.add_name_checked(name, tok.line)?;
                         let flag: u8 = match op {
                             IncDecOp::Inc => if prefix { 0x00 } else { 0x80 },
                             IncDecOp::Dec => if prefix { 0x01 } else { 0x81 },
                         };
-                        self.code.emit_u8_u8(Opcode::IncDecMember, name_idx as u8, flag);
+                        self.code.emit_u16_u8(Opcode::IncDecMember, name_idx as u16, flag);
                     }
                     AssignTarget::Deref { .. } => {
                         return Err(self.err(tok.line, "*p 的 ++/-- 暂不支持，请用 *p = *p + 1"));
@@ -1007,9 +1073,9 @@ impl Compiler {
                         // 栈序：[v, obj]
                         self.compile_expr(value)?;
                         self.compile_expr(obj)?;
-                        let name_idx = self.code.add_name(name);
+                        let name_idx = self.add_name_checked(name, tok.line)?;
                         let flag = binary_op_to_flag(*op);
-                        self.code.emit_u8_u8(Opcode::CompoundMember, name_idx as u8, flag);
+                        self.code.emit_u16_u8(Opcode::CompoundMember, name_idx as u16, flag);
                     }
                     AssignTarget::Deref { .. } => {
                         return Err(self.err(tok.line, "*p 的复合赋值暂不支持，请用 *p = *p + v"));
@@ -1143,15 +1209,24 @@ impl Compiler {
                 self.set_line(tok.line);
                 // 方法调用检测：callee 是 MemberExpr → obj.name(args)
                 if let Expr::MemberExpr { obj, name, .. } = callee.as_ref() {
+                    // 参数过多检查（argc 编码为 u8；含隐式 self）
+                    if args.len() > 254 {
+                        return Err(self.err(tok.line, format!("方法参数过多（{} > 254，含隐式 self）", args.len())));
+                    }
+                    let name_idx = self.add_name_checked(name, tok.line)?;
+                    // 支持 ... 展开参数（obj.m(...arr)）：用 MethodSpreadCall
+                    let has_spread = args.iter().any(|a| matches!(a, Expr::Spread { .. }));
+                    if has_spread {
+                        self.compile_expr(obj)?;
+                        let mask = self.compile_spread_args(args, tok.line)?;
+                        self.code.emit_u16_u8_u64(Opcode::MethodSpreadCall, name_idx as u16, args.len() as u8, mask);
+                        return Ok(());
+                    }
                     self.compile_expr(obj)?;
                     for a in args {
                         self.compile_expr(a)?;
                     }
-                    if args.len() > 254 {
-                        return Err(self.err(tok.line, format!("方法参数过多（{} > 254，含隐式 self）", args.len())));
-                    }
-                    let name_idx = self.code.add_name(name);
-                    self.code.emit_u8_u8(Opcode::MethodCall, name_idx as u8, args.len() as u8);
+                    self.code.emit_u16_u8(Opcode::MethodCall, name_idx as u16, args.len() as u8);
                     return Ok(());
                 }
                 // 检测是否有 Spread 参数
@@ -1159,17 +1234,8 @@ impl Compiler {
                 if has_spread {
                     // 带展开的调用：编译 callee + 所有参数（Spread 编译为内部表达式），发 SpreadCall
                     self.compile_expr(callee)?;
-                    let mut spread_mask: u8 = 0;
-                    for (i, a) in args.iter().enumerate() {
-                        match a {
-                            Expr::Spread { expr, .. } => {
-                                self.compile_expr(expr)?;
-                                spread_mask |= 1 << i;
-                            }
-                            other => { self.compile_expr(other)?; }
-                        }
-                    }
-                    self.code.emit_u8_u8(Opcode::SpreadCall, args.len() as u8, spread_mask);
+                    let mask = self.compile_spread_args(args, tok.line)?;
+                    self.code.emit_u8_u64(Opcode::SpreadCall, args.len() as u8, mask);
                     return Ok(());
                 }
                 // 普通调用
@@ -1292,10 +1358,38 @@ impl Compiler {
         }
         Ok(())
     }
-    /// 创建子编译器，克隆父作用域链用于 free_vars 解析。
+    /// compile_spread_args 编译调用参数（含 ... 展开），返回 spread 掩码。
+    ///
+    /// 掩码 bit i 表示第 i 个参数是数组展开（u64 掩码，支持最多 64 个参数位置；
+    /// 超出报编译错误）。参数已按序压栈，展开由 VM 在调用时执行。
+    fn compile_spread_args(&mut self, args: &[Expr], line: u32) -> Result<u64, CompileError> {
+        if args.len() > 64 {
+            return Err(self.err(line, "含 ... 展开的调用参数位置过多（> 64）"));
+        }
+        let mut mask: u64 = 0;
+        for (i, a) in args.iter().enumerate() {
+            match a {
+                Expr::Spread { expr, .. } => {
+                    self.compile_expr(expr)?;
+                    mask |= 1u64 << i;
+                }
+                other => { self.compile_expr(other)?; }
+            }
+        }
+        Ok(mask)
+    }
+
+    /// compile_func_lit 编译函数字面量为 Function 模板。
+    ///
+    /// 创建子编译器，克隆父作用域链用于 free_vars 解析；编译完成后把克隆链上
+    /// 各作用域新增的 free_vars 回补到父链（关键：跨层闭包捕获，如
+    /// outer → middle → inner 引用 outer 的变量时，resolve_free 会在克隆链上
+    /// 给 middle 补 free_var；不回补则 middle 的 free_sources 缺项，
+    /// 运行时 OpClosure 提取 free_vars 会越界或捕获错误变量）。
     fn compile_func_lit(&mut self, func: &FuncLit) -> Result<Function, CompileError> {
         let mut sub = Compiler::new(&self.file, &func.name);
         // 克隆父作用域链，让子编译器能解析 free_vars
+        let base_len = self.scopes.len();
         sub.scopes = self.scopes.clone();
         // 子编译器重置 func_local_count（新函数从 0 开始分配 slot）
         sub.func_local_count = 0;
@@ -1329,6 +1423,19 @@ impl Compiler {
             is_local: fv.is_local,
             index: fv.index,
         }).collect();
+
+        // 回补：把子编译器（含其嵌套编译的函数）在克隆链各祖先作用域上新增的
+        // free_vars 合并回父链。按名字去重；新增项严格追加在克隆项之后，
+        // 与父链现有条目的索引保持一致，不影响已编译代码的引用。
+        for i in 0..base_len {
+            let added: Vec<FreeVarEntry> = sub.scopes[i]
+                .free_vars
+                .iter()
+                .filter(|fv| !self.scopes[i].free_vars.iter().any(|e| e.name == fv.name))
+                .cloned()
+                .collect();
+            self.scopes[i].free_vars.extend(added);
+        }
 
         Ok(Function::new_closure(
             func.name.clone(),

@@ -71,7 +71,8 @@ fn real_main() -> ExitCode {
             // 启动 HTTP 应用服务器
             let server_args: Vec<String> = args[1..].to_vec();
             let code = sflang::builtins_http::run_server_cli(&server_args);
-            ExitCode::from(code as u8)
+            // i32 → u8 转换：负数/超 255 的值按惯例收敛为 1，避免静默截断
+            u8::try_from(code).map(ExitCode::from).unwrap_or(ExitCode::from(1))
         }
         "-e" | "--eval" => {
             if args.len() < 3 {
@@ -91,20 +92,27 @@ fn real_main() -> ExitCode {
                 return ExitCode::from(1);
             }
             let script_path = &args[2];
-            // 解析 --output 参数
+            // 默认输出：脚本名去一次 .sf 后缀（用 file_stem，避免 trim_end_matches
+            // 把 test.sf.sf 削成 test），Windows 加 .exe
             let mut output_path = {
-                let base = script_path.trim_end_matches(".sf");
+                let p = std::path::Path::new(script_path);
+                let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("sflang_out");
                 if cfg!(windows) {
-                    format!("{}.exe", base)
+                    format!("{}.exe", stem)
                 } else {
-                    base.to_string()
+                    stem.to_string()
                 }
             };
             let mut i = 3;
             while i < args.len() {
-                if (args[i] == "--output" || args[i] == "-o") && i + 1 < args.len() {
-                    output_path = args[i + 1].clone();
-                    i += 2;
+                if args[i] == "--output" || args[i] == "-o" {
+                    if i + 1 < args.len() {
+                        output_path = args[i + 1].clone();
+                        i += 2;
+                    } else {
+                        eprintln!("错误：--output 需要一个路径参数");
+                        return ExitCode::from(1);
+                    }
                 } else {
                     i += 1;
                 }
@@ -149,7 +157,7 @@ fn real_main() -> ExitCode {
             }
         }
         "-v" | "--version" => {
-            println!("sf 0.1.0 (Sflang, Rust implementation)");
+            println!("sf {} (Sflang, Rust implementation)", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         "--list-builtins" | "-lb" => {
@@ -208,6 +216,22 @@ fn read_embedded_script() -> Option<String> {
 ///
 /// 原理：复制当前 sf.exe → 在末尾追加 [脚本内容][脚本长度u64 LE][SFLANG_PACK]
 fn build_executable(script_path: &str, output_path: &str) -> ExitCode {
+    // 0. 安全检查：输出路径不得与脚本同一路径（否则写回会销毁源脚本）
+    let canon_out = std::fs::canonicalize(output_path).ok()
+        .or_else(|| std::path::Path::new(output_path).canonicalize().ok());
+    let canon_src = std::fs::canonicalize(script_path).ok();
+    if let (Some(a), Some(b)) = (&canon_out, &canon_src) {
+        if a == b {
+            eprintln!("错误：输出路径与脚本路径相同（{}），拒绝打包以免覆盖源脚本", output_path);
+            return ExitCode::from(1);
+        }
+    }
+    // 输出路径已存在且是目录也直接拒绝
+    if std::path::Path::new(output_path).is_dir() {
+        eprintln!("错误：输出路径 '{}' 是一个目录", output_path);
+        return ExitCode::from(1);
+    }
+
     // 1. 读取脚本
     let script = match std::fs::read_to_string(script_path) {
         Ok(s) => s,
@@ -216,6 +240,16 @@ fn build_executable(script_path: &str, output_path: &str) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    if script.trim().is_empty() {
+        eprintln!("错误：脚本 '{}' 内容为空，拒绝打包（空脚本的 exe 无法自识别，会退化为 REPL）", script_path);
+        return ExitCode::from(1);
+    }
+
+    // 1.5 打包前先校验脚本可编译（语法错误尽早暴露给打包者，而不是最终用户）
+    if let Err(e) = sflang::api::Sflang::compile_source(&script, script_path) {
+        eprintln!("错误：脚本编译失败，未打包。{}", e);
+        return ExitCode::from(1);
+    }
 
     // 2. 获取当前 exe 路径（sf.exe 自身）
     let exe_path = match std::env::current_exe() {
@@ -262,7 +296,7 @@ fn build_executable(script_path: &str, output_path: &str) -> ExitCode {
         }
     }
 
-    let size_kb = output.len() / 1024;
+    let size_kb = (output.len() + 1023) / 1024; // 向上取整，避免 1023KB 显示为 0
     println!("已生成可执行文件: {} ({} KB)", output_path, size_kb);
     println!("嵌入脚本: {} ({} 字节)", script_path, script_bytes.len());
     ExitCode::SUCCESS
@@ -270,10 +304,11 @@ fn build_executable(script_path: &str, output_path: &str) -> ExitCode {
 
 /// run_repl 启动交互式 REPL。
 fn run_repl() -> ExitCode {
-    println!("Sflang REPL 0.1.0");
+    println!("Sflang REPL {}（.help 查看帮助；exit 或 Ctrl-D 退出）", env!("CARGO_PKG_VERSION"));
     let mut sf = Sflang::new();
     sf.set_output(sflang::ConsoleWriter::stdout());
-    // REPL 模式不设置 argsG/scriptPathG
+    // REPL 模式设置空 argsG（帮助文档承诺 argsG 在 REPL 可用；此处无脚本参数）
+    sf.set_global("argsG", Value::Array(std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))));
     let stdin = io::stdin();
     let mut buf = String::new();
     let mut multiline = String::new();
@@ -302,7 +337,16 @@ fn run_repl() -> ExitCode {
         // 处理点命令
         if multiline.is_empty() {
             let trimmed = line.trim();
-            if trimmed == ".exit" || trimmed == ".quit" {
+            // 退出命令：除点命令外，接受裸 exit/quit/q（容忍结尾分号）。
+            // 这些裸词在脚本语义里只会求值为 undefined 而静默无输出，单独成行时
+            // 按退出意图处理（对齐 Python/node 等常见 REPL 习惯，避免用户被"卡住"）。
+            let bare = trimmed.trim_end_matches(';').trim_end();
+            if trimmed == ".exit"
+                || trimmed == ".quit"
+                || bare == "exit"
+                || bare == "quit"
+                || bare == "q"
+            {
                 break;
             }
             if trimmed == ".help" {
@@ -335,62 +379,42 @@ fn run_repl() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// is_balanced 简单括号匹配判断（用于 REPL 多行输入）。
+/// is_balanced 判断 REPL 输入是否完整（用于多行累积）。
+///
+/// 复用真正的词法器而不是手写状态机（手写版不识别 //、/\* \*/ 注释与
+/// \\\\ 双反斜杠转义，注释里的括号会被误计数导致 REPL 卡死）：
+///   - 词法错误为"未闭合"类（字符串/注释/插值）→ 继续读下一行
+///   - 词法成功 → 按 Token 统计括号配对，未配对则继续读
+///   - 其他词法错误（非法字符等）→ 视为完整（提交执行，把错误显示给用户）
+/// 行末 \ 也视为续行。
 fn is_balanced(s: &str) -> bool {
-    let mut depth_paren = 0i32;
-    let mut depth_brace = 0i32;
-    let mut depth_bracket = 0i32;
-    let mut in_str = false;
-    let mut in_raw = false;
-    let mut in_line_comment = false;
-    let mut prev = '\0';
-    for ch in s.chars() {
-        if in_line_comment {
-            if ch == '\n' {
-                in_line_comment = false;
-            }
-            prev = ch;
-            continue;
-        }
-        if in_str {
-            if ch == '"' && prev != '\\' {
-                in_str = false;
-            }
-            prev = ch;
-            continue;
-        }
-        if in_raw {
-            if ch == '`' {
-                in_raw = false;
-            }
-            prev = ch;
-            continue;
-        }
-        match ch {
-            '#' if depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 => {
-                in_line_comment = true;
-            }
-            '"' => in_str = true,
-            '`' => in_raw = true,
-            '(' => depth_paren += 1,
-            ')' => depth_paren -= 1,
-            '{' => depth_brace += 1,
-            '}' => depth_brace -= 1,
-            '[' => depth_bracket += 1,
-            ']' => depth_bracket -= 1,
-            '\\' => {
-                prev = ch;
-                continue;
-            }
-            _ => {}
-        }
-        prev = ch;
-    }
     // 行末 \ 视为续行
     if s.ends_with("\\\n") || s.ends_with("\\") {
         return false;
     }
-    depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 && !in_str && !in_raw
+    match sflang::lexer::tokenize(s, "<repl>") {
+        Err(e) => {
+            // 未闭合类错误 → 继续读；其他错误 → 交给执行阶段显示
+            let m = e.msg;
+            !(m.contains("unterminated") || m.contains("未闭合"))
+        }
+        Ok(tokens) => {
+            let (mut paren, mut brace, mut bracket) = (0i32, 0i32, 0i32);
+            for t in &tokens {
+                use sflang::token::TokenKind;
+                match t.kind {
+                    TokenKind::LParen => paren += 1,
+                    TokenKind::RParen => paren -= 1,
+                    TokenKind::LBrace => brace += 1,
+                    TokenKind::RBrace => brace -= 1,
+                    TokenKind::LBracket => bracket += 1,
+                    TokenKind::RBracket => bracket -= 1,
+                    _ => {}
+                }
+            }
+            paren == 0 && brace == 0 && bracket == 0
+        }
+    }
 }
 
 /// run_file 执行脚本文件。
@@ -649,7 +673,7 @@ fn list_builtins(filter: Option<&str>) -> ExitCode {
 /// print_repl_help 打印 REPL 帮助。
 fn print_repl_help() {
     println!("REPL 命令：");
-    println!("  .exit / .quit  退出 REPL");
+    println!("  .exit / .quit / exit / quit / q   退出 REPL（Ctrl-D 同效）");
     println!("  .help          显示此帮助");
     println!();
     println!("多行输入：括号未闭合或行末 \\ 时自动续行");

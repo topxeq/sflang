@@ -51,9 +51,9 @@ static DOC_NOW: BuiltinDoc = BuiltinDoc {
 static DOC_NOW_DT: BuiltinDoc = BuiltinDoc {
     category: "datetime",
     signature: "nowDT() -> datetime",
-    summary: "返回当前本地时间的 datetime 对象。",
+    summary: "返回当前时间的 datetime 对象（本地时区：Windows 用系统时区 API，Linux/macOS 读 /etc/localtime）。",
     params: &[],
-    returns: "datetime 当前时间",
+    returns: "datetime 当前本地时间",
     examples: &[
         "var dt = nowDT()",
         "dtFormat(dt, \"2006-01-02 15:04:05\")",
@@ -81,18 +81,19 @@ static DOC_DATETIME: BuiltinDoc = BuiltinDoc {
     errors: &[
         "参数数须为 1/3/4/6/7，其他数量报错",
         "非法日期（如 2 月 30 日、月份越界）返回 error",
+        "年份须在 1-9999，越界返回 error",
     ],
 };
 
 static DOC_DATETIME_FROM_MILLIS: BuiltinDoc = BuiltinDoc {
     category: "datetime",
     signature: "datetimeFromMillis(ms) -> datetime",
-    summary: "将 Unix 毫秒时间戳转为 datetime（UTC 时区）。",
+    summary: "将 Unix 毫秒时间戳转为 datetime（本地时区，与 nowDT 一致；适合文件时间等转本地墙钟显示）。",
     params: &[("ms", "Unix 毫秒时间戳（int）")],
-    returns: "datetime UTC 时间",
+    returns: "datetime 本地时间；需要 UTC 表示时用 datetime(ms)",
     examples: &[
         "datetimeFromMillis(now())",
-        "datetimeFromMillis(0)   // 1970-01-01 UTC",
+        "formatTime(datetimeFromMillis(getFileInfo(\"a.txt\").modified * 1000), \"20060102150405\")",
     ],
     errors: &[],
 };
@@ -174,7 +175,7 @@ static DOC_FORMAT_TIME: BuiltinDoc = BuiltinDoc {
 static DOC_RUN_TICKER: BuiltinDoc = BuiltinDoc {
     category: "datetime",
     signature: "runTicker(fn, intervalMs) -> ticker",
-    summary: "启动独立线程，每 intervalMs 毫秒调用一次 fn()，返回 ticker 句柄。",
+    summary: "启动独立线程，每 intervalMs 毫秒调用一次 fn()（首次立即执行），返回 ticker 句柄。",
     params: &[
         ("fn", "无参函数（func 定义或内置函数），每周期调用一次"),
         ("intervalMs", "周期毫秒数（正整数）"),
@@ -220,10 +221,10 @@ static DOC_NOWSEC: BuiltinDoc = BuiltinDoc {
 
 static DOC_CLOCK: BuiltinDoc = BuiltinDoc {
     category: "datetime",
-    signature: "clock() -> float",
-    summary: "返回程序运行时间（秒）。",
+    signature: "clock() -> int",
+    summary: "返回程序运行时间（微秒，int，单调时钟）。计算耗时请用两次调用差值。",
     params: &[],
-    returns: "float",
+    returns: "int 自解释器启动以来的微秒数",
     examples: &[],
     errors: &[],
 };
@@ -271,9 +272,9 @@ static DOC_DTTOMILLIS: BuiltinDoc = BuiltinDoc {
 static DOC_GETNOWSTR: BuiltinDoc = BuiltinDoc {
     category: "datetime",
     signature: "getNowStr([fmt]) -> string",
-    summary: "返回当前时间格式化字符串。",
+    summary: "返回当前时间格式化字符串。当前为 UTC 时间（本地时区偏移未实现，local_tz_offset_minutes 恒 0）。",
     params: &[("fmt", "可选。Go 风格格式")],
-    returns: "string",
+    returns: "string 当前时间（UTC）的格式化结果",
     examples: &[],
     errors: &[],
 };
@@ -281,9 +282,9 @@ static DOC_GETNOWSTR: BuiltinDoc = BuiltinDoc {
 static DOC_GETNOWTIMESTAMP: BuiltinDoc = BuiltinDoc {
     category: "datetime",
     signature: "getNowTimeStamp() -> int",
-    summary: "返回当前 Unix 毫秒时间戳。",
+    summary: "返回当前 Unix 时间戳（秒）。需要毫秒请用 now()。",
     params: &[],
-    returns: "int",
+    returns: "int 秒级 Unix 时间戳（等效 nowSec()）",
     examples: &[],
     errors: &[],
 };
@@ -359,7 +360,9 @@ fn bi_clock(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
 
 // ---- datetime 类型函数 ----
 
-/// bi_now_dt 返回当前时间（datetime，本地时区）。
+/// bi_now_dt 返回当前时间（datetime）。
+///
+/// 注：当前为 UTC 时间（本地时区偏移未实现，local_tz_offset_minutes 恒 0）。
 fn bi_now_dt(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
     Ok(Value::DateTime(std::sync::Arc::new(DateTime::now())))
 }
@@ -387,7 +390,7 @@ fn bi_datetime(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             let tz = if args.len() == 4 { bh::as_int(args, 3, "datetime")? as i32 } else { 0 };
             DateTime::from_components(y, mo, d, 0, 0, 0, 0, tz)
                 .ok_or_else(|| crate::value::error_value(format!(
-                    "datetime() 日期非法: {}-{}-{} (可能原因：闰年/月份天数错误)", y, mo, d,
+                    "datetime() 日期非法: {}-{}-{} (可能原因：闰年/月份天数错误，年份须在 1-9999)", y, mo, d,
                 )))?
         }
         6 | 7 => {
@@ -401,7 +404,7 @@ fn bi_datetime(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             let tz = if args.len() == 7 { bh::as_int(args, 6, "datetime")? as i32 } else { 0 };
             DateTime::from_components(y, mo, d, h, mi, s, 0, tz)
                 .ok_or_else(|| crate::value::error_value(format!(
-                    "datetime() 日期时间非法: {}-{}-{} {}:{}:{} (可能原因：范围越界)", y, mo, d, h, mi, s,
+                    "datetime() 日期时间非法: {}-{}-{} {}:{}:{} (可能原因：范围越界，年份须在 1-9999)", y, mo, d, h, mi, s,
                 )))?
         }
         _ => return Err(crate::value::error_value(
@@ -411,11 +414,15 @@ fn bi_datetime(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::DateTime(std::sync::Arc::new(dt)))
 }
 
-/// bi_datetime_from_millis 毫秒 → datetime（UTC）。
+/// bi_datetime_from_millis 构造 datetime（本地时区，与 nowDT 语义一致）。
+///
+/// 用法：datetimeFromMillis(ms) → 按本地时区渲染的 datetime（如文件修改时间
+/// 转本地墙钟显示）。需要 UTC 表示时用 datetime(ms)（显式的低层 UTC 构造）。
 fn bi_datetime_from_millis(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
     let ms = bh::as_int(args, 0, "datetimeFromMillis")?;
-    Ok(Value::DateTime(std::sync::Arc::new(DateTime::from_millis_utc(ms))))
+    let tz = crate::datetime::local_tz_offset_minutes();
+    Ok(Value::DateTime(std::sync::Arc::new(DateTime::from_millis_with_tz(ms, tz))))
 }
 
 /// bi_datetime_parse 解析字符串为 datetime。
@@ -458,27 +465,36 @@ fn bi_dt_format(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 }
 
 /// bi_dt_add_days datetime 加天数，返回新 datetime。
+///
+/// 参数过大导致毫秒运算溢出时返回 error（不 panic）。
 fn bi_dt_add_days(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
     let dt = as_dt(args, 0, "dtAddDays")?;
     let n = bh::as_int(args, 1, "dtAddDays")?;
-    Ok(Value::DateTime(std::sync::Arc::new(dt.add_days(n))))
+    let new_dt = dt.add_days(n).map_err(crate::value::error_value)?;
+    Ok(Value::DateTime(std::sync::Arc::new(new_dt)))
 }
 
 /// bi_dt_add_seconds datetime 加秒数，返回新 datetime。
+///
+/// 参数过大导致毫秒运算溢出时返回 error（不 panic）。
 fn bi_dt_add_seconds(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
     let dt = as_dt(args, 0, "dtAddSeconds")?;
     let n = bh::as_int(args, 1, "dtAddSeconds")?;
-    Ok(Value::DateTime(std::sync::Arc::new(dt.add_seconds(n))))
+    let new_dt = dt.add_seconds(n).map_err(crate::value::error_value)?;
+    Ok(Value::DateTime(std::sync::Arc::new(new_dt)))
 }
 
 /// bi_dt_add_millis datetime 加毫秒数，返回新 datetime。
+///
+/// 参数过大导致溢出时返回 error（不 panic）。
 fn bi_dt_add_millis(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
     let dt = as_dt(args, 0, "dtAddMillis")?;
     let n = bh::as_int(args, 1, "dtAddMillis")?;
-    Ok(Value::DateTime(std::sync::Arc::new(dt.add_millis(n))))
+    let new_dt = dt.add_millis(n).map_err(crate::value::error_value)?;
+    Ok(Value::DateTime(std::sync::Arc::new(new_dt)))
 }
 
 /// bi_dt_to_millis datetime 转 Unix 毫秒（int）。
@@ -488,6 +504,8 @@ fn bi_dt_to_millis(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 }
 
 /// bi_get_now_str 返回当前时间的格式化字符串。
+///
+/// 注：当前为 UTC 时间（本地时区偏移未实现，local_tz_offset_minutes 恒 0）。
 ///
 /// 用法：getNowStr() → "2026-07-11 14:30:25"（默认格式）
 ///       getNowStr("2006-01-02") → "2026-07-11"（自定义格式）
@@ -525,13 +543,15 @@ fn bi_get_now_timestamp(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
 ///   - years/months 直接相加并规范到 1-12 区间
 ///   - days 用毫秒运算叠加（处理跨月）
 ///   - day 截断到目标月份最大天数（如 1月31日 +1月 → 2月28/29日）
+///
+/// days 参数过大导致溢出时返回 error（不 panic）。
 fn bi_time_add_date(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
     let dt = as_dt(args, 0, "timeAddDate")?;
     let years = bh::as_int(args, 1, "timeAddDate")? as i32;
     let months = bh::as_int(args, 2, "timeAddDate")? as i32;
     let days = bh::as_int(args, 3, "timeAddDate")?;
-    let new_dt = dt.add_date(years, months, days);
+    let new_dt = dt.add_date(years, months, days).map_err(crate::value::error_value)?;
     Ok(Value::DateTime(Arc::new(new_dt)))
 }
 
@@ -599,6 +619,7 @@ fn bi_run_ticker(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         vm_child.set_output_handle(out);
 
         while !stop_clone.load(Ordering::Relaxed) {
+            // 首次立即执行：循环先调用 fn() 再休眠 intervalMs，故启动后第一次调用不等待
             // 调用用户函数；异常静默打印，不影响后续循环
             match vm_child.call_function_value(fn_val.clone(), Vec::new()) {
                 Ok(_) => {}

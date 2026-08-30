@@ -19,6 +19,9 @@
 //!     copy(dst, src) / copy(dst, src, dstStart) — 批量复制（类似 Go copy），返回复制字节数
 //!     bytesHex(b)                       — bytes/byteArray → 十六进制字符串
 //!     bytesFromHex(s)                   — 十六进制字符串 → bytes
+//!   字节序整数互转（对标 xie）：
+//!     bytesToData(data, "-endian=B|L")  — 字节序列 → 无符号整数（int|bigInt）
+//!     dataToBytes(v, "-endian=B|L", "-size=N") — 无符号整数 → 定长字节序列
 
 use std::sync::{Arc, Mutex};
 
@@ -217,6 +220,9 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("hexEncode", bi_hex_encode, &DOC_HEX_ENCODE);
     vm.register_builtin_doc("hexDecode", bi_bytes_from_hex, &DOC_HEX_DECODE);
     vm.register_builtin_doc("hexToStr", bi_hex_to_str, &DOC_HEX_TO_STR);
+    // 字节序整数互转（对标 xie 的 bytesToData/dataToBytes）
+    vm.register_builtin_doc("bytesToData", bi_bytes_to_data, &DOC_BYTES_TO_DATA);
+    vm.register_builtin_doc("dataToBytes", bi_data_to_bytes, &DOC_DATA_TO_BYTES);
 }
 
 /// byte_val 将 Int 值转为 u8，越界或非整数返回错误。
@@ -515,4 +521,219 @@ fn bi_hex_to_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         i += 2;
     }
     Ok(Value::str_from(String::from_utf8_lossy(&buf).into_owned()))
+}
+
+// ---- 字节序整数互转（对标 xie 的 bytesToData/dataToBytes）----
+
+static DOC_BYTES_TO_DATA: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "bytesToData(data[, \"-endian=B|L\"]) -> int|bigInt",
+    summary: "将字节序列按指定字节序解读为无符号整数（1-16 字节）。",
+    params: &[
+        ("data", "bytes/byteArray，长度 1-16 字节"),
+        ("-endian=B|L", "可选。B=大端（默认，网络序），L=小端"),
+    ],
+    returns: "int（能放入 i64 时）或 bigInt（更大时）；空输入报错",
+    examples: &[
+        "bytesToData(bytesFromHex(\"00000000000007FF\"), \"-endian=B\")   // 2047",
+        "bytesToData(bytesFromHex(\"FF01\"), \"-endian=L\")               // 511",
+    ],
+    errors: &[
+        "空字节序列或超过 16 字节报错",
+        "参数应为 bytes/byteArray，其他类型报错",
+        "-endian= 只接受 B/L 开头的值",
+    ],
+};
+
+static DOC_DATA_TO_BYTES: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "dataToBytes(v[, \"-endian=B|L\"[, \"-size=N\"]]) -> bytes",
+    summary: "将非负整数转为定长字节序列（默认 8 字节，对标 uint64）。",
+    params: &[
+        ("v", "非负 int 或 bigInt"),
+        ("-endian=B|L", "可选。B=大端（默认，网络序），L=小端"),
+        ("-size=N", "可选。输出字节数 1-16，默认 8"),
+    ],
+    returns: "bytes：定长字节序列（高位补 0）",
+    examples: &[
+        "dataToBytes(2047, \"-endian=B\")                    // 8 字节大端 00000000000007FF",
+        "dataToBytes(2047, \"-endian=B\", \"-size=2\")        // 2 字节大端 07FF",
+    ],
+    errors: &[
+        "负数报错；值超出 N 字节可表示范围报错",
+        "size 不在 1-16 范围报错",
+        "参数应为 int/bigInt，其他类型报错",
+    ],
+};
+
+/// parse_endian_opt 从可选参数中解析 -endian=B|L（默认大端）。
+///
+/// 未能识别的其他选项忽略（与其他内置函数的开关风格一致）。
+fn parse_endian_opt(args: &[Value], fn_name: &str) -> Result<bool, Value> {
+    for opt in &args[1..] {
+        let s = opt.to_str();
+        if let Some(val) = s.strip_prefix("-endian=") {
+            let c = val.chars().next().unwrap_or(' ').to_ascii_uppercase();
+            if c == 'B' {
+                return Ok(true);
+            }
+            if c == 'L' {
+                return Ok(false);
+            }
+            return Err(crate::value::error_value(format!(
+                "{}() 无法识别的字节序 '{}' (可能原因：-endian= 只接受 B(大端) 或 L(小端)，不区分大小写)",
+                fn_name, val,
+            )));
+        }
+    }
+    Ok(true)
+}
+
+/// parse_size_opt 从可选参数中解析 -size=N（默认 8，范围 1-16）。
+fn parse_size_opt(args: &[Value], fn_name: &str) -> Result<usize, Value> {
+    for opt in &args[1..] {
+        let s = opt.to_str();
+        if let Some(val) = s.strip_prefix("-size=") {
+            let n: i64 = val.trim().parse().map_err(|_| {
+                crate::value::error_value(format!(
+                    "{}() 无法解析字节数 '{}' (可能原因：-size= 后应为 1-16 的整数)",
+                    fn_name, val,
+                ))
+            })?;
+            if n < 1 || n > 16 {
+                return Err(crate::value::error_value(format!(
+                    "{}() 字节数 {} 超出范围 (需 1-16；可能原因：超过 16 字节请改用 bigInt 的十进制字符串处理)",
+                    fn_name, n,
+                )));
+            }
+            return Ok(n as usize);
+        }
+    }
+    Ok(8)
+}
+
+/// u128_max_for_size 计算 N 字节无符号整数可表示的最大值（N 已保证 1-16）。
+fn u128_max_for_size(size: usize) -> u128 {
+    if size >= 16 {
+        u128::MAX
+    } else {
+        (1u128 << (8 * size)) - 1
+    }
+}
+
+/// u128_to_bytes 将值按字节序展开为定长字节序列（v 已保证不超出 size 字节）。
+fn u128_to_bytes(v: u128, size: usize, big_endian: bool) -> Vec<u8> {
+    let mut buf = vec![0u8; size];
+    for (i, slot) in buf.iter_mut().enumerate() {
+        // 无论字节序，先按小端填充，大端最后整体翻转
+        *slot = (v >> (8 * i)) as u8;
+    }
+    if big_endian {
+        buf.reverse();
+    }
+    buf
+}
+
+/// bi_bytes_to_data 将字节序列按指定字节序解读为无符号整数。
+///
+/// 用法：bytesToData(data[, "-endian=B|L"])
+/// 长度须为 1-16 字节；结果能放入 i64 返回 int，否则返回 bigInt。
+fn bi_bytes_to_data(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "bytesToData")?;
+    let data: Vec<u8> = match &args[0] {
+        Value::Bytes(b) => b.as_ref().to_vec(),
+        Value::ByteArray(b) => b.lock().unwrap().clone(),
+        v => return Err(crate::value::error_value(format!(
+            "bytesToData() 不支持类型 {} (需要 bytes/byteArray；可能原因：传入了 string，可先用 bytesFromHex 转换)",
+            v.type_name(),
+        ))),
+    };
+    let big_endian = parse_endian_opt(args, "bytesToData")?;
+    if data.is_empty() || data.len() > 16 {
+        return Err(crate::value::error_value(format!(
+            "bytesToData() 字节长度 {} 超出范围 (需 1-16 字节；可能原因：输入为空或不是定长整数编码)",
+            data.len(),
+        )));
+    }
+    let mut v: u128 = 0;
+    if big_endian {
+        for &b in &data {
+            v = (v << 8) | b as u128;
+        }
+    } else {
+        for (i, &b) in data.iter().enumerate() {
+            v |= (b as u128) << (8 * i);
+        }
+    }
+    if v <= i64::MAX as u128 {
+        Ok(Value::Int(v as i64))
+    } else {
+        // 超出 i64 的值以 bigInt 返回，保证无符号值不丢失精度
+        let bi = crate::bigint::BigInt::from_str_decimal(&v.to_string())
+            .map_err(crate::value::error_value)?;
+        Ok(Value::BigInt(Arc::new(bi)))
+    }
+}
+
+/// bi_data_to_bytes 将非负整数转为定长字节序列。
+///
+/// 用法：dataToBytes(v[, "-endian=B|L"[, "-size=N"]])
+/// 默认 8 字节（对标 uint64）；负数或超出范围返回 error。
+fn bi_data_to_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "dataToBytes")?;
+    let big_endian = parse_endian_opt(args, "dataToBytes")?;
+    let size = parse_size_opt(args, "dataToBytes")?;
+    match &args[0] {
+        Value::Int(x) => {
+            if *x < 0 {
+                return Err(crate::value::error_value(format!(
+                    "dataToBytes() 不支持负数 {} (可能原因：本函数按无符号整数编码；有符号编码请自行按字节拆分)",
+                    x,
+                )));
+            }
+            let v = *x as u128;
+            let max = u128_max_for_size(size);
+            if v > max {
+                return Err(crate::value::error_value(format!(
+                    "dataToBytes() 值 {} 超出 {} 字节可表示范围 (最大 2^{}) (可能原因：-size= 太小，可增大或省略用默认 8 字节)",
+                    x, size, 8 * size,
+                )));
+            }
+            Ok(Value::Bytes(Arc::new(u128_to_bytes(v, size, big_endian))))
+        }
+        Value::BigInt(b) => {
+            use std::cmp::Ordering;
+            if b.cmp(&crate::bigint::BigInt::zero()) == Ordering::Less {
+                return Err(crate::value::error_value(
+                    "dataToBytes() 不支持负数 (可能原因：本函数按无符号整数编码)".to_string(),
+                ));
+            }
+            // 反复除以 256 取余，得到低位在前的字节序列
+            let base = crate::bigint::BigInt::from_i64(256);
+            let mut cur = (**b).clone();
+            let mut buf: Vec<u8> = Vec::new();
+            while !cur.is_zero() {
+                let (q, r) = cur.divmod(&base).map_err(crate::value::error_value)?;
+                buf.push(r.to_i64().unwrap_or(0) as u8);
+                cur = q;
+            }
+            if buf.len() > size {
+                return Err(crate::value::error_value(format!(
+                    "dataToBytes() 值超出 {} 字节可表示范围 (至少需要 {} 字节) (可能原因：-size= 太小，可增大或省略用默认 8 字节)",
+                    size, buf.len(),
+                )));
+            }
+            while buf.len() < size {
+                buf.push(0);
+            }
+            if big_endian {
+                buf.reverse();
+            }
+            Ok(Value::Bytes(Arc::new(buf)))
+        }
+        v => Err(crate::value::error_value(format!(
+            "dataToBytes() 不支持类型 {} (需要 int/bigInt；可能原因：传入了 float/string，请先取整或转整数)",
+            v.type_name(),
+        ))),
+    }
 }

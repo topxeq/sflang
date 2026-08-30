@@ -45,8 +45,15 @@ impl std::error::Error for LexError {}
 impl Lexer {
     /// new 创建词法分析器。
     pub fn new(src: &str, file: &str) -> Self {
+        // 跳过文件头 UTF-8 BOM（EF BB BF）——不剥离会被识别为标识符首字节
+        let src_bytes = src.as_bytes();
+        let src_bytes = if src_bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            &src_bytes[3..]
+        } else {
+            src_bytes
+        };
         Lexer {
-            src: src.as_bytes().to_vec(),
+            src: src_bytes.to_vec(),
             pos: 0,
             line: 1,
             col: 1,
@@ -80,13 +87,17 @@ impl Lexer {
     }
 
     /// advance 消费当前字节并返回。
+    ///
+    /// 列号按"字符"计数：UTF-8 续字节（0x80..0xBF）不递增 col，
+    /// 只有字符首字节才 +1，保证中文等多字节字符后的列号可用。
     fn advance(&mut self) -> Option<u8> {
         let b = self.peek_byte()?;
         self.pos += 1;
         if b == b'\n' {
             self.line += 1;
             self.col = 1;
-        } else {
+        } else if b & 0xC0 != 0x80 {
+            // 非 UTF-8 续字节（0x80..0xBF 是续字节），视为一个新字符
             self.col += 1;
         }
         Some(b)
@@ -172,6 +183,15 @@ impl Lexer {
                 }
                 Some(b'/') if self.peek_byte_at(1) == Some(b'/') => {
                     // 行注释 //
+                    while let Some(b) = self.peek_byte() {
+                        if b == b'\n' {
+                            break;
+                        }
+                        self.advance();
+                    }
+                }
+                // 行注释 #（与模块文档声明一致；REPL 的续行判定也按 # 处理）
+                Some(b'#') => {
                     while let Some(b) = self.peek_byte() {
                         if b == b'\n' {
                             break;
@@ -411,34 +431,7 @@ impl Lexer {
                     has_interp = true;
                     self.advance(); // 消费 $
                     self.advance(); // 消费 {
-                    // 用花括号计数找到匹配的 }
-                    let expr_start = self.pos;
-                    let mut depth = 1u32;
-                    let mut found = false;
-                    while let Some(b) = self.peek_byte() {
-                        if b == b'{' { depth += 1; self.advance(); }
-                        else if b == b'}' {
-                            depth -= 1;
-                            self.advance();
-                            if depth == 0 { found = true; break; }
-                        }
-                        else if b == b'\\' {
-                            // 插值表达式内的字符串中的转义，跳过下一字节
-                            self.advance();
-                            self.advance();
-                        }
-                        else { self.advance(); }
-                    }
-                    if !found {
-                        return Err(LexError {
-                            msg: "unterminated interpolation (插值 ${...} 未闭合；可能原因：忘记写 })".into(),
-                            line,
-                            col,
-                        });
-                    }
-                    let expr_src = std::str::from_utf8(&self.src[expr_start..self.pos - 1])
-                        .map_err(|_| LexError { msg: "invalid UTF-8 in interpolation".into(), line, col })?
-                        .to_string();
+                    let expr_src = self.scan_interp_expr(false, line, col)?;
                     parts.push(expr_src);   // 奇数索引=表达式
                     parts.push(String::new()); // 新的文本段
                 }
@@ -466,13 +459,90 @@ impl Lexer {
         }
 
         if has_interp {
-            // 编码：用 NUL 分隔各段。parts[0]=text, parts[1]=expr, parts[2]=text, ...
-            let encoded = parts.join("\0");
+            // 编码：长度前缀格式（<字节长度>:<内容> 逐段拼接）。
+            // 不用 NUL 分隔——文本段可经 \0 转义合法包含 NUL 字符，会导致分段错位。
+            let encoded = encode_interp_parts(&parts);
             Ok(Token::new(TokenKind::InterpString, encoded, line, col))
         } else {
             let s = parts.into_iter().next().unwrap();
             Ok(Token::new(TokenKind::String, s, line, col))
         }
+    }
+
+    /// scan_interp_expr 扫描 ${ 后的插值表达式直到匹配的 }（${ 已被消费）。
+    ///
+    /// 花括号配对跳过字符串字面量内部的花括号（如 "${f(\"{\")}"），
+    /// 避免配对被字符串内容破坏。allow_newline=false（单行字符串）时
+    /// 遇换行立即报"单行字符串不能跨行"（防止扫描越过换行吞掉后续源码）。
+    /// 返回表达式的源码文本（不含外层花括号）。
+    fn scan_interp_expr(&mut self, allow_newline: bool, line: u32, col: u32) -> Result<String, LexError> {
+        let expr_start = self.pos;
+        let mut depth = 1u32;
+        let mut found = false;
+        while let Some(b) = self.peek_byte() {
+            match b {
+                b'{' => { depth += 1; self.advance(); }
+                b'}' => {
+                    depth -= 1;
+                    self.advance();
+                    if depth == 0 { found = true; break; }
+                }
+                b'"' if allow_newline
+                    && self.peek_byte_at(1) == Some(b'"')
+                    && self.peek_byte_at(2) == Some(b'"') =>
+                {
+                    // 多行字符串中插值未闭合就遇到结束符 """
+                    break;
+                }
+                b'"' => {
+                    // 跳过插值内的字符串字面量（处理转义；引号内的 {} 不参与配对）
+                    self.advance();
+                    while let Some(c) = self.peek_byte() {
+                        if c == b'\\' {
+                            self.advance();
+                            self.advance();
+                        } else if c == b'"' {
+                            self.advance();
+                            break;
+                        } else {
+                            self.advance();
+                        }
+                    }
+                }
+                b'`' => {
+                    // 跳过插值内的 raw string（无转义，到反引号为止）
+                    self.advance();
+                    while let Some(c) = self.peek_byte() {
+                        let closing = c == b'`';
+                        self.advance();
+                        if closing { break; }
+                    }
+                }
+                b'\\' => {
+                    // 表达式内字符串中的转义，跳过下一字节
+                    self.advance();
+                    self.advance();
+                }
+                b'\n' if !allow_newline => {
+                    return Err(LexError {
+                        msg: "unterminated string (单行字符串不能跨行；插值 ${...} 内出现换行；可能原因：想跨行请用 \"\"\" 或反引号)".into(),
+                        line,
+                        col,
+                    });
+                }
+                _ => { self.advance(); }
+            }
+        }
+        if !found {
+            return Err(LexError {
+                msg: "unterminated interpolation (插值 ${...} 未闭合；可能原因：忘记写 })".into(),
+                line,
+                col,
+            });
+        }
+        std::str::from_utf8(&self.src[expr_start..self.pos - 1])
+            .map(|s| s.to_string())
+            .map_err(|_| LexError { msg: "invalid UTF-8 in interpolation".into(), line, col })
     }
 
     /// lex_multiline_string 读取三引号多行字符串（支持 ${expr} 插值）。
@@ -510,33 +580,7 @@ impl Lexer {
                 has_interp = true;
                 self.advance(); // $
                 self.advance(); // {
-                let expr_start = self.pos;
-                let mut depth = 1u32;
-                let mut found = false;
-                while self.pos < self.src.len() {
-                    let b = self.peek_byte().unwrap();
-                    if b == b'"' && self.peek_byte_at(1) == Some(b'"') && self.peek_byte_at(2) == Some(b'"') {
-                        // 多行字符串中的插值遇到结束符
-                        break;
-                    }
-                    if b == b'{' { depth += 1; self.advance(); }
-                    else if b == b'}' {
-                        depth -= 1;
-                        self.advance();
-                        if depth == 0 { found = true; break; }
-                    }
-                    else if b == b'\\' { self.advance(); self.advance(); }
-                    else { self.advance(); }
-                }
-                if !found {
-                    return Err(LexError {
-                        msg: "unterminated interpolation in multiline string (插值 ${...} 未闭合)".into(),
-                        line, col,
-                    });
-                }
-                let expr_src = std::str::from_utf8(&self.src[expr_start..self.pos - 1])
-                    .map_err(|_| LexError { msg: "invalid UTF-8 in interpolation".into(), line, col })?
-                    .to_string();
+                let expr_src = self.scan_interp_expr(true, line, col)?;
                 parts.push(expr_src);
                 parts.push(String::new());
                 continue;
@@ -563,7 +607,7 @@ impl Lexer {
         }
 
         if has_interp {
-            Ok(Token::new(TokenKind::InterpString, parts.join("\0"), line, col))
+            Ok(Token::new(TokenKind::InterpString, encode_interp_parts(&parts), line, col))
         } else {
             Ok(Token::new(TokenKind::String, parts.into_iter().next().unwrap(), line, col))
         }
@@ -774,4 +818,40 @@ fn utf8_char_len(b: u8) -> usize {
 pub fn tokenize(src: &str, file: &str) -> Result<Vec<Token>, LexError> {
     let mut lex = Lexer::new(src, file);
     lex.lex()
+}
+
+/// encode_interp_parts 将插值字符串的各段编码进一个 Token value。
+///
+/// 格式：逐段拼接 `<字节长度十进制>:<段内容>`。偶数段为文本、奇数段为表达式源码。
+/// 不用 NUL 等单字符分隔——文本段可经 \0 转义合法包含任意字符，长度前缀无歧义。
+pub fn encode_interp_parts(parts: &[String]) -> String {
+    let mut out = String::new();
+    for p in parts {
+        out.push_str(&format!("{}:", p.len()));
+        out.push_str(p);
+    }
+    out
+}
+
+/// decode_interp_parts 解码 encode_interp_parts 编码的插值段。
+///
+/// 返回 (段列表, 是否合法)。格式非法（长度前缀缺失/越界）时返回 None，
+/// 调用方按词法错误处理。
+pub fn decode_interp_parts(encoded: &str) -> Option<Vec<String>> {
+    let bytes = encoded.as_bytes();
+    let mut parts = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // 读长度前缀（十进制数字到 ':' 为止）
+        let colon = bytes[i..].iter().position(|&b| b == b':')? + i;
+        let len: usize = std::str::from_utf8(&bytes[i..colon]).ok()?.parse().ok()?;
+        let start = colon + 1;
+        let end = start.checked_add(len)?;
+        if end > bytes.len() {
+            return None;
+        }
+        parts.push(std::str::from_utf8(&bytes[start..end]).ok()?.to_string());
+        i = end;
+    }
+    Some(parts)
 }

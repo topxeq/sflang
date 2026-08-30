@@ -1,14 +1,19 @@
 //! opcode.rs — 字节码操作码与 Code 结构定义
 //!
 //! 设计要点：
-//!   - 1 字节操作码 + 操作数（u16 大端序或 u8）
+//!   - 1 字节操作码 + 操作数（u16 大端序或 u8/u64）
 //!   - Code 包含指令序列、常量池、名字池、行号表
 //!   - 含 NumLocals（局部变量槽位数）和 FreeSources（闭包捕获来源）
 //!
-//! 字节码格式（每条指令 1-3 字节）：
-//!   OpXxx           → 1 字节（无操作数）
-//!   OpXxx <u16>     → 3 字节（u16 大端序）
-//!   OpXxx <u8>      → 2 字节（仅 OpCall）
+//! 字节码格式：
+//!   OpXxx                    → 1 字节（无操作数）
+//!   OpXxx <u16>              → 3 字节（u16 大端序）
+//!   OpXxx <u8>               → 2 字节（OpCall/CompoundIndex/IncDecIndex/Defer/Run）
+//!   OpXxx <u16> <u8>         → 4 字节（MethodCall/CompoundMember/IncDecMember）
+//!   OpXxx <u8> <u64>         → 10 字节（SpreadCall）
+//!   OpXxx <u16> <u8> <u64>   → 12 字节（MethodSpreadCall）
+//!   OpPushTry <u16×3>        → 7 字节（catch_ip/finally_ip/end_ip，0xFFFF 表示无）
+//!   OpLeaveLoop <u16> <u8>   → 4 字节（跳转目标 + 穿越的 try 层数）
 
 use std::sync::Arc;
 
@@ -103,22 +108,27 @@ pub enum Opcode {
     /// OpCompoundIndex 复合索引赋值 a[i] op= v。u8 flag（运算+前后缀）。
     /// 栈：[v, obj, idx] → [new]。地址只求值一次（obj/idx 各弹一次）。
     CompoundIndex = 54,
-    /// OpCompoundMember 复合成员赋值 obj.k op= v。u8 name_idx, u8 flag。
+    /// OpCompoundMember 复合成员赋值 obj.k op= v。u16 name_idx, u8 flag。
     /// 栈：[v, obj] → [new]。
     CompoundMember = 55,
     /// OpIncDecIndex 索引自增自减 a[i]++ / ++a[i]。u8 flag。
     /// 栈：[obj, idx] → [result]（前缀返回新值，后缀返回旧值）。
     IncDecIndex = 56,
-    /// OpIncDecMember 成员自增自减 obj.k++ / ++obj.k。u8 name_idx, u8 flag。
+    /// OpIncDecMember 成员自增自减 obj.k++ / ++obj.k。u16 name_idx, u8 flag。
     /// 栈：[obj] → [result]。
     IncDecMember = 57,
     /// OpSlice 切片 a[low:high]。栈：[obj, low, high] → [result]。
     /// low/high 缺省时压 undefined（表示到边界）。无操作数。
     Slice = 58,
     /// OpMethodCall 方法调用 obj.name(args)，自动注入 obj 作为隐式 self。
+    /// 操作数：u16 name_idx, u8 argc。栈：[obj, arg1, ..., argN]。
     MethodCall = 59,
-    /// OpSpreadCall 带展开的调用。u8 argc, u8 spread_mask。
+    /// OpSpreadCall 带展开的调用。u8 argc, u64 spread_mask（bit i = 第 i 个参数是数组展开）。
+    /// 栈：[callee, arg0, arg1, ...]（标记为 spread 的 arg 是 array）。
     SpreadCall = 64,
+    /// OpMethodSpreadCall 带展开的方法调用。u16 name_idx, u8 argc, u64 spread_mask。
+    /// 栈：[obj, arg0, arg1, ...]（标记为 spread 的 arg 是 array），展开后自动注入 obj。
+    MethodSpreadCall = 69,
     /// OpBuildOrdMap 构造有序映射。u16 键值对数量。
     BuildOrdMap = 65,
     /// OpRef 取引用：弹出值，包装为 Arc<Mutex<Value>> 压栈。
@@ -154,14 +164,24 @@ pub enum Opcode {
     SetMember = 75,
 
     // ---- 异常处理 ----
-    /// OpPushTry 压入 try 上下文。u16 catchIP, u16 finallyIP。
+    /// OpPushTry 压入 try 上下文。u16 catchIP, u16 finallyIP, u16 endIP。
+    /// 0xFFFF 表示对应的块不存在。入口常驻 try 栈直到整条 try 语句结束，
+    /// 配合 Body/Catch/Finally 三阶段状态机保证 finally 必然执行。
     PushTry = 80,
-    /// OpPopTry 弹出 try 上下文（try/catch 块正常结束）。
-    PopTry = 81,
+    /// OpTryBodyEnd try 块正常结束：有 finally 则进入 finally（挂起控制流为空），
+    /// 否则弹出 try 入口继续。
+    TryBodyEnd = 81,
     /// OpThrow 抛出异常（栈顶为异常值）。
     Throw = 82,
-    /// OpExitFinally finally 块结束，恢复挂起的控制流。
+    /// OpExitFinally finally 块结束：弹出 try 入口，
+    /// 恢复挂起的 return/throw/break/continue，或跳到语句末尾（endIP）。
     ExitFinally = 83,
+    /// OpCatchEnd catch 块正常结束：有 finally 则进入 finally，否则弹出入口继续。
+    CatchEnd = 84,
+    /// OpLeaveLoop break/continue 穿越 try 语句。u16 跳转目标, u8 穿越的 try 层数。
+    /// VM 先逐层弹出穿越的 try 入口（有 finally 的先进入并挂起本跳转），
+    /// 最后跳到目标地址，保证 finally 语义。
+    LeaveLoop = 85,
 
     // ---- defer ----
     /// OpDefer 注册 defer 调用。u8 实参数量。
@@ -229,6 +249,7 @@ impl Opcode {
             66 => Some(Opcode::Ref),
             67 => Some(Opcode::Deref),
             68 => Some(Opcode::SetDeref),
+            69 => Some(Opcode::MethodSpreadCall),
             60 => Some(Opcode::Call),
             61 => Some(Opcode::Return),
             62 => Some(Opcode::ReturnVoid),
@@ -240,9 +261,11 @@ impl Opcode {
             74 => Some(Opcode::GetMember),
             75 => Some(Opcode::SetMember),
             80 => Some(Opcode::PushTry),
-            81 => Some(Opcode::PopTry),
+            81 => Some(Opcode::TryBodyEnd),
             82 => Some(Opcode::Throw),
             83 => Some(Opcode::ExitFinally),
+            84 => Some(Opcode::CatchEnd),
+            85 => Some(Opcode::LeaveLoop),
             90 => Some(Opcode::Defer),
             100 => Some(Opcode::Run),
             110 => Some(Opcode::Import),
@@ -285,6 +308,11 @@ pub struct Code {
     pub num_locals: usize,
     /// free_sources 本函数捕获的外层变量来源列表（按捕获顺序）。
     pub free_sources: Vec<FreeSource>,
+    /// pending_line 待应用的源码行号。
+    ///
+    /// set_line 先记录此值，随后每条 emit 的全部指令字节都以该行号标注，
+    /// 保证指令首字节（opcode 所在处）的行号可用（get_line 读取处）。
+    pending_line: u32,
 }
 
 impl Code {
@@ -299,6 +327,7 @@ impl Code {
             lines: Vec::new(),
             num_locals: 0,
             free_sources: Vec::new(),
+            pending_line: 0,
         }
     }
 
@@ -306,7 +335,7 @@ impl Code {
     pub fn emit(&mut self, op: Opcode) -> usize {
         let off = self.insts.len();
         self.insts.push(op as u8);
-        self.lines.push(0); // 行号由 set_line 设置
+        self.lines.push(self.pending_line);
         off
     }
 
@@ -315,20 +344,47 @@ impl Code {
         let off = self.insts.len();
         self.insts.push(op as u8);
         self.insts.push(arg);
-        self.lines.push(0);
-        self.lines.push(0);
+        self.lines.push(self.pending_line);
+        self.lines.push(self.pending_line);
         off
     }
 
-    /// emit_u8_u8 追加 2 字节操作数指令（用于 CompoundMember/IncDecMember）。
-    pub fn emit_u8_u8(&mut self, op: Opcode, arg1: u8, arg2: u8) -> usize {
+    /// emit_u16_u8 追加 u16 + u8 操作数指令（MethodCall/CompoundMember/IncDecMember）。
+    pub fn emit_u16_u8(&mut self, op: Opcode, arg1: u16, arg2: u8) -> usize {
+        let off = self.insts.len();
+        self.insts.push(op as u8);
+        self.insts.push((arg1 >> 8) as u8);
+        self.insts.push(arg1 as u8);
+        self.insts.push(arg2);
+        for _ in 0..4 {
+            self.lines.push(self.pending_line);
+        }
+        off
+    }
+
+    /// emit_u8_u64 追加 u8 + u64 操作数指令（SpreadCall）。
+    pub fn emit_u8_u64(&mut self, op: Opcode, arg1: u8, arg2: u64) -> usize {
         let off = self.insts.len();
         self.insts.push(op as u8);
         self.insts.push(arg1);
+        self.insts.extend_from_slice(&arg2.to_be_bytes());
+        for _ in 0..10 {
+            self.lines.push(self.pending_line);
+        }
+        off
+    }
+
+    /// emit_u16_u8_u64 追加 u16 + u8 + u64 操作数指令（MethodSpreadCall）。
+    pub fn emit_u16_u8_u64(&mut self, op: Opcode, arg1: u16, arg2: u8, arg3: u64) -> usize {
+        let off = self.insts.len();
+        self.insts.push(op as u8);
+        self.insts.push((arg1 >> 8) as u8);
+        self.insts.push(arg1 as u8);
         self.insts.push(arg2);
-        self.lines.push(0);
-        self.lines.push(0);
-        self.lines.push(0);
+        self.insts.extend_from_slice(&arg3.to_be_bytes());
+        for _ in 0..12 {
+            self.lines.push(self.pending_line);
+        }
         off
     }
 
@@ -338,46 +394,63 @@ impl Code {
         self.insts.push(op as u8);
         self.insts.push((arg >> 8) as u8);
         self.insts.push(arg as u8);
-        self.lines.push(0);
-        self.lines.push(0);
-        self.lines.push(0);
-        off
-    }
-
-    /// emit_push_try 追加 PushTry 指令（2 个 u16 操作数）。
-    /// 返回偏移量，用于后续 patch。
-    pub fn emit_push_try(&mut self, catch_ip: u16, finally_ip: u16) -> usize {
-        let off = self.insts.len();
-        self.insts.push(Opcode::PushTry as u8);
-        self.insts.push((catch_ip >> 8) as u8);
-        self.insts.push(catch_ip as u8);
-        self.insts.push((finally_ip >> 8) as u8);
-        self.insts.push(finally_ip as u8);
-        for _ in 0..5 {
-            self.lines.push(0);
+        for _ in 0..3 {
+            self.lines.push(self.pending_line);
         }
         off
     }
 
-    /// patch_u16 回填 u16 操作数。
+    /// emit_push_try 追加 PushTry 指令（3 个 u16 操作数：catch/finally/end）。
+    /// 先用占位值 0 发射，编译完各块后用 patch_push_try 回填。
+    /// 返回偏移量，用于后续 patch。
+    pub fn emit_push_try(&mut self) -> usize {
+        let off = self.insts.len();
+        self.insts.push(Opcode::PushTry as u8);
+        for _ in 0..6 {
+            self.insts.push(0);
+        }
+        for _ in 0..7 {
+            self.lines.push(self.pending_line);
+        }
+        off
+    }
+
+    /// emit_leave_loop 追加 LeaveLoop 指令（u16 跳转目标 + u8 try 层数）。
+    /// 目标先填 0，编译完后用 patch_u16 回填（操作数布局与 emit_u16 一致）。
+    pub fn emit_leave_loop(&mut self, leave: u8) -> usize {
+        let off = self.insts.len();
+        self.insts.push(Opcode::LeaveLoop as u8);
+        self.insts.push(0);
+        self.insts.push(0);
+        self.insts.push(leave);
+        for _ in 0..4 {
+            self.lines.push(self.pending_line);
+        }
+        off
+    }
+
+    /// patch_u16 回填 u16 操作数（对齐 emit_u16 / emit_leave_loop 的布局：off+1..off+3）。
     pub fn patch_u16(&mut self, off: usize, val: u16) {
         self.insts[off + 1] = (val >> 8) as u8;
         self.insts[off + 2] = val as u8;
     }
 
-    /// patch_push_try 回填 PushTry 的 catch_ip 和 finally_ip。
-    pub fn patch_push_try(&mut self, off: usize, catch_ip: u16, finally_ip: u16) {
+    /// patch_push_try 回填 PushTry 的 catch_ip / finally_ip / end_ip。
+    pub fn patch_push_try(&mut self, off: usize, catch_ip: u16, finally_ip: u16, end_ip: u16) {
         self.insts[off + 1] = (catch_ip >> 8) as u8;
         self.insts[off + 2] = catch_ip as u8;
         self.insts[off + 3] = (finally_ip >> 8) as u8;
         self.insts[off + 4] = finally_ip as u8;
+        self.insts[off + 5] = (end_ip >> 8) as u8;
+        self.insts[off + 6] = end_ip as u8;
     }
 
-    /// set_line 设置当前最后一条指令的行号。
+    /// set_line 设置接下来发射的指令的源码行号。
+    ///
+    /// 行号在 emit 时应用到指令的全部字节（含指令首字节），
+    /// 保证运行期 get_line(ip) 在 opcode 位置能读到正确行号。
     pub fn set_line(&mut self, line: u32) {
-        if let Some(last) = self.lines.last_mut() {
-            *last = line;
-        }
+        self.pending_line = line;
     }
 
     /// get_line 获取指定指令位置的源码行号。
@@ -404,11 +477,9 @@ impl Code {
         i
     }
 
-    /// add_name 添加名字（不自动去重，简化逻辑），返回索引。
-    /// 注：名字重复不影响正确性，仅多占少量内存。
+    /// add_name 添加名字（按内容去重），返回索引。
     pub fn add_name(&mut self, name: impl Into<String>) -> usize {
         let name = name.into();
-        // 去重查找
         for (i, n) in self.names.iter().enumerate() {
             if *n == name {
                 return i;
@@ -422,6 +493,13 @@ impl Code {
     /// read_u16 从指令字节读取 u16（大端序）。
     pub fn read_u16(insts: &[u8], offset: usize) -> u16 {
         ((insts[offset] as u16) << 8) | (insts[offset + 1] as u16)
+    }
+
+    /// read_u64 从指令字节读取 u64（大端序）。
+    pub fn read_u64(insts: &[u8], offset: usize) -> u64 {
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&insts[offset..offset + 8]);
+        u64::from_be_bytes(b)
     }
 }
 

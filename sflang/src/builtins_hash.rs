@@ -57,7 +57,7 @@ static DOC_SHA256: BuiltinDoc = BuiltinDoc {
     returns: "bytes：32 字节 SHA-256 摘要",
     examples: &[
         "sha256(\"abc\")          → 32 字节 bytes",
-        "bytesHex(sha256(\"abc\")) → \"ba7816bf...ad2347\"（64 位十六进制）",
+        "bytesHex(sha256(\"abc\")) → \"ba7816bf...20015ad\"（64 位十六进制）",
     ],
     errors: &["参数须为 string/bytes/byteArray"],
 };
@@ -108,7 +108,8 @@ static DOC_HMAC_SHA256: BuiltinDoc = BuiltinDoc {
     ],
     returns: "bytes：32 字节 HMAC-SHA256 摘要",
     examples: &[
-        "bytesHex(hmacSha256(\"key\", \"The quick brown fox\")) → \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\"",
+        // 注意：该哈希值对应完整句子（Wikipedia HMAC 示例向量），消息须一字不差
+        "bytesHex(hmacSha256(\"key\", \"The quick brown fox jumps over the lazy dog\")) → \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\"",
     ],
     errors: &["参数顺序为 key 在前、message 在后"],
 };
@@ -123,7 +124,8 @@ static DOC_HMAC_SHA256_HEX: BuiltinDoc = BuiltinDoc {
     ],
     returns: "string：64 字符小写十六进制 HMAC-SHA256 摘要",
     examples: &[
-        "hmacSha256Hex(\"key\", \"The quick brown fox\") → \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\"",
+        // 注意：该哈希值对应完整句子（Wikipedia HMAC 示例向量），消息须一字不差
+        "hmacSha256Hex(\"key\", \"The quick brown fox jumps over the lazy dog\") → \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\"",
     ],
     errors: &["参数顺序为 key 在前、message 在后"],
 };
@@ -431,5 +433,131 @@ fn bi_check_otp_code(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
     // 比较时大小写不敏感无意义，但为防 AI 误传前后空白，先 trim
     let code_trimmed = code.trim();
-    Ok(Value::Bool(expected == code_trimmed))
+    // 常数时间形态比较：逐字节异或累积，避免普通字符串比较在首个不同字节处
+    // 短路返回而泄露"匹配了多长"（OTP 验证的常见计时侧信道）。
+    // 注意：不做 ±1 时间窗口容错（保持原有行为），时钟漂移需调用方自行处理。
+    let diff = constant_time_diff(expected.as_bytes(), code_trimmed.as_bytes());
+    Ok(Value::Bool(diff == 0))
+}
+
+/// constant_time_diff 常数时间形态的字节比较：逐字节异或后累积。
+///
+/// 返回 0 表示两串完全相等，非 0 表示不等。
+/// 长度不同时直接返回非零（6 位码长度是公开格式，长度本身不属敏感信息）；
+/// 长度相同时无论差异在哪个字节，比较次数恒定，不泄露前缀匹配程度。
+fn constant_time_diff(a: &[u8], b: &[u8]) -> u8 {
+    if a.len() != b.len() {
+        return 1;
+    }
+    let mut diff: u8 = 0;
+    for i in 0..a.len() {
+        diff |= a[i] ^ b[i];
+    }
+    diff
+}
+
+// ---- 官方测试向量（#[cfg(test)]，不影响发布代码） ----
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// hex 转小写十六进制字符串（与脚本层 bytesHex 行为一致）。
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    /// RFC 4231「Test Vectors for HMAC-SHA-256」第 1-4 组标准向量。
+    #[test]
+    fn test_hmac_sha256_rfc4231() {
+        // Test Case 1：Key = 0x0b x20，Data = "Hi There"
+        let key = [0x0bu8; 20];
+        assert_eq!(
+            hex(&crate::hash::hmac_sha256(&key, b"Hi There")),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+        // Test Case 2：Key = "Jefe"，Data = "what do ya want for nothing?"
+        assert_eq!(
+            hex(&crate::hash::hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        // Test Case 3：Key = 0xaa x20，Data = 0xdd x50
+        assert_eq!(
+            hex(&crate::hash::hmac_sha256(&[0xaa; 20], &[0xdd; 50])),
+            "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe"
+        );
+        // Test Case 4：Key = 0x01..0x19（25 字节，触发密钥填充路径），Data = 0xcd x50
+        let key4: Vec<u8> = (1u8..=25).collect();
+        assert_eq!(
+            hex(&crate::hash::hmac_sha256(&key4, &[0xcd; 50])),
+            "82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b"
+        );
+    }
+
+    /// RFC 2202「Test Cases for HMAC-SHA-1」第 1-3、6-7 组标准向量。
+    #[test]
+    fn test_hmac_sha1_rfc2202() {
+        // Test Case 1：Key = 0x0b x20，Data = "Hi There"
+        assert_eq!(
+            hex(&crate::hash::hmac_sha1(&[0x0b; 20], b"Hi There")),
+            "b617318655057264e28bc0b6fb378c8ef146be00"
+        );
+        // Test Case 2：Key = "Jefe"，Data = "what do ya want for nothing?"
+        assert_eq!(
+            hex(&crate::hash::hmac_sha1(b"Jefe", b"what do ya want for nothing?")),
+            "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79"
+        );
+        // Test Case 3：Key = 0xaa x20，Data = 0xdd x50
+        assert_eq!(
+            hex(&crate::hash::hmac_sha1(&[0xaa; 20], &[0xdd; 50])),
+            "125d7342b9ac11cd91a39af48aa17b4f63f175d3"
+        );
+        // Test Case 6：Key = 0xaa x80（超块大小，先哈希再参与），Data = 54 字节消息
+        assert_eq!(
+            hex(&crate::hash::hmac_sha1(
+                &[0xaa; 80],
+                b"Test Using Larger Than Block-Size Key - Hash Key First",
+            )),
+            "aa4ae5e15272d00e95705637ce8a3b55ed402112"
+        );
+        // Test Case 7：Key = 0xaa x80，Data 为跨块长消息（覆盖多块哈希路径）
+        assert_eq!(
+            hex(&crate::hash::hmac_sha1(
+                &[0xaa; 80],
+                b"Test Using Larger Than Block-Size Key and Larger Than One Block-Size Data",
+            )),
+            "e8e99d0f45237d786d6bbaa7965c7808bbff1a91"
+        );
+    }
+
+    /// RFC 4231 第 6 组向量（HMAC-SHA-256，131 字节长密钥：覆盖先哈希密钥的路径）。
+    #[test]
+    fn test_hmac_sha256_rfc4231_long_key() {
+        assert_eq!(
+            hex(&crate::hash::hmac_sha256(
+                &[0xaa; 131],
+                b"Test Using Larger Than Block-Size Key - Hash Key First",
+            )),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
+    }
+
+    /// 文档示例向量（Wikipedia HMAC 示例）：验证帮助文档中的示例确实成立。
+    #[test]
+    fn test_hmac_sha256_doc_example() {
+        assert_eq!(
+            hex(&crate::hash::hmac_sha256(b"key", b"The quick brown fox jumps over the lazy dog")),
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
+    }
+
+    /// 常数时间比较函数的行为正确性（相等/不等/长度不同）。
+    #[test]
+    fn test_constant_time_diff() {
+        assert_eq!(constant_time_diff(b"287082", b"287082"), 0);
+        assert_ne!(constant_time_diff(b"287082", b"287083"), 0);
+        assert_ne!(constant_time_diff(b"28708", b"287082"), 0); // 长度不同
+        assert_ne!(constant_time_diff(b"", b"x"), 0);
+        assert_eq!(constant_time_diff(b"", b""), 0);
+    }
 }

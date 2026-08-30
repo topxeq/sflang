@@ -400,7 +400,12 @@ fn bi_gui_show(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             if !g.eval_queue.is_empty() {
                 let cmds = std::mem::take(&mut g.eval_queue);
                 for js in cmds {
-                    let _ = webview.evaluate_script(&js);
+                    // guiEval 执行失败（JS 语法错误或运行时异常）不再静默：
+                    // 打印到 stderr 便于定位（Sflang 脚本侧的 dbg 看不到这一层）
+                    if let Err(e) = webview.evaluate_script(&js) {
+                        let preview: String = js.chars().take(120).collect();
+                        eprintln!("guiEval 执行失败: {} (JS 预览: {})", e, preview);
+                    }
                 }
             }
             if g.close_requested {
@@ -444,7 +449,10 @@ fn bi_gui_show(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
                     "if(window.onAsyncResult)window.onAsyncResult({},{},{});",
                     r.id, val_str, r.is_error
                 );
-                let _ = webview.evaluate_script(&js);
+                if let Err(e) = webview.evaluate_script(&js) {
+                    let preview: String = js.chars().take(120).collect();
+                    eprintln!("onAsyncResult 推送失败: {} (JS 预览: {})", e, preview);
+                }
             }
         }
 
@@ -468,7 +476,10 @@ fn bi_gui_show(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
                     "if(window.onStreamData)window.onStreamData({},{},{},{});",
                     e.stream_id, data_js, kind_num, extra
                 );
-                let _ = webview.evaluate_script(&js);
+                if let Err(err) = webview.evaluate_script(&js) {
+                    let preview: String = js.chars().take(120).collect();
+                    eprintln!("onStreamData 推送失败: {} (JS 预览: {})", err, preview);
+                }
             }
         }
 

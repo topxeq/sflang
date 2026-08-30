@@ -53,7 +53,7 @@ static DOC_TYPECODE: BuiltinDoc = BuiltinDoc {
     signature: "typeCode(x) -> int",
     summary: "返回值的固定类型编码（数字），用于快速类型判断。",
     params: &[("x", "任意值")],
-    returns: "int 类型编码：0=undefined 1=int 2=float 3=bool 4=string 5=bytes 6=array 7=object 8=function 9=builtin 10=error 13=bigInt 14=bigFloat 15=datetime 16=file 17=byte 18=map 19=stringBuilder",
+    returns: "int 类型编码：0=undefined 1=int 2=float 3=bool 4=string 5=bytes 6=array 7=object 8=function 9=builtin 10=error 11=native 12=byteArray 13=bigInt 14=bigFloat 15=datetime 16=file 17=byte 18=map 19=stringBuilder 20=httpReq 21=httpResp 22=webSocket",
     examples: &[
         "typeCode(42)         → 1",
         "typeCode(\"hi\")      → 4",
@@ -111,42 +111,50 @@ static DOC_RANGE: BuiltinDoc = BuiltinDoc {
         "range(0, 10, 2)      → [0, 2, 4, 6, 8]",
         "range(5, 0, -1)      → [5, 4, 3, 2, 1]",
     ],
-    errors: &[],
+    errors: &[
+        "step 为 0 返回错误",
+        "元素数量超过 1000000 上限返回错误（请减少跨度或使用步长）",
+    ],
 };
 
 static DOC_KEYS: BuiltinDoc = BuiltinDoc {
     category: "core",
-    signature: "keys(obj) -> array<string>",
-    summary: "返回 object/map 的所有键（无序）。",
-    params: &[("obj", "object 或 map")],
-    returns: "array<string> 键名数组",
+    signature: "keys(obj) -> array",
+    summary: "返回 object/map 的所有键（无序）。array 返回索引数组，string 返回码点位置数组。",
+    params: &[("obj", "object 或 map（array/string 亦可）")],
+    returns: "array 键名数组（array 入参时为 array<int> 索引）",
     examples: &[
         "keys({\"a\":1, \"b\":2})  → [\"a\", \"b\"]（顺序不保证）",
+        "keys([10, 20])        → [0, 1]",
     ],
-    errors: &["对非 object/map 类型会返回错误"],
+    errors: &["对非 object/map/array/string 类型会返回错误"],
 };
 
 static DOC_VALUES: BuiltinDoc = BuiltinDoc {
     category: "core",
     signature: "values(obj) -> array",
-    summary: "返回 object/map 的所有值（无序）。",
-    params: &[("obj", "object 或 map")],
+    summary: "返回 object/map 的所有值（无序）。传 array 时返回元素快照拷贝。",
+    params: &[("obj", "object 或 map（array 亦可，返回其元素快照）")],
     returns: "array 值数组",
-    examples: &["values({\"a\":1, \"b\":2})  → [1, 2]"],
-    errors: &[],
+    examples: &[
+        "values({\"a\":1, \"b\":2})  → [1, 2]",
+        "len(values(newMap()))     → 0（map 支持）",
+    ],
+    errors: &["对非 object/map/array 类型会返回错误"],
 };
 
 static DOC_PUSH: BuiltinDoc = BuiltinDoc {
     category: "core",
-    signature: "push(arr, val) -> int",
-    summary: "向数组末尾添加元素，返回新长度。",
+    signature: "push(arr, val) -> array",
+    summary: "向数组末尾添加元素（原地修改），返回该数组本身（同一引用，便于链式调用）。",
     params: &[
         ("arr", "目标数组（原地修改）"),
         ("val", "要添加的值"),
     ],
-    returns: "int 添加后的数组长度",
+    returns: "array 添加元素后的原数组（与 arr 为同一引用，不是新数组）",
     examples: &[
-        "var a = [1, 2]; push(a, 3)  → 3; a 变为 [1, 2, 3]",
+        "var a = [1, 2]; push(a, 3)      // a 变为 [1, 2, 3]，返回值即 a",
+        "push(push([1], 2), 3)           // [1, 2, 3]（链式调用）",
     ],
     errors: &["第一个参数应为 array"],
 };
@@ -164,20 +172,24 @@ static DOC_SPRINTF: BuiltinDoc = BuiltinDoc {
         "sprintf(\"%s=%d\", \"count\", 42)   → \"count=42\"",
         "sprintf(\"%.2f\", 3.14159)         → \"3.14\"",
     ],
-    errors: &["占位符数量与参数数量不匹配会返回错误"],
+    errors: &[
+        "参数不足时对应占位符按字面输出（不报错）；多余参数忽略",
+        "%d/%f/%x 等类型不符返回错误",
+        "格式化宽度超过 1000000 返回错误",
+    ],
 };
 
 static DOC_SLEEP: BuiltinDoc = BuiltinDoc {
     category: "core",
     signature: "sleep(seconds) -> undefined",
-    summary: "休眠指定秒数（支持小数，如 0.5）。",
-    params: &[("seconds", "休眠时长（秒，float 或 int）")],
+    summary: "休眠指定秒数（支持小数，如 0.5）。上限一年。",
+    params: &[("seconds", "休眠时长（秒，float 或 int，需为 0..31536000 的有限数字）")],
     returns: "undefined",
     examples: &[
         "sleep(1)     // 休眠 1 秒",
         "sleep(0.5)   // 休眠 500 毫秒",
     ],
-    errors: &[],
+    errors: &["参数为负数、NaN、inf 或超过一年上限时返回错误"],
 };
 
 static DOC_ERROR: BuiltinDoc = BuiltinDoc {
@@ -268,14 +280,14 @@ static DOC_UUID: BuiltinDoc = BuiltinDoc {
 static DOC_DEEP_CLONE: BuiltinDoc = BuiltinDoc {
     category: "core",
     signature: "deepClone(v) -> value",
-    summary: "深拷贝值（递归克隆 array/object/map 及其嵌套结构）。",
+    summary: "深拷贝值（递归克隆 array/object/map 及其嵌套结构，保留 object 的原型链）。",
     params: &[("v", "要拷贝的值")],
-    returns: "深拷贝后的新值（与原值不共享引用）",
+    returns: "深拷贝后的新值（与原值不共享引用；原型 proto 按引用共享）",
     examples: &[
         "var a = [1, [2, 3]]",
         "var b = deepClone(a)    // 修改 b 不影响 a",
     ],
-    errors: &[],
+    errors: &["嵌套深度超过 200 层返回错误（可能存在自引用/循环引用）"],
 };
 
 static DOC_COMPILE: BuiltinDoc = BuiltinDoc {
@@ -393,6 +405,25 @@ static DOC_PL: BuiltinDoc = BuiltinDoc {
     returns: "undefined",
     examples: &["pl(\"hello %d\", 42)  // 输出 hello 42 并换行"],
     errors: &[],
+};
+
+static DOC_FATALF: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "fatalf(fmt, args...) -> !",
+    summary: "格式化输出错误信息到 stderr 并以退出码 1 终止进程。",
+    params: &[
+        ("fmt", "格式字符串（占位符同 printf）"),
+        ("args", "对应占位符的参数（可变）"),
+    ],
+    returns: "不返回（进程以退出码 1 终止）",
+    examples: &[
+        "fatalf(\"invalid token\")",
+        "fatalf(\"failed to remove [%v] %v: %v\", i, path, err)",
+    ],
+    errors: &[
+        "信息会输出到 stderr（而非 stdout），便于与正常输出分流",
+        "面向 AI 排错：格式串中尽量带上相关参数值与上下文",
+    ],
 };
 
 static DOC_FPR: BuiltinDoc = BuiltinDoc {
@@ -728,14 +759,14 @@ static DOC_ADJUST_FLOAT: BuiltinDoc = BuiltinDoc {
     summary: "消除浮点计算精度误差，按指定精度四舍五入（默认 10 位）。",
     params: &[
         ("x", "浮点数"),
-        ("prec", "可选。小数位数，默认 10"),
+        ("prec", "可选。小数位数，默认 10，范围 0..1000"),
     ],
     returns: "float 调整后的浮点数",
     examples: &[
         "adjustFloat(0.1 + 0.2)       // 0.3（消除精度误差）",
         "adjustFloat(3.14159, 2)      // 3.14",
     ],
-    errors: &["解析失败返回错误"],
+    errors: &["解析失败返回错误", "精度参数超出 0..1000 返回错误"],
 };
 
 // ---- 类型判断 ----
@@ -773,7 +804,7 @@ static DOC_IS_TYPE: BuiltinDoc = BuiltinDoc {
 static DOC_IS_TYPE_CODE: BuiltinDoc = BuiltinDoc {
     category: "core",
     signature: "isTypeCode(v, code) -> bool",
-    summary: "按类型数字编码判断值类型（编码见 typeCode，0-19）。",
+    summary: "按类型数字编码判断值类型（编码见 typeCode，0-22）。",
     params: &[
         ("v", "任意值"),
         ("code", "类型编码整数（详见 typeCode）"),
@@ -1016,7 +1047,7 @@ static DOC_GET_PARAM: BuiltinDoc = BuiltinDoc {
     summary: "从参数数组取第 index 个元素，不存在则返回 default（或 undefined）。",
     params: &[
         ("args", "参数数组（如 argsG）"),
-        ("index", "位置索引（int）"),
+        ("index", "位置索引（int，从 0 开始，不能为负）"),
         ("default", "可选。缺省时返回的默认值"),
     ],
     returns: "对应位置参数；不存在返回 default 或 undefined",
@@ -1024,7 +1055,7 @@ static DOC_GET_PARAM: BuiltinDoc = BuiltinDoc {
         "getParam(argsG, 0)               // 第一个参数",
         "getParam(argsG, 2, \"fallback\")    // 越界返回 \"fallback\"",
     ],
-    errors: &[],
+    errors: &["index 为负数返回错误"],
 };
 
 static DOC_GET_SWITCH: BuiltinDoc = BuiltinDoc {
@@ -1094,7 +1125,7 @@ static DOC_RANDOM_STR: BuiltinDoc = BuiltinDoc {
     examples: &[
         "randomStr(8)  // 如 \"aB3xK9mN\"",
     ],
-    errors: &["长度为负返回错误"],
+    errors: &["长度为负或超过 1000000 返回错误"],
 };
 
 static DOC_PASS: BuiltinDoc = BuiltinDoc {
@@ -1236,6 +1267,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("prf", bi_printf, &DOC_PRF);
     vm.register_builtin_doc("printfln", bi_printfln, &DOC_PRINTFLN);
     vm.register_builtin_doc("pl", bi_printfln, &DOC_PL);
+    vm.register_builtin_doc("fatalf", bi_fatalf, &DOC_FATALF);
     vm.register_builtin_doc("len", bi_len, &DOC_LEN);
     vm.register_builtin_doc("keys", bi_keys, &DOC_KEYS);
     vm.register_builtin_doc("push", bi_push, &DOC_PUSH);
@@ -1371,6 +1403,18 @@ fn bi_printfln(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let out = _vm.output_handle();
     writeln!(out.lock().unwrap(), "{}", s).map_err(|e| crate::value::error_value(e.to_string()))?;
     Ok(Value::Undefined)
+}
+
+/// bi_fatalf 格式化输出错误信息到 stderr 并以退出码 1 终止进程。
+///
+/// 用法：fatalf("invalid token")
+///       fatalf("failed to remove [%v] %v: %v", i, path, err)
+/// 与 printfln 的区别：输出走 stderr（与正常输出分流），且进程立即以
+/// 退出码 1 终止（不触发 defer，与 exit(1) 一致）。
+fn bi_fatalf(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = sprintf(args)?;
+    eprintln!("{}", s);
+    std::process::exit(1);
 }
 
 /// sprintf 格式化核心：args[0] 为格式串，args[1..] 为占位符实参。
@@ -1524,7 +1568,7 @@ fn format_value(verb: char, v: &Value, flags: &str, width: &str, precision: Opti
             return Ok(format!("%{}{}{}{}", flags, width, prec_str, verb));
         }
     };
-    Ok(apply_width(body, flags, width, verb == 's' || verb == 'v'))
+    Ok(apply_width(body, flags, width, verb == 's' || verb == 'v')?)
 }
 
 /// format_float 按精度格式化浮点（%.2f 等）。
@@ -1539,17 +1583,27 @@ fn format_float(verb: char, f: f64, precision: Option<&str>) -> String {
 }
 
 /// apply_width 应用宽度与对齐（- 左对齐，否则右对齐，0 填充对数值）。
-fn apply_width(body: String, flags: &str, width: &str, is_string_like: bool) -> String {
-    let w: usize = match width.parse() { Ok(n) => n, Err(_) => return body };
+///
+/// width 超过 MAX_FORMAT_WIDTH 返回错误，防止 sprintf("%999999999d", 1) 类调用
+/// 触发超大内存分配（OOM）。
+fn apply_width(body: String, flags: &str, width: &str, is_string_like: bool) -> Result<String, Value> {
+    /// MAX_FORMAT_WIDTH 格式化宽度上限（100 万字符）。
+    const MAX_FORMAT_WIDTH: usize = 1_000_000;
+    let w: usize = match width.parse() { Ok(n) => n, Err(_) => return Ok(body) };
+    if w > MAX_FORMAT_WIDTH {
+        return Err(crate::value::error_value(format!(
+            "格式化宽度 {} 超过上限 {} (可能原因：误把其他数值当作宽度参数传入)", w, MAX_FORMAT_WIDTH,
+        )));
+    }
     if w == 0 || body.chars().count() >= w {
-        return body;
+        return Ok(body);
     }
     let pad = w - body.chars().count();
     let fill = if flags.contains('0') && !is_string_like { '0' } else { ' ' };
     if flags.contains('-') {
-        format!("{}{}", body, " ".repeat(pad))
+        Ok(format!("{}{}", body, " ".repeat(pad)))
     } else {
-        format!("{}{}", fill.to_string().repeat(pad), body)
+        Ok(format!("{}{}", fill.to_string().repeat(pad), body))
     }
 }
 
@@ -1719,18 +1773,37 @@ fn bi_range(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if step == 0 {
         return Err(crate::value::error_value("range() step 不能为 0"));
     }
-    let mut v = Vec::new();
+    // 元素数量上限：防止误传超大跨度（如 range(0, 1<<60)）导致内存耗尽
+    const MAX_RANGE_LEN: usize = 1_000_000;
+    let mut v: Vec<Value> = Vec::new();
     if step > 0 {
         let mut i = start;
         while i < end {
+            if v.len() >= MAX_RANGE_LEN {
+                return Err(crate::value::error_value(
+                    "range() 元素过多（超过 1000000 上限; 可能原因：跨度过大，请减少跨度或使用步长）",
+                ));
+            }
             v.push(Value::Int(i));
-            i += step;
+            // checked_add 防止 i + step 溢出（溢出时 i 回绕可能仍 < end 导致死循环）
+            match i.checked_add(step) {
+                Some(next) => i = next,
+                None => break,
+            }
         }
     } else {
         let mut i = start;
         while i > end {
+            if v.len() >= MAX_RANGE_LEN {
+                return Err(crate::value::error_value(
+                    "range() 元素过多（超过 1000000 上限; 可能原因：跨度过大，请减少跨度或使用步长）",
+                ));
+            }
             v.push(Value::Int(i));
-            i += step;
+            match i.checked_add(step) {
+                Some(next) => i = next,
+                None => break,
+            }
         }
     }
     Ok(Value::Array(Arc::new(Mutex::new(v))))
@@ -1752,7 +1825,6 @@ fn bi_assert(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Undefined)
 }
 
-/// bi_sleep 睡眠（毫秒）。
 /// bi_sleep 睡眠指定秒数（支持小数）。
 ///
 /// 用法：sleep(1.5) — 睡眠 1.5 秒
@@ -1761,7 +1833,16 @@ fn bi_sleep(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         return Err(crate::value::error_value("sleep() 需要 1 个参数 (秒)"));
     }
     let secs = args[0].to_f64().ok_or_else(|| crate::value::error_value("sleep() 参数需为数字"))?;
-    let dur = std::time::Duration::from_secs_f64(secs.max(0.0));
+    // 校验时长：inf/NaN/负数会使 Duration::from_secs_f64 panic 或无意义；
+    // 上限一年，防止误传超大值导致进程长期挂起
+    const MAX_SLEEP_SECS: f64 = 86400.0 * 365.0;
+    if !secs.is_finite() || secs < 0.0 || secs > MAX_SLEEP_SECS {
+        return Err(crate::value::error_value(format!(
+            "sleep() 时长参数非法: {} (需为 0..{} 的有限数字; 可能原因：传入了 inf/NaN/负数或超大值)",
+            args[0].inspect(), MAX_SLEEP_SECS,
+        )));
+    }
+    let dur = std::time::Duration::from_secs_f64(secs);
     std::thread::sleep(dur);
     Ok(Value::Undefined)
 }
@@ -2344,18 +2425,78 @@ fn lev(a: &str, b: &str) -> usize {
 
 /// bi_uuid 生成 UUID v4 字符串（如 "550e8400-e29b-41d4-a716-446655440000"）。
 ///
-/// 用随机数填充（randInt 已有的 xorshift），版本位设为 4，变体位设为 RFC 4122。
+/// 版本位设为 4，变体位设为 RFC 4122。
+/// 随机源：进程内一次性初始化的安全种子（混合多种熵源），之后每次调用
+/// 通过 AtomicU64 计数器 + splitmix64 派生（线程安全，无跨进程重复问题）。
 fn bi_uuid(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
     use std::sync::atomic::{AtomicU64, Ordering};
-    static SEED: AtomicU64 = AtomicU64::new(0x1234_5678_9ABC_DEF0);
-    let next = || {
-        let mut s = SEED.load(Ordering::Relaxed);
-        s ^= s << 13;
-        s ^= s >> 7;
-        s ^= s << 17;
-        SEED.store(s, Ordering::Relaxed);
-        s
+
+    /// SEED 全局随机状态：Once 保证进程内只初始化一次。
+    ///
+    /// 种子混合多路熵源（时间、线程 id、RandomState 的 OS 随机、进程 id、地址布局），
+    /// 避免旧实现固定常量 0x1234_5678_9ABC_DEF0 导致的跨进程首值相同问题。
+    static SEED: AtomicU64 = AtomicU64::new(0);
+    static INIT: std::sync::Once = std::sync::Once::new();
+
+    /// splitmix64 混合函数：把线性计数器值打散成分布均匀的伪随机数。
+    fn splitmix64(x: u64) -> u64 {
+        let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// collect_entropy 收集多路熵源并混合为一个 u64 种子。
+    ///
+    /// RandomState 内部使用操作系统提供的随机种子（每次构造都不同），
+    /// 是这里的主要熵源；其余源用于兜底与增强（时间、线程 id、进程 id、堆地址）。
+    fn collect_entropy() -> u64 {
+        use std::collections::hash_map::RandomState;
+        use std::hash::{BuildHasher, Hasher};
+
+        let mut seed: u64 = 0;
+
+        // 熵源 1：系统时间（纳秒 + 秒，启动时刻几乎不可能重复）
+        if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            seed ^= splitmix64(now.as_nanos() as u64);
+            seed = splitmix64(seed ^ now.as_secs());
+        }
+
+        // 熵源 2：当前线程 id 的 Debug 哈希（区分并发初始化场景）
+        {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            use std::hash::Hash;
+            format!("{:?}", std::thread::current().id()).hash(&mut h);
+            seed ^= h.finish();
+        }
+
+        // 熵源 3：RandomState 哈希一个固定计数器（RandomState 内部含 OS 随机种子）
+        {
+            let mut h = RandomState::new().build_hasher();
+            h.write_u64(0x5F1A_CA11_2026_0827); // 任意固定值即可，随机性来自 RandomState 本身
+            seed ^= h.finish();
+        }
+
+        // 熵源 4：进程 id
+        seed ^= splitmix64(std::process::id() as u64);
+
+        // 熵源 5：种子变量自身的堆地址（ASLR 带来的布局差异）
+        seed ^= splitmix64(&seed as *const u64 as u64);
+
+        splitmix64(seed)
+    }
+
+    // 进程内一次性初始化种子（Once 保证并发下也只执行一次）
+    INIT.call_once(|| {
+        SEED.store(collect_entropy(), Ordering::Relaxed);
+    });
+
+    // 每次调用：原子递增计数再混合，保证并发下取值不重复、线程安全
+    let next = || -> u64 {
+        let c = SEED.fetch_add(1, Ordering::Relaxed);
+        splitmix64(c ^ 0xA5A5_5A5A_DEAD_BEEF)
     };
+
     // 生成 16 字节
     let mut bytes = [0u8; 16];
     for chunk in bytes.chunks_mut(8) {
@@ -2377,9 +2518,16 @@ fn bi_uuid(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
 /// bi_random_str 生成长度为 n 的随机字母数字字符串。
 fn bi_random_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
+    /// RANDOM_STR_MAX_LEN 长度上限（100 万字符），防止误传超大 n 导致内存耗尽。
+    const RANDOM_STR_MAX_LEN: i64 = 1_000_000;
     let n = bh::as_int(args, 0, "randomStr")?;
     if n < 0 {
         return Err(crate::value::error_value("randomStr() 长度不能为负"));
+    }
+    if n > RANDOM_STR_MAX_LEN {
+        return Err(crate::value::error_value(format!(
+            "randomStr() 长度 {} 超过上限 {} (可能原因：误传了过大的长度值)", n, RANDOM_STR_MAX_LEN,
+        )));
     }
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut out = String::with_capacity(n as usize);
@@ -2390,7 +2538,7 @@ fn bi_random_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::str_from(out))
 }
 
-/// bi_values 返回 object 的所有值（array）。
+/// bi_values 返回 object/map 的所有值（array）。
 fn bi_values(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
     bh::require_arg(args, 0, "values")?;
@@ -2399,9 +2547,19 @@ fn bi_values(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             let vals: Vec<Value> = o.lock().unwrap().snapshot().into_iter().map(|(_, v)| v).collect();
             Ok(Value::Array(std::sync::Arc::new(std::sync::Mutex::new(vals))))
         }
-        Value::Array(a) => Ok(Value::Array(a.clone())), // 数组的 values 即自身
+        Value::Map(m) => {
+            // 有序 Map：返回值的快照数组（顺序与 keys() 一致，按插入顺序）
+            let vals: Vec<Value> = m.lock().unwrap().snapshot().into_iter().map(|(_, v)| v).collect();
+            Ok(Value::Array(std::sync::Arc::new(std::sync::Mutex::new(vals))))
+        }
+        Value::Array(a) => {
+            // 数组：返回元素快照拷贝（不能只克隆 Arc，否则修改"副本"会影响原数组）
+            let snap: Vec<Value> = a.lock().unwrap().clone();
+            Ok(Value::Array(std::sync::Arc::new(std::sync::Mutex::new(snap))))
+        }
         _ => Err(crate::value::error_value(format!(
-            "values() 需要 object 或 array，得到 {}", args[0].type_name(),
+            "values() 第 1 个参数应为 object 或 map（array 亦可），得到 {} (可能原因：参数类型错误)",
+            args[0].type_name(),
         ))),
     }
 }
@@ -2419,11 +2577,11 @@ fn bi_has_key(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
 }
 
-/// bi_deep_clone 深拷贝值（递归复制 array/object/byteArray）。
+/// bi_deep_clone 深拷贝值（递归复制 array/object/map/byteArray）。
 fn bi_deep_clone(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
     bh::require_arg(args, 0, "deepClone")?;
-    Ok(deep_clone_value(&args[0]))
+    deep_clone_value(&args[0], 0)
 }
 
 /// bi_new_object 创建以 proto 为原型的空 object（暴露原型链到脚本层，用于方法共享）。
@@ -2433,26 +2591,59 @@ fn bi_new_object(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Object(crate::object_map::new_map_with_proto(proto.clone())))
 }
 
+/// DEEP_CLONE_MAX_DEPTH 深拷贝最大递归深度（与 jsonEncode 的深度上限策略一致，防自引用无限递归导致栈溢出）。
+const DEEP_CLONE_MAX_DEPTH: usize = 200;
+
 /// deep_clone_value 递归克隆（内部辅助）。
-fn deep_clone_value(v: &Value) -> Value {
+///
+/// depth 为当前嵌套深度，超过 DEEP_CLONE_MAX_DEPTH 返回错误
+/// （自引用/循环引用结构无法深拷贝，需先解引用）。
+fn deep_clone_value(v: &Value, depth: usize) -> Result<Value, Value> {
+    if depth > DEEP_CLONE_MAX_DEPTH {
+        return Err(crate::value::error_value(format!(
+            "deepClone() 嵌套深度超过 {} 层 (可能原因：数据存在自引用/循环引用，无法深拷贝)",
+            DEEP_CLONE_MAX_DEPTH,
+        )));
+    }
     match v {
         Value::Array(a) => {
-            let cloned: Vec<Value> = a.lock().unwrap().iter().map(deep_clone_value).collect();
-            Value::Array(std::sync::Arc::new(std::sync::Mutex::new(cloned)))
+            // 先取浅快照并释放锁再递归：避免自引用数组在递归中重复加锁导致死锁
+            let snap: Vec<Value> = a.lock().unwrap().clone();
+            let cloned: Vec<Value> = snap
+                .iter()
+                .map(|x| deep_clone_value(x, depth + 1))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Value::Array(std::sync::Arc::new(std::sync::Mutex::new(cloned))))
         }
         Value::Object(o) => {
-            let snap = o.lock().unwrap().snapshot();
-            let mut new_map = crate::object_map::Map::new();
+            let guard = o.lock().unwrap();
+            // snapshot 只含自身成员，原型链需单独复制引用（原型按引用共享，不深拷贝）
+            let snap = guard.snapshot();
+            let proto = guard.proto.clone();
+            drop(guard); // 释放锁再递归（防自引用死锁）
+            let mut new_map = match proto {
+                Some(p) => crate::object_map::Map::with_proto(p),
+                None => crate::object_map::Map::new(),
+            };
             for (k, val) in snap {
-                new_map.set(k, deep_clone_value(&val));
+                new_map.set(k, deep_clone_value(&val, depth + 1)?);
             }
-            Value::Object(std::sync::Arc::new(std::sync::Mutex::new(new_map)))
+            Ok(Value::Object(std::sync::Arc::new(std::sync::Mutex::new(new_map))))
+        }
+        Value::Map(m) => {
+            // 有序 Map 深拷贝：snapshot 后递归克隆每个值（不能只克隆 Arc 指针）
+            let snap = m.lock().unwrap().snapshot();
+            let mut new_map = crate::ord_map::OrdMap::new();
+            for (k, val) in snap {
+                new_map.set(k, deep_clone_value(&val, depth + 1)?);
+            }
+            Ok(Value::Map(std::sync::Arc::new(std::sync::Mutex::new(new_map))))
         }
         Value::ByteArray(b) => {
             let cloned = b.lock().unwrap().clone();
-            Value::ByteArray(std::sync::Arc::new(std::sync::Mutex::new(cloned)))
+            Ok(Value::ByteArray(std::sync::Arc::new(std::sync::Mutex::new(cloned))))
         }
-        other => other.clone(), // 不可变值（int/string/bytes 等）直接 clone
+        other => Ok(other.clone()), // 不可变值（int/string/bytes 等）直接 clone
     }
 }
 
@@ -2521,7 +2712,14 @@ fn bi_adjust_float(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
     let x = bh::as_float(args, 0, "adjustFloat")?;
     let prec = if args.len() > 1 {
-        bh::as_int(args, 1, "adjustFloat")? as usize
+        let p = bh::as_int(args, 1, "adjustFloat")?;
+        // 校验精度范围：负数经 as usize 会变成巨大值，format!("{:.*}") 会尝试分配超大缓冲
+        if p < 0 || p > 1000 {
+            return Err(crate::value::error_value(format!(
+                "adjustFloat() 精度参数需为 0..1000，得到 {} (可能原因：误传了负数或过大的精度值)", p,
+            )));
+        }
+        p as usize
     } else {
         10
     };
@@ -2559,7 +2757,18 @@ fn bi_get_param(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         Value::Array(a) => a,
         _ => return Ok(args.get(2).cloned().unwrap_or(Value::Undefined)),
     };
-    let idx = if args.len() > 1 { bh::as_int(args, 1, "getParam")? as usize } else { 0 };
+    let idx = if args.len() > 1 {
+        let i = bh::as_int(args, 1, "getParam")?;
+        // 负索引不应静默吞掉（as usize 会回绕成巨大值，结果变成"越界返回默认值"）
+        if i < 0 {
+            return Err(crate::value::error_value(format!(
+                "getParam() 索引不能为负数，得到 {} (可能原因：索引计算错误；参数从 0 开始计数)", i,
+            )));
+        }
+        i as usize
+    } else {
+        0
+    };
     let guard = arr.lock().unwrap();
     Ok(guard.get(idx).cloned().unwrap_or_else(|| {
         args.get(2).cloned().unwrap_or(Value::Undefined)
@@ -2727,7 +2936,15 @@ fn bi_to_kmg(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
     let n = bh::as_float(args, 0, "toKMG")?;
     let decimals = match args.get(1) {
-        Some(Value::Int(d)) => *d as usize,
+        Some(Value::Int(d)) => {
+            // 校验小数位范围：负数经 as usize 会变成巨大值，导致 format 分配超大缓冲
+            if *d < 0 || *d > 1000 {
+                return Err(crate::value::error_value(format!(
+                    "toKMG() 小数位参数需为 0..1000，得到 {} (可能原因：误传了负数或过大的精度值)", d,
+                )));
+            }
+            *d as usize
+        }
         _ => 2,
     };
     let units = ["", "K", "M", "G", "T", "P"];

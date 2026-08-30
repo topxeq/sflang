@@ -46,7 +46,8 @@ impl DateTime {
     ///
     /// tz_offset 为时区偏移（分钟）。秒可为小数（含毫秒），但此处取整毫秒。
     pub fn from_components(year: i32, month: i32, day: i32, hour: i32, min: i32, sec: i32, millis: i32, tz_offset: i32) -> Option<Self> {
-        // 校验范围
+        // 校验范围（年份限 1-9999：与 4 位年份布局一致，且保证内部毫秒运算不溢出）
+        if !(1..=9999).contains(&year) { return None; }
         if !(1..=12).contains(&month) { return None; }
         if !(1..=31).contains(&day) { return None; }
         if !(0..=23).contains(&hour) { return None; }
@@ -95,20 +96,23 @@ impl DateTime {
         d
     }
     /// hour 时（0-23）。
+    ///
+    /// 1970 前的时间戳（local_millis 为负）必须用 div_euclid/rem_euclid：
+    /// 截断除法 `/` 与 `%` 对负数向零取整，会得到负的时/分/秒（如 -1）。
     pub fn hour(&self) -> i32 {
-        (self.local_millis() / MILLIS_PER_HOUR % 24) as i32
+        (self.local_millis().div_euclid(MILLIS_PER_HOUR).rem_euclid(24)) as i32
     }
-    /// minute 分（0-59）。
+    /// minute 分（0-59）。同 hour，用欧几里得除法保证负时间戳正确。
     pub fn minute(&self) -> i32 {
-        (self.local_millis() / MILLIS_PER_MINUTE % 60) as i32
+        (self.local_millis().div_euclid(MILLIS_PER_MINUTE).rem_euclid(60)) as i32
     }
-    /// second 秒（0-59）。
+    /// second 秒（0-59）。同 hour，用欧几里得除法保证负时间戳正确。
     pub fn second(&self) -> i32 {
-        (self.local_millis() / 1000 % 60) as i32
+        (self.local_millis().div_euclid(1000).rem_euclid(60)) as i32
     }
-    /// millis 毫秒部分（0-999）。
+    /// millis 毫秒部分（0-999）。rem_euclid 保证负时间戳得到 0-999（如 -1ms → 999）。
     pub fn millis_part(&self) -> i32 {
-        (self.local_millis() % 1000) as i32
+        (self.local_millis().rem_euclid(1000)) as i32
     }
     /// weekday 星期几（0=周日，1=周一...6=周六；对齐 Go）。
     pub fn weekday(&self) -> i32 {
@@ -130,17 +134,26 @@ impl DateTime {
         civil_from_days(days)
     }
 
-    /// add_millis 加毫秒，返回新 DateTime（时区不变）。
-    pub fn add_millis(&self, n: i64) -> Self {
-        DateTime { millis: self.millis + n, tz_offset: self.tz_offset }
+    /// add_millis 加毫秒，返回新 DateTime（时区不变）。结果溢出 i64 时返回 Err。
+    pub fn add_millis(&self, n: i64) -> Result<Self, String> {
+        let millis = self.millis.checked_add(n).ok_or_else(|| format!(
+            "datetime 加毫秒溢出: {} + {} 超出 int 范围 (可能原因：参数过大)", self.millis, n,
+        ))?;
+        Ok(DateTime { millis, tz_offset: self.tz_offset })
     }
-    /// add_seconds 加秒。
-    pub fn add_seconds(&self, n: i64) -> Self {
-        self.add_millis(n * 1000)
+    /// add_seconds 加秒。换算为毫秒时溢出或结果溢出均返回 Err。
+    pub fn add_seconds(&self, n: i64) -> Result<Self, String> {
+        let ms = n.checked_mul(1000).ok_or_else(|| format!(
+            "datetime 加秒溢出: {} 秒无法换算为毫秒 (可能原因：参数过大)", n,
+        ))?;
+        self.add_millis(ms)
     }
-    /// add_days 加天。
-    pub fn add_days(&self, n: i64) -> Self {
-        self.add_millis(n * MILLIS_PER_DAY)
+    /// add_days 加天。换算为毫秒时溢出或结果溢出均返回 Err。
+    pub fn add_days(&self, n: i64) -> Result<Self, String> {
+        let ms = n.checked_mul(MILLIS_PER_DAY).ok_or_else(|| format!(
+            "datetime 加天数溢出: {} 天无法换算为毫秒 (可能原因：参数过大)", n,
+        ))?;
+        self.add_millis(ms)
     }
 
     /// add_date 加减年月日（日历运算，处理月份进位与闰年）。
@@ -150,8 +163,8 @@ impl DateTime {
     ///   - day 按目标月份的最大天数截断（如 1月31日 +1月 → 2月28/29日）
     ///   - 再用 add_days 叠加 days 参数（days 可为负）
     ///
-    /// 返回新 DateTime（时区偏移不变）。
-    pub fn add_date(&self, years: i32, months: i32, days: i64) -> Self {
+    /// 返回新 DateTime（时区偏移不变）；days 溢出时返回 Err。
+    pub fn add_date(&self, years: i32, months: i32, days: i64) -> Result<Self, String> {
         let (y0, m0, d0) = self.date_part();
         let h = self.hour();
         let mi = self.minute();
@@ -271,13 +284,15 @@ fn utf8_char_len(b: u8) -> usize {
 /// days_from_civil 公历年月日 → Unix 天数（Howard Hinnant 算法，O(1)）。
 ///
 /// 1970-01-01 对应 719468。正确处理闰年（公历规则：4年闰/100年不闰/400年闰）。
+/// 内部全程用 i64 运算，避免极端年份（i32 边界附近）时 y-1、y-399 等中间量溢出。
 fn days_from_civil(y: i32, m: i32, d: i32) -> i64 {
+    let y = y as i64;
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as i64;
+    let yoe = y - era * 400; // 纪元内年份偏移，恒在 [0, 399]
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) as i64 + 2) / 5 + d as i64 - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era as i64 * 146097 + doe - 719468
+    era * 146097 + doe - 719468
 }
 
 /// civil_from_days Unix 天数 → 公历 (年, 月, 日)（Howard Hinnant 算法，O(1)）。
@@ -324,20 +339,176 @@ fn month_name(m: i32) -> &'static str {
     names[(m as usize - 1) % 12]
 }
 
-/// local_tz_offset_minutes 估算本地时区偏移（分钟）。
+/// local_tz_offset_minutes 获取本地时区偏移（分钟，相对 UTC，如北京 +480、UTC 为 0）。
 ///
-/// 用 SystemTime + 本地秒数与 UTC 秒数的差估算。纯标准库实现。
-fn local_tz_offset_minutes() -> i32 {
-    // 用 chrono 之外的简单估算：取当前 UTC 秒数与本地"墙钟"秒数的差。
-    // 标准库无直接时区 API，这里用一个近似：基于 system time 计算本地与 UTC 偏移。
-    // 简化：默认 0（UTC）。后续可由宿主/用户通过 datetime 函数的 tz 参数指定。
-    // 注：标准库无跨平台获取本地时区的可靠 API，故默认 UTC，由用户显式传时区。
-    0
+/// 纯标准库实现：
+///   - Windows：GetTimeZoneInformation API（含夏令时/标准时状态修正）
+///   - Unix（Linux/macOS）：解析 /etc/localtime（TZif 格式，RFC 8536），
+///     取当前时刻生效的偏移
+/// 获取失败时回退 0（UTC），不产生错误（调用方无须处理失败分支）。
+pub fn local_tz_offset_minutes() -> i32 {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    local_tz_offset_minutes_at(now_secs)
+}
+
+/// local_tz_offset_minutes_at 获取指定时刻的本地时区偏移（分钟）。
+///
+/// 拆出时刻参数便于按历史夏令时切换测试（TZif 含历史转换记录）。
+fn local_tz_offset_minutes_at(now_secs: i64) -> i32 {
+    #[cfg(windows)]
+    {
+        // Windows API 直接返回当前生效的时区状态，无须时刻参数
+        let _ = now_secs;
+        windows_tz_offset_minutes()
+    }
+    #[cfg(unix)]
+    {
+        std::fs::read("/etc/localtime")
+            .ok()
+            .and_then(|data| parse_tzif_offset(&data, now_secs))
+            .unwrap_or(0)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = now_secs;
+        0
+    }
+}
+
+/// windows_tz_offset_minutes 通过 Windows API 获取当前本地时区偏移（分钟）。
+#[cfg(windows)]
+fn windows_tz_offset_minutes() -> i32 {
+    use windows_sys::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+    // SAFETY：GetTimeZoneInformation 只写入调用方提供的缓冲区，无其他副作用
+    unsafe {
+        let mut tzi: TIME_ZONE_INFORMATION = std::mem::zeroed();
+        let state = GetTimeZoneInformation(&mut tzi);
+        // Bias 语义：UTC = 本地 + Bias（即"本地比 UTC 慢多少分钟"，西半球为正），
+        // 故本地相对 UTC 的偏移 = -Bias；标准时/夏令时生效时再叠加对应 Bias。
+        let mut bias = tzi.Bias;
+        // 返回值：0=UNKNOWN 1=STANDARD 2=DAYLIGHT
+        if state == 1 {
+            bias += tzi.StandardBias;
+        } else if state == 2 {
+            bias += tzi.DaylightBias;
+        }
+        -bias
+    }
+}
+
+/// parse_tzif_offset 解析 TZif 时区文件内容（RFC 8536），返回 now_secs 时刻生效的
+/// UTC 偏移（分钟）。
+///
+/// 兼容要点：
+///   - 文件可能含 v1（32 位转换时间）与 v2/v3（64 位）两个数据块，取最后一个块；
+///     仅 v1 的旧文件则用第一块
+///   - "slim" 格式的现代 tzdata 常无转换记录（timecnt=0），此时回退到
+///     首个非夏令时类型（即标准时偏移）
+///   - 偏移以秒存储，换算为分钟（整除，均为 60 的倍数）
+// 非 Unix 平台该函数仅被单元测试使用（Unix 运行时路径在 cfg(unix) 分支内）
+#[cfg_attr(not(unix), allow(dead_code))]
+fn parse_tzif_offset(data: &[u8], now_secs: i64) -> Option<i32> {
+    // 定位文件中最后一个 "TZif" 魔数（v2+ 双块布局的第二个块；v1 单块文件即第一个）
+    let mut hdr: Option<usize> = None;
+    let mut from = 0usize;
+    while let Some(pos) = find_slice(data, from, b"TZif") {
+        hdr = Some(pos);
+        from = pos + 4;
+    }
+    let hdr = hdr?;
+    if data.len() < hdr + 44 {
+        return None;
+    }
+    // 版本字节决定转换时间宽度：'2'/'3' 为 64 位，其余（含 '\0' = v1）为 32 位
+    let time_size = match data[hdr + 4] {
+        b'2' | b'3' => 8usize,
+        _ => 4usize,
+    };
+    // 头部 6 个大端 u32 计数（RFC 8536 §3.1）
+    let be32 = |off: usize| -> Option<u32> {
+        let b = data.get(off..off + 4)?;
+        Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let isutcnt = be32(hdr + 20)? as usize;
+    let isstdcnt = be32(hdr + 24)? as usize;
+    let leapcnt = be32(hdr + 28)? as usize;
+    let timecnt = be32(hdr + 32)? as usize;
+    let typecnt = be32(hdr + 36)? as usize;
+    let charcnt = be32(hdr + 40)? as usize;
+    if typecnt == 0 {
+        return None;
+    }
+    // 各段起始位置（RFC 8536 §3.2）：转换时间表 → 类型索引表 → 类型信息表 → 其余
+    let trans_start = hdr + 44;
+    let idx_start = trans_start + timecnt * time_size;
+    let types_start = idx_start + timecnt;
+    let rest_start = types_start + typecnt * 6;
+    let rest_size = charcnt
+        + leapcnt * (time_size + 4)
+        + isstdcnt
+        + isutcnt;
+    if data.len() < rest_start + rest_size {
+        return None;
+    }
+    // 遍历转换时间表，找 now_secs 之前最近一次转换对应的类型索引
+    let mut type_idx: Option<usize> = None;
+    for i in 0..timecnt {
+        let t = if time_size == 8 {
+            let b = data.get(trans_start + i * 8..trans_start + i * 8 + 8)?;
+            i64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+        } else {
+            let b = data.get(trans_start + i * 4..trans_start + i * 4 + 4)?;
+            i32::from_be_bytes([b[0], b[1], b[2], b[3]]) as i64
+        };
+        if t <= now_secs {
+            type_idx = Some(*data.get(idx_start + i)? as usize);
+        } else {
+            break;
+        }
+    }
+    // 无适用转换（早于首个转换或无转换记录）：回退到首个非夏令时类型。
+    // 类型项结构为 utoff(4 字节) + isdst(1) + desigidx(1)，isdst 位于项内偏移 4。
+    let type_idx = type_idx.or_else(|| {
+        (0..typecnt).find(|&i| data.get(types_start + i * 6 + 4).copied().unwrap_or(1) == 0)
+    })?;
+    if type_idx >= typecnt {
+        return None;
+    }
+    // 类型信息结构：utoff(i32 大端) + isdst(u8) + desigidx(u8)，取 utoff 换算分钟
+    let b = data.get(types_start + type_idx * 6..types_start + type_idx * 6 + 4)?;
+    let utoff = i32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+    Some(utoff / 60)
+}
+
+/// find_slice 在 data[from..] 中查找子串，返回绝对位置。
+fn find_slice(data: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    if from > data.len() {
+        return None;
+    }
+    data[from..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| p + from)
 }
 
 /// parse 按 Go 风格格式解析字符串为 DateTime。
 ///
-/// 返回解析后的 DateTime（UTC）或错误信息。
+/// 支持的占位符与 format 一致：
+///   2006→年(最多4位)  01→月  02→日  15→时(24h)  04→分  05→秒
+///   .000→毫秒(3位)  .999→毫秒(可变长，可为 0 时整体省略)  -0700→时区(±HHMM)
+///
+/// 规则：
+///   - 布局中的字面字符（含中文等多字节字符）须与输入逐字符精确匹配，
+///     按 UTF-8 字符推进，绝不panic
+///   - 时区占位符先消费可选的 '+'/'-' 符号，再读 4 位数字 HHMM，
+///     按 ±(HH*60+MM) 换算为分钟偏移
+///   - 小数秒占位符中的 '.' 属于布局本身，解析时输入须先有 '.'（.999 可省略）
+///   - 解析结束后要求输入被完全消费，有多余字符返回错误（提示含剩余内容）
+///
+/// 返回解析后的 DateTime（保持解析出的时区偏移）或错误信息。
 pub fn parse(s: &str, fmt: &str) -> Result<DateTime, String> {
     let mut year = 1970i32;
     let mut month = 1i32;
@@ -347,76 +518,179 @@ pub fn parse(s: &str, fmt: &str) -> Result<DateTime, String> {
     let mut second = 0i32;
     let mut millis = 0i32;
     let mut tz_offset = 0i32;
-    let mut si = 0;  // 输入串游标
-    let bytes = fmt.as_bytes();
     let sbytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
+    let fbytes = fmt.as_bytes();
+    let mut si = 0usize; // 输入串游标（字节，始终位于字符边界）
+    let mut i = 0usize;  // 布局游标（字节，始终位于字符边界）
+    while i < fbytes.len() {
         let rest = &fmt[i..];
-        // 数字占位符
-        let (consume, field) = if rest.starts_with("2006") {
-            (4, 4)
-        } else if rest.starts_with(".999") || rest.starts_with(".000") {
-            (4, 5)
+        if rest.starts_with("2006") {
+            year = read_digits(s, &mut si, 1, 4)? as i32;
+            i += 4;
         } else if rest.starts_with("-0700") {
-            (5, 6)
-        } else if rest.starts_with("01") || rest.starts_with("02") || rest.starts_with("15")
-            || rest.starts_with("04") || rest.starts_with("05") {
-            (2, 3)
+            tz_offset = read_tz_offset(s, &mut si)?;
+            i += 5;
+        } else if rest.starts_with(".000") {
+            // 固定 3 位小数秒：布局中的 '.' 须在输入中精确出现
+            expect_char(s, &mut si, b'.')?;
+            millis = read_fraction_millis(s, &mut si)?;
+            i += 4;
+        } else if rest.starts_with(".999") {
+            // 去尾零小数秒：毫秒为 0 时 format 不输出 '.'，故 '.' 与数字整体可选
+            if sbytes.get(si) == Some(&b'.') {
+                si += 1;
+                millis = read_fraction_millis(s, &mut si)?;
+            }
+            i += 4;
+        } else if rest.starts_with("01") {
+            month = read_digits(s, &mut si, 1, 2)? as i32;
+            i += 2;
+        } else if rest.starts_with("02") {
+            day = read_digits(s, &mut si, 1, 2)? as i32;
+            i += 2;
+        } else if rest.starts_with("15") {
+            hour = read_digits(s, &mut si, 1, 2)? as i32;
+            i += 2;
+        } else if rest.starts_with("04") {
+            minute = read_digits(s, &mut si, 1, 2)? as i32;
+            i += 2;
+        } else if rest.starts_with("05") {
+            second = read_digits(s, &mut si, 1, 2)? as i32;
+            i += 2;
         } else {
-            // 字面字符：必须精确匹配
-            if si >= sbytes.len() || sbytes[si] != bytes[i] {
-                return Err(format!("datetimeParse 位置 {} 处期望 '{}'，得到 '{}'",
-                    si, bytes[i] as char, if si < sbytes.len() { sbytes[si] as char } else { 'E' }));
+            // 字面字符：按完整 UTF-8 字符比较并推进（正确处理"年"等多字节字符，
+            // 按字节推进会在 &fmt[i..] 处触发 char boundary panic）
+            let flen = utf8_char_len(fbytes[i]);
+            let fend = (i + flen).min(fbytes.len());
+            let fch = std::str::from_utf8(&fbytes[i..fend]).unwrap_or("\u{FFFD}");
+            if si >= sbytes.len() {
+                return Err(format!(
+                    "datetimeParse 输入提前结束：位置 {} 处仍期望字面字符 \"{}\" (布局 \"{}\"，输入 \"{}\")",
+                    si, fch, fmt, s,
+                ));
             }
-            si += 1;
-            i += 1;
-            continue;
-        };
-        // 解析数字字段
-        let n = read_int(s, &mut si, field)?;
-        match consume {
-            4 if rest.starts_with("2006") => year = n as i32,
-            4 if rest.starts_with(".999") || rest.starts_with(".000") => millis = n as i32,
-            2 if rest.starts_with("01") => month = n as i32,
-            2 if rest.starts_with("02") => day = n as i32,
-            2 if rest.starts_with("15") => hour = n as i32,
-            2 if rest.starts_with("04") => minute = n as i32,
-            2 if rest.starts_with("05") => second = n as i32,
-            5 => {
-                // -0700 时区
-                let sign = if si > 0 && sbytes.get(si.wrapping_sub(1)) == Some(&b'-') { -1 } else { 1 };
-                tz_offset = sign * (n as i32);
+            let slen = utf8_char_len(sbytes[si]);
+            let send = (si + slen).min(sbytes.len());
+            let sch = std::str::from_utf8(&sbytes[si..send]).unwrap_or("\u{FFFD}");
+            if fch != sch {
+                return Err(format!(
+                    "datetimeParse 位置 {} 处期望字面字符 \"{}\"，得到 \"{}\" (布局 \"{}\") (可能原因：布局与输入不匹配，或 s 与 fmt 参数顺序颠倒)",
+                    si, fch, sch, fmt,
+                ));
             }
-            _ => {}
+            si = send;
+            i = fend;
         }
-        i += consume;
+    }
+    // 校验输入被布局完全消费
+    if si != s.len() {
+        return Err(format!(
+            "datetimeParse 输入在位置 {} 处有多余内容 \"{}\"，未被布局 \"{}\" 消费 (可能原因：布局缺少对应占位符)",
+            si, &s[si..], fmt,
+        ));
     }
     DateTime::from_components(year, month, day, hour, minute, second, millis, tz_offset)
-        .ok_or_else(|| format!("datetimeParse 日期非法: {} {} {}-{}-{} {}:{}:{}", s, fmt, year, month, day, hour, minute, second))
+        .ok_or_else(|| format!(
+            "datetimeParse 日期非法: {}-{}-{} {}:{}:{}.{} (布局 \"{}\") (可能原因：字段越界，年份须在 1-9999)",
+            year, month, day, hour, minute, second, millis, fmt,
+        ))
 }
 
-/// read_int 从输入串读取数字（field=4 最多4位，2 最多2位，5 时区4位）。
-fn read_int(s: &str, si: &mut usize, field: i32) -> Result<i64, String> {
+/// read_digits 从输入读取 min..=max 位十进制数字，返回数值。
+///
+/// 实际位数不足 min 时返回错误（含位置信息）。游标仅越过 ASCII 数字，保持字符边界。
+fn read_digits(s: &str, si: &mut usize, min: usize, max: usize) -> Result<i64, String> {
     let bytes = s.as_bytes();
-    let max = match field { 4 => 4, 2 => 2, 5 => 4, _ => 2 };
     let mut n: i64 = 0;
-    let mut count = 0;
-    // 时区字段跳过符号
+    let mut count = 0usize;
     while *si < bytes.len() && count < max {
         let c = bytes[*si];
-        if c.is_ascii_digit() {
-            n = n * 10 + (c - b'0') as i64;
-            *si += 1;
-            count += 1;
-        } else {
-            break;
-        }
+        if !c.is_ascii_digit() { break; }
+        n = n * 10 + (c - b'0') as i64;
+        *si += 1;
+        count += 1;
     }
-    if count == 0 {
-        return Err(format!("datetimeParse 位置 {} 处期望数字", *si));
+    if count < min {
+        return Err(format!(
+            "datetimeParse 位置 {} 处期望 {}-{} 位数字，实际只有 {} 位 (可能原因：布局与输入不匹配)",
+            *si, min, max, count,
+        ));
     }
     Ok(n)
+}
+
+/// expect_char 校验输入当前位置为指定 ASCII 字符并消费它。
+fn expect_char(s: &str, si: &mut usize, c: u8) -> Result<(), String> {
+    if s.as_bytes().get(*si) == Some(&c) {
+        *si += 1;
+        Ok(())
+    } else {
+        let got = char_at(s, *si).unwrap_or("输入已结束".to_string());
+        Err(format!(
+            "datetimeParse 位置 {} 处期望字符 '{}'，得到 \"{}\" (可能原因：布局与输入不匹配)",
+            *si, c as char, got,
+        ))
+    }
+}
+
+/// read_fraction_millis 读取小数秒并换算为毫秒（0-999）。
+///
+/// 位数不足 3 位时右侧补零（如 ".5" = 500 毫秒、".05" = 50 毫秒）；
+/// 超过 3 位时丢弃更低精度（微秒及以下），保证后续布局可继续对齐。
+fn read_fraction_millis(s: &str, si: &mut usize) -> Result<i32, String> {
+    let bytes = s.as_bytes();
+    let mut n: i64 = 0;
+    let mut count = 0usize;
+    while *si < bytes.len() && count < 3 {
+        let c = bytes[*si];
+        if !c.is_ascii_digit() { break; }
+        n = n * 10 + (c - b'0') as i64;
+        *si += 1;
+        count += 1;
+    }
+    if count == 0 {
+        return Err(format!(
+            "datetimeParse 位置 {} 处期望小数秒数字 (可能原因：布局与输入不匹配)",
+            *si,
+        ));
+    }
+    // 位数不足 3 位时补零
+    for _ in count..3 { n *= 10; }
+    // 丢弃微秒及以下的更低精度
+    while *si < bytes.len() && bytes[*si].is_ascii_digit() { *si += 1; }
+    Ok(n as i32)
+}
+
+/// read_tz_offset 读取时区偏移（如 "+0530"/"-0800"）并换算为分钟。
+///
+/// 先消费可选的 '+'/'-' 符号（dtFormat 输出恒带符号），再读 4 位数字 HHMM，
+/// 返回 ±(HH*60+MM)。
+fn read_tz_offset(s: &str, si: &mut usize) -> Result<i32, String> {
+    let bytes = s.as_bytes();
+    let mut sign = 1i64;
+    match bytes.get(*si) {
+        Some(&b'+') => { *si += 1; }
+        Some(&b'-') => { sign = -1; *si += 1; }
+        // 符号可选：无符号按正偏移处理
+        _ => {}
+    }
+    let n = read_digits(s, si, 4, 4)?;
+    let hh = n / 100;
+    let mm = n % 100;
+    if hh > 23 || mm > 59 {
+        return Err(format!(
+            "datetimeParse 时区偏移非法: HH={} MM={} (要求 HH 0-23、MM 0-59)",
+            hh, mm,
+        ));
+    }
+    Ok((sign * (hh * 60 + mm)) as i32)
+}
+
+/// char_at 取字符串中某字节位置起的第一个完整 UTF-8 字符（用于错误信息展示）。
+///
+/// 位置非法（越界或不在字符边界）时返回 None。
+fn char_at(s: &str, pos: usize) -> Option<String> {
+    s.get(pos..).and_then(|rest| rest.chars().next()).map(|ch| ch.to_string())
 }
 
 impl std::fmt::Display for DateTime {
@@ -470,11 +744,40 @@ mod tests {
     #[test]
     fn test_add() {
         let dt = DateTime::from_components(2024, 1, 1, 12, 0, 0, 0, 0).unwrap();
-        let dt2 = dt.add_days(1);
+        let dt2 = dt.add_days(1).unwrap();
         assert_eq!(dt2.format("2006-01-02 15:04:05"), "2024-01-02 12:00:00");
         // 跨月
-        let dt3 = dt.add_days(31);
+        let dt3 = dt.add_days(31).unwrap();
         assert_eq!(dt3.format("2006-01-02"), "2024-02-01");
+        // 溢出返回错误，不 panic
+        assert!(dt.add_days(i64::MAX).is_err());
+        assert!(dt.add_seconds(i64::MAX).is_err());
+        assert!(dt.add_millis(i64::MAX - dt.to_millis() + 1).is_err());
+    }
+
+    #[test]
+    fn test_pre_epoch_components() {
+        // -1 毫秒 = 1969-12-31 23:59:59.999 UTC（修复前各组件为负数）
+        let dt = DateTime::from_millis_utc(-1);
+        assert_eq!((dt.year(), dt.month(), dt.day()), (1969, 12, 31));
+        assert_eq!((dt.hour(), dt.minute(), dt.second()), (23, 59, 59));
+        assert_eq!(dt.millis_part(), 999);
+        assert_eq!(dt.weekday(), 3); // 1969-12-31 是周三
+        assert_eq!(dt.format("2006-01-02 15:04:05.000"), "1969-12-31 23:59:59.999");
+        // 整天：-86400000 = 1969-12-31 00:00:00.000
+        let d2 = DateTime::from_millis_utc(-86_400_000);
+        assert_eq!(d2.format("2006-01-02 15:04:05.000"), "1969-12-31 00:00:00.000");
+        // 与 +1ms 往返：-1ms + 1ms = epoch
+        assert_eq!(dt.add_millis(1).unwrap().to_millis(), 0);
+    }
+
+    #[test]
+    fn test_year_range() {
+        // 年份限 1-9999
+        assert!(DateTime::from_components(0, 1, 1, 0, 0, 0, 0, 0).is_none());
+        assert!(DateTime::from_components(10000, 1, 1, 0, 0, 0, 0, 0).is_none());
+        assert!(DateTime::from_components(1, 1, 1, 0, 0, 0, 0, 0).is_some());
+        assert!(DateTime::from_components(9999, 12, 31, 23, 59, 59, 999, 0).is_some());
     }
 
     #[test]
@@ -485,5 +788,146 @@ mod tests {
         assert_eq!(s, "2024-06-15 14:30:45");
         let dt2 = parse(&s, fmt).unwrap();
         assert_eq!(dt2.format(fmt), s);
+    }
+
+    #[test]
+    fn test_parse_multibyte_literal() {
+        // 中文布局：字面字符按完整 UTF-8 字符匹配（修复前按字节推进会 panic）
+        let dt = parse("2024年06月15日", "2006年01月02日").unwrap();
+        assert_eq!(dt.format("2006-01-02"), "2024-06-15");
+        // 不匹配时返回错误（而非 panic）
+        assert!(parse("2024X06月15日", "2006年01月02日").is_err());
+    }
+
+    #[test]
+    fn test_parse_tz_roundtrip() {
+        // 带符号时区往返：+0530 / -0500
+        for (tz, tz_str) in [(330, "+0530"), (-300, "-0500")] {
+            let fmt = "2006-01-02 15:04:05 -0700";
+            let dt = DateTime::from_components(2024, 6, 15, 14, 30, 45, 0, tz).unwrap();
+            let s = dt.format(fmt);
+            assert_eq!(s, format!("2024-06-15 14:30:45 {}", tz_str));
+            let dt2 = parse(&s, fmt).unwrap();
+            assert_eq!(dt2.to_millis(), dt.to_millis(), "UTC 毫秒应一致");
+            assert_eq!(dt2.tz_offset, tz, "时区偏移应往返一致");
+            assert_eq!(dt2.format(fmt), s);
+        }
+        // UTC（+0000）往返
+        let fmt0 = "2006-01-02 15:04:05 -0700";
+        let dt0 = DateTime::from_components(2024, 6, 15, 14, 30, 45, 0, 0).unwrap();
+        let s0 = dt0.format(fmt0);
+        assert_eq!(s0, "2024-06-15 14:30:45 +0000");
+        assert!(parse(&s0, fmt0).is_ok());
+    }
+
+    #[test]
+    fn test_parse_fraction_roundtrip() {
+        // .000 固定 3 位
+        let fmt = "2006-01-02 15:04:05.000";
+        let dt = DateTime::from_millis_utc(1_704_067_200_123);
+        let s = dt.format(fmt);
+        assert_eq!(s, "2024-01-01 00:00:00.123");
+        let dt2 = parse(&s, fmt).unwrap();
+        assert_eq!(dt2.to_millis(), dt.to_millis());
+        // .999 去尾零：".12" 解析为 120 毫秒
+        let fmt9 = "2006-01-02 15:04:05.999";
+        let dt3 = DateTime::from_millis_utc(120);
+        let s3 = dt3.format(fmt9);
+        assert_eq!(s3, "1970-01-01 00:00:00.12");
+        assert_eq!(parse(&s3, fmt9).unwrap().to_millis(), 120);
+        // .999 毫秒为 0 时整体省略，解析须容忍无 '.' 输入
+        let dt4 = DateTime::from_millis_utc(0);
+        let s4 = dt4.format(fmt9);
+        assert_eq!(s4, "1970-01-01 00:00:00");
+        assert_eq!(parse(&s4, fmt9).unwrap().to_millis(), 0);
+        // 单位补零：".5" = 500 毫秒
+        assert_eq!(parse("1970-01-01 00:00:00.5", fmt9).unwrap().millis_part(), 500);
+    }
+
+    #[test]
+    fn test_parse_rejects_extra_input() {
+        // 多余字符报错，且错误信息包含剩余内容
+        let err = parse("2024-06-15xyz", "2006-01-02").unwrap_err();
+        assert!(err.contains("xyz"), "错误信息应包含剩余内容: {}", err);
+        assert!(parse("2024-06-15 12:00", "2006-01-02").is_err());
+        // 完全消费的输入正常
+        assert!(parse("2024-06-15", "2006-01-02").is_ok());
+    }
+
+    /// build_tzif_v2 构造一个最小的 v2 TZif 缓冲区用于解析测试。
+    ///
+    /// 类型表固定两个：0 号 = 夏令时 UTC+0，1 号 = 标准时 UTC+8（28800 秒）。
+    /// transitions: (转换时刻秒, 指向的类型索引)；typecnt 为类型表条数。
+    fn build_tzif_v2(transitions: &[(i64, usize)], typecnt: usize) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"TZif");
+        buf.push(b'2');
+        buf.extend_from_slice(&[0u8; 15]); // 保留字段
+        let timecnt = transitions.len() as u32;
+        for n in [0u32, 0, 0, timecnt, typecnt as u32, 4] {
+            buf.extend_from_slice(&n.to_be_bytes());
+        }
+        // 转换时间表（64 位）+ 类型索引表
+        for (t, _) in transitions {
+            buf.extend_from_slice(&t.to_be_bytes());
+        }
+        for (_, idx) in transitions {
+            buf.push(*idx as u8);
+        }
+        // 类型信息表：0 号夏令时 UTC+0，1 号标准时 UTC+8（28800 秒）
+        let types: Vec<(i32, u8)> = vec![(0, 1), (28800, 0)];
+        for (utoff, isdst) in &types[..typecnt] {
+            buf.extend_from_slice(&utoff.to_be_bytes());
+            buf.push(*isdst);
+            buf.push(0); // desigidx
+        }
+        buf.extend_from_slice(b"UTC\0"); // charcnt=4 的缩写串区
+        buf
+    }
+
+    #[test]
+    fn test_tzif_after_transition() {
+        // 2024-01-01 起切到 UTC+8 标准时（1 号类型）：其后时刻应取 28800 秒 = +480 分钟
+        let data = build_tzif_v2(&[(1_704_067_200, 1)], 2);
+        assert_eq!(parse_tzif_offset(&data, 1_800_000_000), Some(480));
+    }
+
+    #[test]
+    fn test_tzif_before_first_transition_falls_back() {
+        // 早于首个转换：回退到首个非夏令时类型（1 号 +8h），而非夏令时的 0 号类型
+        let data = build_tzif_v2(&[(1_704_067_200, 1)], 2);
+        assert_eq!(parse_tzif_offset(&data, 1_000), Some(480));
+    }
+
+    #[test]
+    fn test_tzif_slim_no_transitions() {
+        // slim 格式（timecnt=0）：直接回退首个非夏令时类型
+        let data = build_tzif_v2(&[], 2);
+        assert_eq!(parse_tzif_offset(&data, 1_800_000_000), Some(480));
+    }
+
+    #[test]
+    fn test_tzif_dst_type_not_preferred() {
+        // 只有夏令时类型时的回退：没有非夏令时类型可选则返回 None
+        let data = build_tzif_v2(&[], 1);
+        assert_eq!(parse_tzif_offset(&data, 1_800_000_000), None);
+    }
+
+    #[test]
+    fn test_tzif_truncated_rejected() {
+        // 截断的数据返回 None（不 panic）
+        let data = build_tzif_v2(&[(1_704_067_200, 1)], 2);
+        for cut in [10usize, 44, 60, data.len() - 1] {
+            assert_eq!(parse_tzif_offset(&data[..cut], 1_800_000_000), None);
+        }
+        assert_eq!(parse_tzif_offset(b"", 0), None);
+        assert_eq!(parse_tzif_offset(b"TZif3", 0), None);
+    }
+
+    #[test]
+    fn test_local_tz_offset_sane() {
+        // 本地时区偏移应为合法范围（±24h 内），且当前实现不 panic
+        let off = local_tz_offset_minutes();
+        assert!((-24 * 60..=24 * 60).contains(&off), "非法偏移: {}", off);
     }
 }

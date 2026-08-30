@@ -250,7 +250,7 @@ pub fn register(vm: &mut VM) {
 
 /// sort_key 为元素生成可比较的排序键。
 ///
-/// 约定：数字（Int/Float）映射为 (0, f64)；字符串映射为 (1, str)；
+/// 约定：数字映射为 (0, f64)；字符串映射为 (1, str)；
 /// 其他类型映射为 (2, inspect 串)。同类型之间可直接比较，跨类型按组别稳定排序。
 fn sort_key(v: &Value) -> (u8, Option<f64>, String) {
     match v {
@@ -262,14 +262,25 @@ fn sort_key(v: &Value) -> (u8, Option<f64>, String) {
 }
 
 /// compare 按 sort_key 比较，返回 std::cmp::Ordering。
+///
+/// 数字组内 Int 之间走 i64 精确比较（|v| > 2^53 时 f64 会丢精度），
+/// 仅 Int/Float 混比时升 f64；NaN 固定排最后（保证全序，避免与一切"相等"
+/// 破坏排序传递性）。
 fn compare(a: &Value, b: &Value) -> std::cmp::Ordering {
+    // 纯 Int 快路径：i64 精确比较
+    if let (Value::Int(x), Value::Int(y)) = (a, b) {
+        return x.cmp(y);
+    }
     let ka = sort_key(a);
     let kb = sort_key(b);
     ka.0.cmp(&kb.0).then_with(|| {
         if ka.0 == 0 {
-            // 数字组：按 f64 全序比较
-            ka.1.unwrap_or(0.0).partial_cmp(&kb.1.unwrap_or(0.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
+            match (ka.1.unwrap_or(0.0), kb.1.unwrap_or(0.0)) {
+                (x, y) if x.is_nan() && y.is_nan() => std::cmp::Ordering::Equal,
+                (x, _) if x.is_nan() => std::cmp::Ordering::Greater,
+                (_, y) if y.is_nan() => std::cmp::Ordering::Less,
+                (x, y) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+            }
         } else {
             // 字符串/其他组：按字典序
             ka.2.cmp(&kb.2)
@@ -279,12 +290,15 @@ fn compare(a: &Value, b: &Value) -> std::cmp::Ordering {
 
 /// bi_sort 排序（原地，返回排序后的同一数组）。
 ///
-/// 第二个可选参数为布尔值：true 表示降序。
+/// 第二个可选参数为布尔值：true 表示降序。非布尔值报错（此前静默按升序）。
 fn bi_sort(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let arr = bh::as_array(args, 0, "sort")?;
     let descending = match args.get(1) {
+        None | Some(Value::Undefined) => false,
         Some(Value::Bool(b)) => *b,
-        _ => false,
+        Some(v) => return Err(crate::value::error_value(format!(
+            "sort() 第 2 个参数应为 bool（true=降序），得到 {} (可能原因：传了字符串 \"true\" 等非布尔值)", v.type_name(),
+        ))),
     };
     let mut guard = arr.lock().unwrap();
     guard.sort_by(|a, b| {
@@ -306,18 +320,32 @@ fn bi_sort(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///   0   → 相等
 ///   正数 → a 排在 b 后面
 ///
+/// 比较函数抛错或返回非数值时立即中止排序并向上传播错误（此前被静默吞掉，
+/// 拼错函数名的数组会原样返回，掩盖问题）。
+///
 /// 用法：sortByFunc(arr, func(a, b) { return a - b })  // 升序
 fn bi_sort_by_func(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let arr = bh::as_array(args, 0, "sortByFunc")?;
     bh::require_arg(args, 1, "sortByFunc")?;
     let cmp_fn = args[1].clone();
+    // 入口校验比较器是函数（拼错参数名等尽早报错而非静默无操作）
+    if !matches!(cmp_fn, Value::Func(_) | Value::Builtin(_)) {
+        return Err(crate::value::error_value(format!(
+            "sortByFunc() 第 2 个参数应为函数，得到 {} (可能原因：比较器名拼写错误或未定义)", cmp_fn.type_name(),
+        )));
+    }
     // 先克隆快照，逐对调用比较函数，再排序
     // 不能在持锁状态下回调 VM（死锁风险），所以先取快照索引排序
     let snapshot: Vec<Value> = arr.lock().unwrap().clone();
     let n = snapshot.len();
     // 用索引排序避免频繁 clone
     let mut indices: Vec<usize> = (0..n).collect();
-    let result = indices.sort_by(|&i, &j| {
+    // 首个错误记录后停止调用比较器（sort_by 无法中断，用哨兵让后续比较直接 Equal）
+    let mut first_err: Option<Value> = None;
+    indices.sort_by(|&i, &j| {
+        if first_err.is_some() {
+            return std::cmp::Ordering::Equal;
+        }
         let a = snapshot[i].clone();
         let b = snapshot[j].clone();
         match vm.call_function_value(cmp_fn.clone(), vec![a, b]) {
@@ -326,16 +354,26 @@ fn bi_sort_by_func(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
                     Value::Int(x) => x,
                     Value::Float(f) => f as i64,
                     Value::Byte(b) => b as i64,
-                    _ => 0,
+                    other => {
+                        first_err = Some(crate::value::error_value(format!(
+                            "sortByFunc() 比较函数必须返回数值，得到 {} (可能原因：比较器忘写 return 或返回了其他类型)", other.type_name(),
+                        )));
+                        return std::cmp::Ordering::Equal;
+                    }
                 };
                 if r < 0 { std::cmp::Ordering::Less }
                 else if r > 0 { std::cmp::Ordering::Greater }
                 else { std::cmp::Ordering::Equal }
             }
-            Err(_) => std::cmp::Ordering::Equal,
+            Err(e) => {
+                first_err = Some(e);
+                std::cmp::Ordering::Equal
+            }
         }
     });
-    let _ = result;  // sort_by 返回 ()
+    if let Some(e) = first_err {
+        return Err(e);
+    }
     // 按排序后的索引重排数组
     let sorted: Vec<Value> = indices.iter().map(|&i| snapshot[i].clone()).collect();
     let mut guard = arr.lock().unwrap();

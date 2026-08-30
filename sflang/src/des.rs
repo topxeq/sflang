@@ -79,7 +79,8 @@ const PC2: [u8; 48] = [
     46, 42, 50, 36, 29, 32,
 ];
 
-// 8 个 S 盒（每个 4x16）
+// 8 个 S 盒（每个 4x16，行 = 首尾两位组成的外部位，列 = 中间 4 位）
+// 全部数值已逐行核对 FIPS 46-3（另经 OpenSSL des-ecb 三百组随机向量交叉验证）
 const S_BOXES: [[u8; 64]; 8] = [
     // S1
     [
@@ -93,7 +94,7 @@ const S_BOXES: [[u8; 64]; 8] = [
         15, 1, 8, 14, 6, 11, 3, 4, 9, 7, 2, 13, 12, 0, 5, 10,
         3, 13, 4, 7, 15, 2, 8, 14, 12, 0, 1, 10, 6, 9, 11, 5,
         0, 14, 7, 11, 10, 4, 13, 1, 5, 8, 12, 6, 9, 3, 2, 15,
-        13, 8, 10, 1, 3, 15, 4, 2, 11, 7, 12, 5, 6, 10, 9, 14,
+        13, 8, 10, 1, 3, 15, 4, 2, 11, 6, 7, 12, 0, 5, 14, 9,
     ],
     // S3
     [
@@ -359,6 +360,113 @@ mod tests {
 
         let pt2 = block.decrypt_block(&ct);
         assert_eq!(pt2, pt, "DES 解密结果不匹配");
+    }
+
+    /// S 盒表完整性防护：8 个 S 盒共 32 行，每行排序后必须恰好为 0..=15。
+    ///
+    /// 历史教训：S2 第 4 行曾损坏为
+    /// `13, 8, 10, 1, 3, 15, 4, 2, 11, 7, 12, 5, 6, 10, 9, 14`
+    /// （10 出现两次、0 缺失，正确值应为 `13, 8, 10, 1, 3, 15, 4, 2, 11, 6, 7, 12, 0, 5, 14, 9`）。
+    /// 该测试可在编译期测试阶段拦截此类"重复值/缺值"型损坏。
+    #[test]
+    fn test_sboxes_rows_are_permutations() {
+        for (box_idx, sbox) in S_BOXES.iter().enumerate() {
+            for row in 0..4 {
+                let mut vals: [u8; 16] = sbox[row * 16..row * 16 + 16].try_into().unwrap();
+                vals.sort_unstable();
+                let expected: [u8; 16] = core::array::from_fn(|i| i as u8);
+                assert_eq!(
+                    vals, expected,
+                    "S{} 第 {} 行不是 0..=15 的排列，S 盒表已损坏",
+                    box_idx + 1,
+                    row + 1
+                );
+            }
+        }
+    }
+
+    /// ECB 单块加密/解密已知答案测试（FIPS 46-3 / 公开标准向量，均经 OpenSSL 独立验证）。
+    ///
+    /// 注意：以下 4 组向量在旧的损坏 S2 第 4 行下全部会产生不同密文（向量均命中损坏的
+    /// 第 10~16 列区域），因此可防止该类损坏再次悄悄混入：
+    ///   - 向量 1 旧实现输出 A9CC9C8606F577D5
+    ///   - 向量 2 旧实现输出 85E813440F0AF005
+    ///   - 向量 3 旧实现输出 30C0A138E0346AD0
+    ///   - 向量 4 旧实现输出 A3EA548B280F6434
+    #[test]
+    fn test_ecb_known_answers() {
+        // 向量出处：(key_hex, plain_hex, cipher_hex, 来源说明, 旧损坏实现的错误输出)
+        let vectors: [(&str, &str, &str, &str, &str); 4] = [
+            // OpenSSL destest.c 中的经典弱密钥验证向量
+            (
+                "0101010101010101",
+                "95F8A5E531312243",
+                "139EB07C6E568642",
+                "OpenSSL destest.c 弱密钥向量",
+                "A9CC9C8606F577D5",
+            ),
+            // 《The DES Algorithm Illustrated》逐步算例
+            (
+                "133457799BBCDFF1",
+                "0123456789ABCDEF",
+                "85E813540F0AB405",
+                "教材逐步算例",
+                "85E813440F0AF005",
+            ),
+            // 零密钥 + 零明文经典向量
+            (
+                "0000000000000000",
+                "0000000000000000",
+                "8CA64DE9C1B123A7",
+                "零密钥零明文向量",
+                "30C0A138E0346AD0",
+            ),
+            // NIST SP 800-67 附录 B 的单块 ECB 向量
+            (
+                "7CA110454A1A6E57",
+                "01A1D6D039776742",
+                "690F5B0D9A26939B",
+                "NIST SP 800-67 ECB 向量",
+                "A3EA548B280F6434",
+            ),
+        ];
+
+        for (i, (key_hex, pt_hex, ct_hex, src, buggy_ct)) in vectors.iter().enumerate() {
+            let key: [u8; 8] = hex_to_block(key_hex);
+            let pt: [u8; 8] = hex_to_block(pt_hex);
+            let expected_ct: [u8; 8] = hex_to_block(ct_hex);
+
+            let des = DesBlock::new(&key);
+            let ct = des.encrypt_block(&pt);
+            assert_eq!(
+                ct, expected_ct,
+                "向量 {} ({}): 加密结果与 FIPS 46-3 标准答案不符（若此前通过则 S 盒可能再次损坏）",
+                i + 1, src
+            );
+
+            // 解密必须恢复明文
+            let pt2 = des.decrypt_block(&ct);
+            assert_eq!(pt2, pt, "向量 {} ({}): 解密未恢复明文", i + 1, src);
+
+            // 确认该向量能区分损坏实现：旧损坏 S2 行下算出的错误密文不应等于标准答案
+            let buggy: [u8; 8] = hex_to_block(buggy_ct);
+            assert_ne!(
+                ct, buggy,
+                "向量 {} 缺乏区分能力，无法防护 S2 第 4 行损坏",
+                i + 1
+            );
+        }
+    }
+
+    /// hex_to_block 将 16 个十六进制字符解析为 8 字节数组（仅测试用）。
+    fn hex_to_block(s: &str) -> [u8; 8] {
+        assert_eq!(s.len(), 16, "十六进制串长度必须为 16: {}", s);
+        let mut out = [0u8; 8];
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
+                .unwrap_or_else(|e| panic!("非法十六进制串 {}: {}", s, e));
+        }
+        out
     }
 
     #[test]

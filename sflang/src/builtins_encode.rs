@@ -51,6 +51,7 @@ static DOC_BASE64_DECODE: BuiltinDoc = BuiltinDoc {
     errors: &[
         "输入长度（去空白后）须为 4 的倍数，否则报错",
         "含 + / 之外的非法字符会报错；URL-safe 变体请用 base64UrlDecode",
+        "填充字符 = 只允许出现在末尾 1-2 位，出现在中间会报错",
     ],
 };
 
@@ -84,6 +85,7 @@ static DOC_BASE64URL_DECODE: BuiltinDoc = BuiltinDoc {
     ],
     errors: &[
         "含 - _ 以外的非法字符会报错；标准 base64 含 + /，请用 base64Decode",
+        "去除空白/填充后长度除 4 余 1 会报错（可能数据被截断或损坏）",
     ],
 };
 
@@ -210,14 +212,15 @@ fn to_bytes(v: &Value) -> Result<Vec<u8>, Value> {
 
 const B64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// bi_base64_encode 编码为 base64 字符串。
-fn bi_base64_encode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    bh::require_arg(args, 0, "base64Encode")?;
-    let data = to_bytes(&args[0])?;
+/// base64_encode_bytes 将字节序列编码为标准 base64 字符串（含 = 填充）。
+///
+/// 抽成 pub(crate) 供其他模块复用（如 builtins_aes 的 aesEncryptStr），
+/// 保证各处 base64 输出完全一致。
+pub(crate) fn base64_encode_bytes(data: &[u8]) -> String {
     let mut out = Vec::with_capacity((data.len() + 2) / 3 * 4);
     let mut i = 0;
     while i + 3 <= data.len() {
-        let n = ((data[i] as u32) << 16) | ((data[i+1] as u32) << 8) | (data[i+2] as u32);
+        let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8) | (data[i + 2] as u32);
         out.push(B64_TABLE[((n >> 18) & 0x3F) as usize]);
         out.push(B64_TABLE[((n >> 12) & 0x3F) as usize]);
         out.push(B64_TABLE[((n >> 6) & 0x3F) as usize]);
@@ -232,13 +235,21 @@ fn bi_base64_encode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         out.push(b'=');
         out.push(b'=');
     } else if rem == 2 {
-        let n = ((data[i] as u32) << 16) | ((data[i+1] as u32) << 8);
+        let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8);
         out.push(B64_TABLE[((n >> 18) & 0x3F) as usize]);
         out.push(B64_TABLE[((n >> 12) & 0x3F) as usize]);
         out.push(B64_TABLE[((n >> 6) & 0x3F) as usize]);
         out.push(b'=');
     }
-    Ok(Value::str_from(String::from_utf8_lossy(&out).into_owned()))
+    // base64 字母表全部是 ASCII，直接按 UTF-8 解释无损
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// bi_base64_encode 编码为 base64 字符串。
+fn bi_base64_encode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "base64Encode")?;
+    let data = to_bytes(&args[0])?;
+    Ok(Value::str_from(base64_encode_bytes(&data)))
 }
 
 /// b64_decode_char 将 base64 字符解码为 6 位值。
@@ -253,45 +264,77 @@ fn b64_val(c: u8) -> Option<u32> {
     }
 }
 
-/// bi_base64_decode 解码 base64 字符串为 bytes。
-fn bi_base64_decode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let s = bh::as_str(args, 0, "base64Decode")?;
-    let cleaned: Vec<u8> = s.bytes().filter(|&c| c != b'\n' && c != b'\r' && c != b' ' && c != b'\t').collect();
+/// base64_decode_strict 严格模式解码标准 base64 字符串（pub(crate) 供 builtins_aes 复用）。
+///
+/// 严格规则（非法输入一律返回 Err，绝不静默丢弃/按 0 处理）：
+///   - 空白字符（空格 / \t / \r / \n）自动过滤；
+///   - 去空白后长度必须是 4 的倍数；
+///   - 填充字符 '=' 只允许出现在末尾 1-2 位（即最后一个四元组），
+///     其余任何位置出现 '=' 均为错误；
+///   - 其余字符必须是标准字母表（A-Z a-z 0-9 + /）内的合法字符。
+///
+/// 返回 Err 时携带原因描述（供调用方包装成 AI 友好错误信息）。
+pub(crate) fn base64_decode_strict(s: &str) -> Result<Vec<u8>, String> {
+    // 过滤空白字符（空格/制表符/回车/换行）
+    let cleaned: Vec<u8> = s.bytes().filter(|&c| !matches!(c, b'\n' | b'\r' | b' ' | b'\t')).collect();
     if cleaned.len() % 4 != 0 {
-        return Err(crate::value::error_value(format!(
-            "base64Decode() 输入长度 {} 不是 4 的倍数 (可能原因：base64 数据损坏)", cleaned.len(),
-        )));
+        return Err(format!(
+            "输入长度 {} 不是 4 的倍数 (可能原因：base64 数据损坏或被截断)", cleaned.len(),
+        ));
     }
-    let mut out = Vec::with_capacity(cleaned.len() / 4 * 3);
+    let len = cleaned.len();
+    // 计算末尾填充位数：只看最后 1-2 位是否为 '='
+    let pad = if len >= 1 && cleaned[len - 1] == b'=' {
+        if len >= 2 && cleaned[len - 2] == b'=' { 2 } else { 1 }
+    } else {
+        0
+    };
+    // 除末尾 pad 位外不得出现 '='（即 '=' 不允许出现在中间位置）
+    let body = &cleaned[..len - pad];
+    if body.contains(&b'=') {
+        return Err(
+            "填充字符 '=' 只允许出现在末尾 1-2 位 (可能原因：数据中间混入了多余的 '=' 或被拼接损坏)".to_string(),
+        );
+    }
+    let mut out = Vec::with_capacity(len / 4 * 3);
     let mut i = 0;
-    while i < cleaned.len() {
-        let c0 = cleaned[i]; let c1 = cleaned[i+1]; let c2 = cleaned[i+2]; let c3 = cleaned[i+3];
-        let v0 = b64_val(c0).ok_or_else(|| crate::value::error_value(format!(
-            "base64Decode() 非法字符 '{}' (可能原因：不是有效 base64)", c0 as char,
-        )))?;
-        let v1 = b64_val(c1).ok_or_else(|| crate::value::error_value(format!(
-            "base64Decode() 非法字符 '{}'", c1 as char,
-        )))?;
+    while i < len {
+        let c0 = cleaned[i]; let c1 = cleaned[i + 1]; let c2 = cleaned[i + 2]; let c3 = cleaned[i + 3];
+        let v0 = b64_val(c0).ok_or_else(|| format!("非法字符 '{}' (可能原因：不是有效 base64)", c0 as char))?;
+        let v1 = b64_val(c1).ok_or_else(|| format!("非法字符 '{}'", c1 as char))?;
         let n = (v0 << 18) | (v1 << 12);
         if c2 == b'=' {
-            out.push((n >> 16) as u8);
-        } else {
-            let v2 = b64_val(c2).ok_or_else(|| crate::value::error_value("base64Decode() 非法字符"))?;
-            let n = n | (v2 << 6);
-            if c3 == b'=' {
-                out.push((n >> 16) as u8);
-                out.push((n >> 8) as u8);
-            } else {
-                let v3 = b64_val(c3).ok_or_else(|| crate::value::error_value("base64Decode() 非法字符"))?;
-                let n = n | v3;
-                out.push((n >> 16) as u8);
-                out.push((n >> 8) as u8);
-                out.push(n as u8);
+            // 末组 [c0 c1 = =] → 1 字节（c3 已由上面的位置校验保证也是 '='）
+            if c3 != b'=' {
+                return Err("填充字符 '=' 只允许出现在末尾 1-2 位".to_string());
             }
+            out.push((n >> 16) as u8);
+        } else if c3 == b'=' {
+            // 末组 [c0 c1 c2 =] → 2 字节
+            let v2 = b64_val(c2).ok_or_else(|| format!("非法字符 '{}'", c2 as char))?;
+            let n = n | (v2 << 6);
+            out.push((n >> 16) as u8);
+            out.push((n >> 8) as u8);
+        } else {
+            // 满组 → 3 字节
+            let v2 = b64_val(c2).ok_or_else(|| format!("非法字符 '{}'", c2 as char))?;
+            let v3 = b64_val(c3).ok_or_else(|| format!("非法字符 '{}'", c3 as char))?;
+            let n = n | (v2 << 6) | v3;
+            out.push((n >> 16) as u8);
+            out.push((n >> 8) as u8);
+            out.push(n as u8);
         }
         i += 4;
     }
-    Ok(Value::Bytes(Arc::new(out)))
+    Ok(out)
+}
+
+/// bi_base64_decode 解码 base64 字符串为 bytes（严格模式）。
+fn bi_base64_decode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = bh::as_str(args, 0, "base64Decode")?;
+    base64_decode_strict(s)
+        .map(|b| Value::Bytes(Arc::new(b)))
+        .map_err(|e| crate::value::error_value(format!("base64Decode() {}", e)))
 }
 
 /// url_unreserved 判断字符是否为 URL 非保留字符（不编码）。
@@ -440,41 +483,70 @@ fn b64url_val(c: u8) -> Option<u32> {
     }
 }
 
-/// bi_base64url_decode 解码 URL-safe base64（支持有/无填充）。
+/// bi_base64url_decode 解码 URL-safe base64（支持有/无填充，严格模式）。
+///
+/// 严格规则（非法输入返回 error，绝不静默按 0 处理或丢字符）：
+///   - 过滤空白（空格 / \t / \r / \n）与 '=' 填充（URL-safe 变体常无填充，兼容有填充）；
+///   - 过滤后长度余 1（rem == 1）无法对应任何整字节数，返回 error（数据被截断/损坏）；
+///   - 非法字符（含标准变体的 + /）返回 error。
 fn bi_base64url_decode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let s = bh::as_str(args, 0, "base64UrlDecode")?;
-    let clean: Vec<u8> = s.bytes().filter(|&b| b != b'=' && b != b'\n' && b != b'\r' && b != b' ').collect();
+    // 过滤空白与 = 填充（保持对有无 padding 的兼容）
+    let clean: Vec<u8> = s.bytes()
+        .filter(|&b| b != b'=' && b != b'\n' && b != b'\r' && b != b' ' && b != b'\t')
+        .collect();
     if clean.is_empty() {
         return Ok(Value::Bytes(Arc::new(Vec::new())));
+    }
+    let rem = clean.len() % 4;
+    if rem == 1 {
+        // 单个字符无法解出任何整字节：视为损坏数据，而不是静默丢弃
+        return Err(crate::value::error_value(format!(
+            "base64UrlDecode() 去除空白/填充后长度 {} 余 1 个字符，无法解码 (可能原因：数据被截断或损坏)",
+            clean.len(),
+        )));
     }
     let mut out = Vec::with_capacity(clean.len() * 3 / 4);
     let mut i = 0;
     while i + 4 <= clean.len() {
+        let v0 = b64url_val(clean[i]).ok_or_else(|| crate::value::error_value(format!(
+            "base64UrlDecode() 非法字符 '{}' (可能原因：含标准 base64 的 + / 或其他非法字符)", clean[i] as char,
+        )))?;
+        let v1 = b64url_val(clean[i + 1]).ok_or_else(|| crate::value::error_value(format!(
+            "base64UrlDecode() 非法字符 '{}'", clean[i + 1] as char,
+        )))?;
+        let v2 = b64url_val(clean[i + 2]).ok_or_else(|| crate::value::error_value(format!(
+            "base64UrlDecode() 非法字符 '{}'", clean[i + 2] as char,
+        )))?;
+        let v3 = b64url_val(clean[i + 3]).ok_or_else(|| crate::value::error_value(format!(
+            "base64UrlDecode() 非法字符 '{}'", clean[i + 3] as char,
+        )))?;
+        let n = (v0 << 18) | (v1 << 12) | (v2 << 6) | v3;
+        out.push((n >> 16) as u8);
+        out.push((n >> 8) as u8);
+        out.push(n as u8);
+        i += 4;
+    }
+    // 处理剩余 2-3 字符（rem 已排除 0/1 之外的情况：0 已由上面的循环覆盖）
+    if rem == 2 {
         let v0 = b64url_val(clean[i]).ok_or_else(|| crate::value::error_value(format!(
             "base64UrlDecode() 非法字符 '{}'", clean[i] as char,
         )))?;
         let v1 = b64url_val(clean[i + 1]).ok_or_else(|| crate::value::error_value(format!(
             "base64UrlDecode() 非法字符 '{}'", clean[i + 1] as char,
         )))?;
-        let v2 = b64url_val(clean[i + 2]);
-        let v3 = b64url_val(clean[i + 3]);
-        let n = (v0 << 18) | (v1 << 12) | (v2.unwrap_or(0) << 6) | v3.unwrap_or(0);
-        out.push((n >> 16) as u8);
-        if v2.is_some() { out.push((n >> 8) as u8); }
-        if v3.is_some() { out.push(n as u8); }
-        i += 4;
-    }
-    // 处理剩余 2-3 字符
-    let rem = clean.len() - i;
-    if rem == 2 {
-        let v0 = b64url_val(clean[i]).unwrap_or(0);
-        let v1 = b64url_val(clean[i + 1]).unwrap_or(0);
         let n = (v0 << 18) | (v1 << 12);
         out.push((n >> 16) as u8);
     } else if rem == 3 {
-        let v0 = b64url_val(clean[i]).unwrap_or(0);
-        let v1 = b64url_val(clean[i + 1]).unwrap_or(0);
-        let v2 = b64url_val(clean[i + 2]).unwrap_or(0);
+        let v0 = b64url_val(clean[i]).ok_or_else(|| crate::value::error_value(format!(
+            "base64UrlDecode() 非法字符 '{}'", clean[i] as char,
+        )))?;
+        let v1 = b64url_val(clean[i + 1]).ok_or_else(|| crate::value::error_value(format!(
+            "base64UrlDecode() 非法字符 '{}'", clean[i + 1] as char,
+        )))?;
+        let v2 = b64url_val(clean[i + 2]).ok_or_else(|| crate::value::error_value(format!(
+            "base64UrlDecode() 非法字符 '{}'", clean[i + 2] as char,
+        )))?;
         let n = (v0 << 18) | (v1 << 12) | (v2 << 6);
         out.push((n >> 16) as u8);
         out.push((n >> 8) as u8);
@@ -548,17 +620,22 @@ fn decode_html_entity(entity: &str) -> Option<String> {
         "nbsp" => Some("\u{00A0}".to_string()),
         other => {
             // 数字实体：&#NN; 或 &#xNN;
-            if let Some(hex) = other.strip_prefix("#x") {
+            let cp = if let Some(hex) = other.strip_prefix("#x") {
                 u32::from_str_radix(hex, 16).ok()
-                    .and_then(char::from_u32)
-                    .map(|c| c.to_string())
             } else if let Some(dec) = other.strip_prefix('#') {
                 dec.parse::<u32>().ok()
-                    .and_then(char::from_u32)
-                    .map(|c| c.to_string())
             } else {
-                None
-            }
+                return None;
+            };
+            cp.map(|n| match char::from_u32(n) {
+                // 码点 0（NUL）替换为 U+FFFD：避免 NUL 进入字符串
+                // （NUL 可能截断 C 风格处理或被用于绕过长度/内容校验）
+                Some('\0') => '\u{FFFD}'.to_string(),
+                // 非法码点（代理区 D800-DFFF、超出 Unicode 上限）同样替换为 U+FFFD，
+                // 而不是当作无法识别的实体原样保留
+                None => '\u{FFFD}'.to_string(),
+                Some(c) => c.to_string(),
+            })
         }
     }
 }

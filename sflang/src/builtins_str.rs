@@ -254,10 +254,10 @@ static DOC_REVERSEMAP: BuiltinDoc = BuiltinDoc {
 static DOC_SIMPLESTRTOMAP: BuiltinDoc = BuiltinDoc {
     category: "string",
     signature: "simpleStrToMap(s[, sep1[, sep2]]) -> object",
-    summary: "解析 key=val 为 map。",
-    params: &[("s", "字符串"), ("sep1", "可选"), ("sep2", "可选")],
+    summary: "解析 key=val 为 map。sep1/sep2 为可选，缺省分别为 \",\" 与 \"=\"。",
+    params: &[("s", "字符串"), ("sep1", "可选。对分隔符，缺省 \",\""), ("sep2", "可选。键值分隔符，缺省 \"=\"")],
     returns: "object",
-    examples: &[],
+    examples: &["simpleStrToMap(\"a=1,b=2\")  → {a: \"1\", b: \"2\"}"],
     errors: &[],
 };
 
@@ -304,11 +304,11 @@ static DOC_STRFINDDIFFPOS: BuiltinDoc = BuiltinDoc {
 static DOC_STRLIMIT: BuiltinDoc = BuiltinDoc {
     category: "string",
     signature: "strLimit(s, maxLen[, suffix]) -> string",
-    summary: "截断到 maxLen 字符。",
-    params: &[("s", "字符串"), ("maxLen", "最大长度"), ("suffix", "可选。默认 ...")],
+    summary: "截断到 maxLen 字符。结果总长度（含后缀）不超过 maxLen；后缀比 maxLen 长时截短后缀。默认后缀 \"...\"。",
+    params: &[("s", "字符串"), ("maxLen", "最大长度（≥0）"), ("suffix", "可选。默认 ...")],
     returns: "string",
-    examples: &[],
-    errors: &[],
+    examples: &["strLimit(\"Hello World\", 5)  → \"He...\""],
+    errors: &["maxLen 为负返回 error"],
 };
 
 static DOC_STRPAD: BuiltinDoc = BuiltinDoc {
@@ -490,6 +490,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("strSplit", bi_split, &DOC_STR_SPLIT);
     vm.register_builtin_doc("strJoin", bi_join, &DOC_STR_JOIN);
     vm.register_builtin_doc("strSub", bi_substring, &DOC_STR_SUB);
+    vm.register_builtin_doc("formatCode", bi_format_code, &DOC_FORMAT_CODE); // 源码格式化
     vm.register_builtin_doc("strSubBytes", bi_str_sub_bytes, &DOC_STRSUBBYTES);
     vm.register_builtin_doc("strRepeat", bi_repeat, &DOC_STR_REPEAT);
     // 按字符集裁剪
@@ -639,6 +640,13 @@ fn bi_str_replace(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         }
         i += 2;
     }
+    // 附加参数必须成对：落单的 old 没有 new 时报错（而非静默忽略）
+    if i < args.len() {
+        return Err(crate::value::error_value(format!(
+            "strReplace() 替换参数需成对出现 (old, new)，第 {} 个参数落单 (可能原因：少传了一个替换串)",
+            i + 1,
+        )));
+    }
     Ok(s_owned(result))
 }
 
@@ -658,8 +666,8 @@ fn bi_split(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_join 将数组元素用分隔符连接成字符串。
 fn bi_join(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let arr = bh::as_array(args, 0, "join")?;
-    let sep = bh::as_str(args, 1, "join")?;
+    let arr = bh::as_array(args, 0, "strJoin")?;
+    let sep = bh::as_str(args, 1, "strJoin")?;
     let elems = arr.lock().unwrap();
     let joined = elems.iter().map(|v| v.to_str()).collect::<Vec<_>>().join(sep);
     Ok(s_owned(joined))
@@ -669,12 +677,12 @@ fn bi_join(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// end 省略时取到末尾。负数索引按"距末端"解释（-1 表示最后一个字符）。
 fn bi_substring(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let src = bh::as_str(args, 0, "substring")?;
+    let src = bh::as_str(args, 0, "strSub")?;
     let chars: Vec<char> = src.chars().collect();
     let len = chars.len() as i64;
-    let mut start = bh::as_int(args, 1, "substring")?;
+    let mut start = bh::as_int(args, 1, "strSub")?;
     let mut end = if args.len() > 2 {
-        bh::as_int(args, 2, "substring")?
+        bh::as_int(args, 2, "strSub")?
     } else {
         len
     };
@@ -699,13 +707,23 @@ fn bi_substring(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 }
 
 /// bi_repeat 重复字符串 n 次。
+///
+/// 结果字节总数上限 1<<30（约 1 GiB），超出返回 error，避免巨大 n 直接 OOM。
 fn bi_repeat(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let src = bh::as_str(args, 0, "repeat")?;
-    let n = bh::as_int(args, 1, "repeat")?;
+    let src = bh::as_str(args, 0, "strRepeat")?;
+    let n = bh::as_int(args, 1, "strRepeat")?;
     if n < 0 {
         return Err(crate::value::error_value(
-            "repeat() 次数不能为负数 (可能原因：参数顺序错误；正确顺序 repeat(str, n))",
+            "strRepeat() 次数不能为负数 (可能原因：参数顺序错误；正确顺序 strRepeat(str, n))",
         ));
+    }
+    // 用 i128 计算总字节数，避免 src.len() * n 在 i64 下溢出
+    let total = src.len() as i128 * n as i128;
+    if total > (1i128 << 30) {
+        return Err(crate::value::error_value(format!(
+            "strRepeat() 结果过大：{} 字节超过上限 {} (可能原因：n 过大；请分批拼接或减小重复次数)",
+            total, 1u64 << 30,
+        )));
     }
     Ok(s_owned(src.repeat(n as usize)))
 }
@@ -836,25 +854,39 @@ fn bi_str_trim_right(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
 /// bi_limit_str 截断字符串到指定长度，超出部分用后缀替代。
 ///
-/// 用法：limitStr(s, maxLen) 或 limitStr(s, maxLen, suffix)
+/// 用法：strLimit(s, maxLen) 或 strLimit(s, maxLen, suffix)
 /// 默认 suffix = "..."（省略号）。
 /// 按字符计算长度（非字节），不切断多字节字符。
+/// 结果总长度（前缀 + 后缀）不超过 maxLen：后缀比 maxLen 长时截短后缀；
+/// maxLen 为负返回 error。
 ///
 /// 示例：
-///   limitStr("Hello World", 5)        → "He..."（截断到 5 字符，加省略号）
-///   limitStr("Hello World", 5, "...")  → "He..."（同上，显式指定后缀）
-///   limitStr("Hi", 10)                → "Hi"（未超长，原样返回）
-///   limitStr("中文测试", 3)             → "中..."（按字符截断）
+///   strLimit("Hello World", 5)        → "He..."（截断到 5 字符，加省略号）
+///   strLimit("Hello World", 5, "...")  → "He..."（同上，显式指定后缀）
+///   strLimit("Hi", 10)                → "Hi"（未超长，原样返回）
+///   strLimit("中文测试", 3)             → "中.."（后缀被截短到 2 字符，总长恰 3）
 fn bi_limit_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let s = bh::as_str(args, 0, "limitStr")?;
-    let max_len = bh::as_int(args, 1, "limitStr")? as usize;
-    let suffix = if args.len() > 2 { bh::as_str(args, 2, "limitStr")?.to_string() } else { "...".to_string() };
+    let s = bh::as_str(args, 0, "strLimit")?;
+    let max_len_i = bh::as_int(args, 1, "strLimit")?;
+    if max_len_i < 0 {
+        return Err(crate::value::error_value(format!(
+            "strLimit() maxLen 不能为负数，得到 {} (可能原因：参数顺序错误；正确顺序 strLimit(s, maxLen[, suffix]))",
+            max_len_i,
+        )));
+    }
+    let max_len = max_len_i as usize;
+    let mut suffix = if args.len() > 2 { bh::as_str(args, 2, "strLimit")?.to_string() } else { "...".to_string() };
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= max_len {
         return Ok(s_owned(s.to_string()));
     }
+    // 后缀过长时截短，保证结果总长度不超过 maxLen
     let suffix_len = suffix.chars().count();
-    let take = if max_len > suffix_len { max_len - suffix_len } else { 0 };
+    if suffix_len > max_len {
+        suffix = suffix.chars().take(max_len).collect();
+    }
+    let suffix_len = suffix.chars().count();
+    let take = max_len - suffix_len; // suffix_len <= max_len，不会下溢
     let result: String = chars[..take].iter().collect::<String>() + &suffix;
     Ok(s_owned(result))
 }
@@ -876,13 +908,29 @@ fn bi_str_count(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///   strPad(s, len, fill)          — 左填充指定字符
 ///   strPad(s, len, fill, true)    — 右填充（第 4 参数 true=右填充，false/省略=左填充）
 ///
+/// len 为负返回 error；上限 1_000_000（防止误传负数/巨大值导致死循环或 OOM）。
+///
 /// 示例：
 ///   strPad("42", 5)           → "00042"（左补零）
 ///   strPad("42", 5, " ")      → "   42"（左补空格）
 ///   strPad("42", 5, " ", true) → "42   "（右补空格）
 fn bi_str_pad(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let s = bh::as_str(args, 0, "strPad")?;
-    let target_len = bh::as_int(args, 1, "strPad")? as usize;
+    let target_len_i = bh::as_int(args, 1, "strPad")?;
+    // 负数经 as usize 会变成巨大值导致死循环，先按 i64 校验
+    if target_len_i < 0 {
+        return Err(crate::value::error_value(format!(
+            "strPad() 目标长度不能为负数，得到 {} (可能原因：参数顺序错误；正确顺序 strPad(s, len[, pad[, align]]))",
+            target_len_i,
+        )));
+    }
+    if target_len_i > 1_000_000 {
+        return Err(crate::value::error_value(format!(
+            "strPad() 目标长度过大：{} 超过上限 1000000 (可能原因：误传了字节数或巨大值)",
+            target_len_i,
+        )));
+    }
+    let target_len = target_len_i as usize;
     let fill = if args.len() > 2 { bh::as_str(args, 2, "strPad")?.to_string() } else { "0".to_string() };
     let right = if args.len() > 3 { args[3].is_truthy() } else { false };
     let cur_len = s.chars().count();
@@ -903,14 +951,17 @@ fn bi_str_pad(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 }
 
 /// bi_str_split_n 按分隔符分割，限制最多 n 段。
+///
+/// n <= 0 或空分隔符时返回 [原串] 单元素数组（先按 i64 判断再转 usize，
+/// 负数经 as usize 会变成巨大值导致限制失效）。
 fn bi_str_split_n(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let src = bh::as_str(args, 0, "strSplitN")?;
     let sep = bh::as_str(args, 1, "strSplitN")?;
-    let n = bh::as_int(args, 2, "strSplitN")? as usize;
+    let n = bh::as_int(args, 2, "strSplitN")?;
     if n <= 0 || sep.is_empty() {
         return Ok(Value::Array(Arc::new(Mutex::new(vec![s_owned(src.to_string())]))));
     }
-    let parts: Vec<Value> = src.splitn(n, sep).map(|p| s_owned(p.to_string())).collect();
+    let parts: Vec<Value> = src.splitn(n as usize, sep).map(|p| s_owned(p.to_string())).collect();
     Ok(Value::Array(Arc::new(Mutex::new(parts))))
 }
 
@@ -948,17 +999,32 @@ fn bi_str_quote(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 }
 
 /// bi_str_unquote 去除字符串的双引号并解转义。
+///
+/// 单遍扫描反转义（遇 `\` 看下一字符分派）：链式 replace 存在顺序问题，
+/// 例如 `"a\\nb"`（字面反斜杠 + n）会先被 `\n` 规则误替换成换行；
+/// 单遍扫描保证 strQuote → strUnquote 往返无损。未知转义（如 `\x`）保留原样。
 fn bi_str_unquote(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let s = bh::as_str(args, 0, "strUnquote")?;
     let s = s.trim();
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
         let inner = &s[1..s.len()-1];
-        let unescaped = inner
-            .replace("\\n", "\n")
-            .replace("\\t", "\t")
-            .replace("\\\"", "\"")
-            .replace("\\\\", "\\");
-        Ok(s_owned(unescaped))
+        let mut out = String::with_capacity(inner.len());
+        let mut it = inner.chars().peekable();
+        while let Some(c) = it.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            // 反斜杠后按下一字符分派已知转义；无下一字符或未知转义保留反斜杠原样
+            match it.peek() {
+                Some('n') => { it.next(); out.push('\n'); }
+                Some('t') => { it.next(); out.push('\t'); }
+                Some('"') => { it.next(); out.push('"'); }
+                Some('\\') => { it.next(); out.push('\\'); }
+                _ => out.push('\\'),
+            }
+        }
+        Ok(s_owned(out))
     } else {
         Ok(s_owned(s.to_string()))
     }
@@ -1139,6 +1205,7 @@ fn bytes_to_vec(arg: &Value, fn_name: &str) -> Result<Vec<u8>, Value> {
 /// 示例：
 ///   bytesGbToUtf8Str(b) → string  （b 是 GBK 编码的字节序列）
 fn bi_bytes_gb_to_utf8_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "bytesGbToUtf8Str")?;
     let bytes = bytes_to_vec(&args[0], "bytesGbToUtf8Str")?;
     // encoding_rs::GBK.decode 返回 (Cow<str>, &Encoding, bool)
     let (cow, _, _) = encoding_rs::GBK.decode(&bytes);
@@ -1165,23 +1232,27 @@ fn bi_str_to_gbk_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///   isUtf8(b)        → bool  （b 是 bytes/byteArray/string）
 ///   isUtf8("hello")  → true
 fn bi_is_utf8(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "isUtf8")?;
     let bytes = bytes_to_vec(&args[0], "isUtf8")?;
     Ok(Value::Bool(std::str::from_utf8(&bytes).is_ok()))
 }
 
 /// bi_simple_str_to_map 简单字符串转 Map。
 ///
-/// 用法：simpleStrToMap(s, pairSep, kvSep) → Map
+/// 用法：simpleStrToMap(s[, sep1[, sep2]]) → Map
+/// sep1（对分隔符）缺省为 ","，sep2（键值分隔符）缺省为 "="。
 /// 如 "a=1,b=2,c=3" → map{a: "1", b: "2", c: "3"}
 /// 空字符串返回空 Map。键值都按字符串处理。
 ///
 /// 示例：
-///   simpleStrToMap("a=1,b=2", ",", "=") → map{a: "1", b: "2"}
-///   simpleStrToMap("x:1;y:2", ";", ":")  → map{x: "1", y: "2"}
+///   simpleStrToMap("a=1,b=2")              → map{a: "1", b: "2"}（用缺省分隔符）
+///   simpleStrToMap("a=1,b=2", ",", "=")    → 同上（显式指定）
+///   simpleStrToMap("x:1;y:2", ";", ":")    → map{x: "1", y: "2"}
 fn bi_simple_str_to_map(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let s = bh::as_str(args, 0, "simpleStrToMap")?;
-    let pair_sep = bh::as_str(args, 1, "simpleStrToMap")?;
-    let kv_sep = bh::as_str(args, 2, "simpleStrToMap")?;
+    // sep1/sep2 为可选参数，缺省 "," 与 "="
+    let pair_sep = if args.len() > 1 { bh::as_str(args, 1, "simpleStrToMap")?.to_string() } else { ",".to_string() };
+    let kv_sep = if args.len() > 2 { bh::as_str(args, 2, "simpleStrToMap")?.to_string() } else { "=".to_string() };
     let mut om = crate::ord_map::OrdMap::new();
     if s.is_empty() {
         return Ok(Value::Map(std::sync::Arc::new(std::sync::Mutex::new(om))));
@@ -1192,9 +1263,9 @@ fn bi_simple_str_to_map(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             "simpleStrToMap() pairSep 与 kvSep 不能为空 (可能原因：分隔符参数顺序错误；正确顺序 simpleStrToMap(s, pairSep, kvSep))",
         ));
     }
-    for pair in s.split(pair_sep) {
+    for pair in s.split(pair_sep.as_str()) {
         // 用 splitn(2, kv_sep) 避免值中含 kvSep 时被切断
-        let mut parts = pair.splitn(2, kv_sep);
+        let mut parts = pair.splitn(2, kv_sep.as_str());
         let key = match parts.next() {
             Some(k) => k.to_string(),
             None => continue,
@@ -1229,4 +1300,204 @@ fn bi_reverse_map(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         om.set(new_key, Value::str_from(k));
     }
     Ok(Value::Map(std::sync::Arc::new(std::sync::Mutex::new(om))))
+}
+
+// ---- formatCode：Sflang 源码格式化 ----
+
+static DOC_FORMAT_CODE: BuiltinDoc = BuiltinDoc {
+    category: "string",
+    signature: "formatCode(src) -> string",
+    summary: "格式化 Sflang 源码：按大括号深度重排缩进（4 空格/层），去行尾空白，行首 Tab 展开，连续空行压缩为最多 2 行，结尾恰一个换行。",
+    params: &[("src", "Sflang 源码字符串")],
+    returns: "string：格式化后的源码（保持语义不变；不重排跨行结构）",
+    examples: &[
+        "formatCode(\"func f() {\npln(1)\n}\") → 第二行缩进 4 空格",
+        "字符串/原始字符串/注释中的 {} 不影响缩进",
+    ],
+    errors: &[],
+};
+
+/// bi_format_code 格式化 Sflang 源码（详见 DOC_FORMAT_CODE）。
+fn bi_format_code(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "formatCode")?;
+    let src = bh::as_str(args, 0, "formatCode")?;
+    Ok(Value::str_from(format_source(src)))
+}
+
+/// ScanState 词法扫描状态（用于区分代码与字面量中的大括号）。
+#[derive(Clone, Copy, PartialEq)]
+enum ScanState {
+    Normal,
+    LineComment,
+    BlockComment,
+    Str,
+    TripleStr,
+    RawStr,
+}
+
+/// format_source 对 Sflang 源码做保义格式化。
+///
+/// 规则：
+/// - 代码区（Normal 态）的大括号决定缩进深度，4 空格一层
+/// - 行首连续的 `}` 先抵扣本行缩进（闭括号行向外缩）
+/// - 字符串 / 三引号字符串 / 原始字符串 / 行注释 / 块注释内的字符原样保留，
+///   其中的 `{}` 不参与深度计算；跨行字面量的中间行不做任何改动
+/// - 去除行尾空白；行首原有缩进（含 Tab）替换为标准缩进
+/// - 连续空行最多保留 2 行；结果以恰好一个换行结尾
+pub fn format_source(src: &str) -> String {
+    let chars: Vec<char> = src.chars().collect();
+    let n = chars.len();
+
+    let mut state = ScanState::Normal;
+    let mut depth: i64 = 0; // 当前缩进深度
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new(); // 当前行原始内容
+    let mut line_starts_in_lit = false;
+    // 每行统计（仅 Normal 态）
+    let mut opens = 0i64;
+    let mut closes = 0i64;
+    let mut leading_closes = 0i64; // 行首 `}` 计数（第一个非 `}` 代码字符出现前）
+    let mut saw_code = false;      // 本行是否已出现非空白代码字符
+    let mut blanks = 0usize;       // 连续空行计数
+
+    let mut i = 0usize;
+    while i < n {
+        let c = chars[i];
+
+        // 换行：定稿当前行
+        if c == '\n' {
+            if line_starts_in_lit {
+                // 字面量内部的行：原样输出（含缩进与空白）
+                out.push(line.clone());
+                blanks = 0;
+                // 行注释在换行处结束
+            } else {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    blanks += 1;
+                    if blanks <= 2 {
+                        out.push(String::new());
+                    }
+                } else {
+                    blanks = 0;
+                    let this_indent = (depth - leading_closes).max(0);
+                    depth = (depth + opens - closes).max(0);
+                    let indent = "    ".repeat(this_indent as usize);
+                    out.push(format!("{}{}", indent, trimmed));
+                }
+                opens = 0;
+                closes = 0;
+                leading_closes = 0;
+                saw_code = false;
+            }
+            if state == ScanState::LineComment {
+                state = ScanState::Normal;
+            }
+            line_starts_in_lit = matches!(state, ScanState::TripleStr | ScanState::RawStr | ScanState::BlockComment);
+            line.clear();
+            i += 1;
+            continue;
+        }
+
+        line.push(c);
+
+        match state {
+            ScanState::LineComment => {}
+            ScanState::BlockComment => {
+                if c == '*' && i + 1 < n && chars[i + 1] == '/' {
+                    line.push('/');
+                    i += 2;
+                    state = ScanState::Normal;
+                    continue;
+                }
+            }
+            ScanState::Str => {
+                if c == '\\' && i + 1 < n {
+                    line.push(chars[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                if c == '"' {
+                    state = ScanState::Normal;
+                }
+            }
+            ScanState::TripleStr => {
+                if c == '"' && i + 2 < n && chars[i + 1] == '"' && chars[i + 2] == '"' {
+                    line.push('"');
+                    line.push('"');
+                    i += 3;
+                    state = ScanState::Normal;
+                    continue;
+                }
+            }
+            ScanState::RawStr => {
+                if c == '`' {
+                    state = ScanState::Normal;
+                }
+            }
+            ScanState::Normal => {
+                // 注释与字符串入口（三引号优先于普通字符串）
+                if c == '/' && i + 1 < n && chars[i + 1] == '/' {
+                    line.push('/');
+                    i += 2;
+                    state = ScanState::LineComment;
+                    continue;
+                }
+                if c == '/' && i + 1 < n && chars[i + 1] == '*' {
+                    line.push('*');
+                    i += 2;
+                    state = ScanState::BlockComment;
+                    continue;
+                }
+                if c == '"' && i + 2 < n && chars[i + 1] == '"' && chars[i + 2] == '"' {
+                    line.push('"');
+                    line.push('"');
+                    i += 3;
+                    state = ScanState::TripleStr;
+                    continue;
+                }
+                if c == '"' {
+                    state = ScanState::Str;
+                } else if c == '`' {
+                    state = ScanState::RawStr;
+                } else if c == '{' {
+                    opens += 1;
+                    saw_code = true;
+                } else if c == '}' {
+                    closes += 1;
+                    if !saw_code {
+                        leading_closes += 1;
+                    }
+                    saw_code = true;
+                } else if !c.is_whitespace() {
+                    saw_code = true;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // 末行（无换行结尾）
+    if !line.is_empty() {
+        if line_starts_in_lit {
+            out.push(line);
+        } else {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                let this_indent = (depth - leading_closes).max(0);
+                let indent = "    ".repeat(this_indent as usize);
+                out.push(format!("{}{}", indent, trimmed));
+            }
+        }
+    }
+
+    // 去掉尾部连续空行，保留恰好一个结尾换行
+    while out.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+        out.pop();
+    }
+    let mut result = out.join("\n");
+    if !result.is_empty() {
+        result.push('\n');
+    }
+    result
 }

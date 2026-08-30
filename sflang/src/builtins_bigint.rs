@@ -37,12 +37,12 @@ static DOC_BIGINT: BuiltinDoc = BuiltinDoc {
 
 static DOC_BIGFLOAT: BuiltinDoc = BuiltinDoc {
     category: "bigint",
-    signature: "bigFloat(s) -> bigFloat",
-    summary: "创建任意精度十进制浮点数。",
-    params: &[("s", "数字字符串或数值")],
+    signature: "bigFloat(s[, scale]) -> bigFloat",
+    summary: "创建任意精度十进制浮点数。指定 scale 时字符串视为纯整数尾数，scale 需在 0..=10000。",
+    params: &[("s", "数字字符串或数值"), ("scale", "可选。小数位数（0..=10000）")],
     returns: "bigFloat",
-    examples: &["bigFloat(\"0.1\")"],
-    errors: &[],
+    examples: &["bigFloat(\"0.1\")", "bigFloat(\"123\", 2)  // 1.23"],
+    errors: &["scale 超出 0..=10000 返回 error"],
 };
 
 static DOC_TOBIGINT: BuiltinDoc = BuiltinDoc {
@@ -89,10 +89,10 @@ static DOC_BIGFLOATDIV: BuiltinDoc = BuiltinDoc {
     category: "bigint",
     signature: "bigFloatDiv(a, b[, scale]) -> bigFloat",
     summary: "bigFloat 精确除法（可选小数位数）。",
-    params: &[("a", "被除数"), ("b", "除数"), ("scale", "可选。小数位数")],
+    params: &[("a", "被除数"), ("b", "除数"), ("scale", "可选。小数位数（0..=10000）")],
     returns: "bigFloat",
     examples: &["bigFloatDiv(a, b, 10)"],
-    errors: &["除零返回 error"],
+    errors: &["除零返回 error", "scale 超出 0..=10000 返回 error"],
 };
 
 /// register 注册所有大数内置函数到 VM。
@@ -106,18 +106,43 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("bigFloatDiv", bi_big_float_div, &DOC_BIGFLOATDIV);
 }
 
+/// SCALE_LIMIT 小数位数（scale/prec）上限。
+///
+/// 越界值（尤其负数经 as u32 变成的巨大值）会让高精度除法/幂运算挂死或 OOM。
+const SCALE_LIMIT: i64 = 10000;
+
+/// check_scale 校验 scale/prec 在 0..=SCALE_LIMIT 范围内，返回 u32。
+fn check_scale(v: i64, fn_name: &str) -> Result<u32, Value> {
+    if !(0..=SCALE_LIMIT).contains(&v) {
+        return Err(crate::value::error_value(format!(
+            "{}() 小数位数需在 0..={} 范围内，得到 {} (可能原因：传入了负数或过大的精度值)",
+            fn_name, SCALE_LIMIT, v,
+        )));
+    }
+    Ok(v as u32)
+}
+
 /// bi_big_int 构造 bigInt。
 ///
 /// 用法：
 ///   bigInt(int)        — 从 int 提升
 ///   bigInt(string)     — 解析十进制字符串（支持任意位数）
+///   bigInt(float)      — 经字符串中转解析（避免 as i64 饱和截断）
 fn bi_big_int(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     crate::builtins_helpers::require_arg(args, 0, "bigInt")?;
     let bi = match &args[0] {
         Value::Int(x) => BigInt::from_i64(*x),
         Value::BigInt(b) => (**b).clone(),
         Value::Str(s) => BigInt::from_str_decimal(s).map_err(crate::value::error_value)?,
-        Value::Float(f) => BigInt::from_i64(*f as i64),
+        Value::Float(f) => {
+            // float → bigInt 经字符串中转（与 bigFloat 同做法）：
+            // 直接 `as i64` 会对超大值饱和截断（如 1e30 变成 i64::MAX）。
+            // NaN/Infinity/含小数部分的值无法表示为整数，返回 error。
+            BigInt::from_str_decimal(&format!("{}", f)).map_err(|_| crate::value::error_value(format!(
+                "bigInt() 无法从 float {} 构造整数 (可能原因：值为 NaN/Infinity 或含小数部分；可先 floor/round 取整后再传入)",
+                f,
+            )))?
+        }
         v => return Err(crate::value::error_value(format!(
             "bigInt() 不支持类型 {} (可能原因：参数应为 int/string/bigInt)", v.type_name(),
         ))),
@@ -141,8 +166,11 @@ fn bi_big_float(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         Value::BigFloat(b) => (**b).clone(),
         Value::Str(s) => {
             if args.len() >= 2 {
-                // 指定 scale：字符串视为纯整数尾数
-                let scale = crate::builtins_helpers::as_int(args, 1, "bigFloat")? as u32;
+                // 指定 scale：字符串视为纯整数尾数（scale 校验 0..=10000，防巨大值挂死）
+                let scale = check_scale(
+                    crate::builtins_helpers::as_int(args, 1, "bigFloat")?,
+                    "bigFloat",
+                )?;
                 let mantissa = BigInt::from_str_decimal(s).map_err(crate::value::error_value)?;
                 BigFloat { mantissa, scale }
             } else {
@@ -203,11 +231,15 @@ fn bi_is_big_float(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// bi_big_float_div 高精度除法：a / b，保留 prec 位小数。
 ///
 /// 用法：bigFloatDiv(a, b) 或 bigFloatDiv(a, b, prec)（默认 20 位）
+/// prec 需在 0..=10000 范围内（负数经 as u32 会变成巨大值导致挂死）。
 fn bi_big_float_div(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     crate::builtins_helpers::require_arg(args, 0, "bigFloatDiv")?;
     crate::builtins_helpers::require_arg(args, 1, "bigFloatDiv")?;
     let prec = if args.len() >= 3 {
-        crate::builtins_helpers::as_int(args, 2, "bigFloatDiv")? as u32
+        check_scale(
+            crate::builtins_helpers::as_int(args, 2, "bigFloatDiv")?,
+            "bigFloatDiv",
+        )?
     } else {
         20
     };

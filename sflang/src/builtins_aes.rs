@@ -9,6 +9,7 @@
 //!   aesEncryptStr(text, key)  — 便捷：字符串加密 → base64 输出
 //!   aesDecryptStr(b64, key)   — 便捷：base64 输入 → 字符串解密
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::builtins_helpers as bh;
@@ -110,19 +111,93 @@ fn to_bytes(v: &Value) -> Result<Vec<u8>, Value> {
     }
 }
 
+/// splitmix64 均匀混合函数：把线性计数器值打散成分布良好的伪随机数。
+fn splitmix64(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// IV_SEED 进程级随机种子：Once 保证进程内只初始化一次。
+static IV_SEED: AtomicU64 = AtomicU64::new(0);
+static IV_INIT: std::sync::Once = std::sync::Once::new();
+
+/// IV_COUNTER 调用计数器：每次生成 IV 递增，保证进程内取值不重复（线程安全）。
+static IV_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// iv_collect_entropy 收集多路熵源并混合为一个 u64 种子。
+///
+/// 熵源：
+///   1. SystemTime 的秒 + 纳秒（启动时刻几乎不可能重复）；
+///   2. 进程 id（区分同机多进程）；
+///   3. 当前线程 id 的哈希（区分并发初始化场景）；
+///   4. RandomState 哈希一个固定值（std 内部使用操作系统提供的随机种子，
+///      是主要熵源；其余源用于兜底与增强）。
+fn iv_collect_entropy() -> u64 {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hash, Hasher};
+
+    let mut seed: u64 = 0;
+
+    // 熵源 1：系统时间（秒 + 纳秒）
+    if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        seed ^= splitmix64(now.as_nanos() as u64);
+        seed = splitmix64(seed ^ now.as_secs());
+    }
+
+    // 熵源 2：进程 id
+    seed ^= splitmix64(std::process::id() as u64);
+
+    // 熵源 3：当前线程 id（ThreadId 无数值 API，经哈希混合）
+    {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        std::thread::current().id().hash(&mut h);
+        seed ^= h.finish();
+    }
+
+    // 熵源 4：RandomState 的 OS 随机种子（哈希任意固定值即可，随机性来自 RandomState 本身）
+    {
+        let mut h = RandomState::new().build_hasher();
+        h.write_u64(0x5F1A_CA11_2026_0827);
+        seed ^= h.finish();
+    }
+
+    splitmix64(seed)
+}
+
 /// 生成随机 16 字节 IV。
+///
+/// 旧实现仅用"当前纳秒"做 LCG 种子，可预测且同一纳秒内重复，熵严重不足。
+/// 现改为多源熵混合：
+///   - 进程内一次性初始化的种子（见 iv_collect_entropy：OS 随机 + 时间 + 进程/线程 id）；
+///   - AtomicU64 计数器保证进程内每次调用取值不重复（线程安全）；
+///   - 每次调用用新的 RandomState 哈希计数器（其密钥派生自 OS 种子）再混入；
+///   - 最终经 splitmix64 展开为 16 字节。
+///
+/// 注意：纯标准库无法获得密码学级随机，此实现仍非 CSPRNG，
+/// 但已混合操作系统熵，对 CBC 模式 IV 的常规用途足够。
 fn random_iv() -> [u8; 16] {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+
+    // 进程内一次性初始化种子（Once 保证并发下也只执行一次）
+    IV_INIT.call_once(|| {
+        IV_SEED.store(iv_collect_entropy(), Ordering::Relaxed);
+    });
+
+    // 每次调用：计数器递增（保证不重复），用新的 RandomState 哈希计数器
+    // （其密钥派生自 OS 种子），再与进程级种子混合
+    let counter = IV_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut h = RandomState::new().build_hasher();
+    h.write_u64(counter);
+    let mut state = IV_SEED.load(Ordering::Relaxed) ^ h.finish();
+
     let mut iv = [0u8; 16];
-    // 用当前时间纳秒做简单随机源（非密码学安全，但足够区分）
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    // 用简单的 LCG 生成 16 字节
-    let mut seed: u64 = nanos as u64;
-    for b in iv.iter_mut() {
-        seed = seed.wrapping_mul(6364136223846793005u64).wrapping_add(1442695040888963407u64);
-        *b = (seed >> 33) as u8;
+    for chunk in iv.chunks_mut(8) {
+        let n = splitmix64(state).to_be_bytes();
+        chunk.copy_from_slice(&n[..chunk.len()]);
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     }
     iv
 }
@@ -159,14 +234,16 @@ fn bi_aes_decrypt(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let data = to_bytes(&args[0])?;
     let key = to_bytes(&args[1])?;
     if data.len() < 16 {
-        return Ok(crate::value::error_value("aesDecrypt() 数据太短（至少需要 16 字节 IV）"));
+        // 返回 Err（可被脚本 try-catch 捕获），与 aesEncrypt 的错误行为一致
+        return Err(crate::value::error_value("aesDecrypt() 数据太短（至少需要 16 字节 IV）"));
     }
     let mut iv = [0u8; 16];
     iv.copy_from_slice(&data[..16]);
     let ciphertext = &data[16..];
     match crate::aes::aes_cbc_decrypt(ciphertext, &key, &iv) {
         Ok(plaintext) => Ok(Value::Bytes(Arc::new(plaintext))),
-        Err(e) => Ok(crate::value::error_value(format!("aesDecrypt() 解密失败: {}", e))),
+        // 返回 Err（可被脚本 try-catch 捕获），与 aesEncrypt 的错误行为一致
+        Err(e) => Err(crate::value::error_value(format!("aesDecrypt() 解密失败: {}", e))),
     }
 }
 
@@ -177,35 +254,10 @@ fn bi_aes_encrypt_str(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     bh::require_arg(args, 0, "aesEncryptStr")?;
     bh::require_arg(args, 1, "aesEncryptStr")?;
     let encrypted = bi_aes_encrypt(vm, args)?;
-    // 转 base64
-    if let Value::Bytes(b) = &encrypted {
-        let mut out = Vec::with_capacity((b.len() + 2) / 3 * 4);
-        let table = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut i = 0;
-        while i + 3 <= b.len() {
-            let n = ((b[i] as u32) << 16) | ((b[i + 1] as u32) << 8) | (b[i + 2] as u32);
-            out.push(table[((n >> 18) & 0x3F) as usize]);
-            out.push(table[((n >> 12) & 0x3F) as usize]);
-            out.push(table[((n >> 6) & 0x3F) as usize]);
-            out.push(table[(n & 0x3F) as usize]);
-            i += 3;
-        }
-        let rem = b.len() - i;
-        if rem == 1 {
-            let n = (b[i] as u32) << 16;
-            out.push(table[((n >> 18) & 0x3F) as usize]);
-            out.push(table[((n >> 12) & 0x3F) as usize]);
-            out.push(b'='); out.push(b'=');
-        } else if rem == 2 {
-            let n = ((b[i] as u32) << 16) | ((b[i + 1] as u32) << 8);
-            out.push(table[((n >> 18) & 0x3F) as usize]);
-            out.push(table[((n >> 12) & 0x3F) as usize]);
-            out.push(table[((n >> 6) & 0x3F) as usize]);
-            out.push(b'=');
-        }
-        Ok(Value::str_from(String::from_utf8_lossy(&out).into_owned()))
-    } else {
-        Ok(encrypted) // 错误值直接返回
+    // 转 base64（复用 builtins_encode 的统一实现，避免两处手写逻辑不一致）
+    match &encrypted {
+        Value::Bytes(b) => Ok(Value::str_from(crate::builtins_encode::base64_encode_bytes(b))),
+        other => Ok(other.clone()), // 错误值直接返回
     }
 }
 
@@ -215,56 +267,27 @@ fn bi_aes_encrypt_str(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 fn bi_aes_decrypt_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     bh::require_arg(args, 0, "aesDecryptStr")?;
     bh::require_arg(args, 1, "aesDecryptStr")?;
-    // 先 base64 解码（复用已有的解码逻辑）
+    // base64 解码：复用 builtins_encode 的严格模式实现
+    // （非法字符 / padding 位置错误 / 长度非 4 的倍数均报错，而非静默按 0 处理）
     let b64 = bh::as_str(args, 0, "aesDecryptStr")?;
-    let clean: Vec<u8> = b64.bytes().filter(|&b| b != b'=' && b != b'\n' && b != b'\r' && b != b' ').collect();
-    let mut data = Vec::with_capacity(clean.len() * 3 / 4);
-    let b64_val = |c: u8| -> Option<u32> {
-        match c {
-            b'A'..=b'Z' => Some((c - b'A') as u32),
-            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
-            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
-            b'+' => Some(62), b'/' => Some(63),
-            _ => None,
-        }
-    };
-    let mut i = 0;
-    while i + 4 <= clean.len() {
-        let v0 = b64_val(clean[i]).unwrap_or(0);
-        let v1 = b64_val(clean[i + 1]).unwrap_or(0);
-        let v2 = b64_val(clean[i + 2]);
-        let v3 = b64_val(clean[i + 3]);
-        let n = (v0 << 18) | (v1 << 12) | (v2.unwrap_or(0) << 6) | v3.unwrap_or(0);
-        data.push((n >> 16) as u8);
-        if v2.is_some() { data.push((n >> 8) as u8); }
-        if v3.is_some() { data.push(n as u8); }
-        i += 4;
-    }
-    // 处理剩余 2-3 字符
-    let rem = clean.len() - i;
-    if rem == 2 {
-        let v0 = b64_val(clean[i]).unwrap_or(0);
-        let v1 = b64_val(clean[i + 1]).unwrap_or(0);
-        let n = (v0 << 18) | (v1 << 12);
-        data.push((n >> 16) as u8);
-    } else if rem == 3 {
-        let v0 = b64_val(clean[i]).unwrap_or(0);
-        let v1 = b64_val(clean[i + 1]).unwrap_or(0);
-        let v2 = b64_val(clean[i + 2]).unwrap_or(0);
-        let n = (v0 << 18) | (v1 << 12) | (v2 << 6);
-        data.push((n >> 16) as u8);
-        data.push((n >> 8) as u8);
-    }
+    let data = crate::builtins_encode::base64_decode_strict(b64).map_err(|e| {
+        crate::value::error_value(format!(
+            "aesDecryptStr() base64 解码失败: {} (可能原因：输入不是 aesEncryptStr 产生的标准 base64)",
+            e,
+        ))
+    })?;
 
     let key = to_bytes(&args[1])?;
     if data.len() < 16 {
-        return Ok(crate::value::error_value("aesDecryptStr() base64 解码后数据太短"));
+        // 返回 Err（可被脚本 try-catch 捕获），与 aesEncrypt 的错误行为一致
+        return Err(crate::value::error_value("aesDecryptStr() base64 解码后数据太短（至少需要 16 字节 IV）"));
     }
     let mut iv = [0u8; 16];
     iv.copy_from_slice(&data[..16]);
     let ciphertext = &data[16..];
     match crate::aes::aes_cbc_decrypt(ciphertext, &key, &iv) {
         Ok(plaintext) => Ok(Value::str_from(String::from_utf8_lossy(&plaintext).into_owned())),
-        Err(e) => Ok(crate::value::error_value(format!("aesDecryptStr() 解密失败: {}", e))),
+        // 返回 Err（可被脚本 try-catch 捕获），与 aesEncrypt 的错误行为一致
+        Err(e) => Err(crate::value::error_value(format!("aesDecryptStr() 解密失败: {}", e))),
     }
 }
