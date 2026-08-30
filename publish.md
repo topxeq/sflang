@@ -51,8 +51,10 @@ git push origin vX.Y.Z
 
 ### 1.3 发布到仙缘渡（本地半自动）
 
+发布脚本位于**工作区根目录**（`D:\aiprjs\sflang\`），**不在 git 仓库内**——脚本内含 magicdo.top 管理凭据，参照 xxssh 的布局与仓库隔离，严禁移入 `repo/` 推送。
+
 ```powershell
-cd D:\aiprjs\sflang\repo
+cd D:\aiprjs\sflang
 .\publish-0.1.0.ps1 -DryRun    # 先检查：配置/图标/各平台二进制存在性、大小、sha256
 .\publish-0.1.0.ps1            # 正式发布
 ```
@@ -79,16 +81,23 @@ curl -fsSL https://magicdo.top/install/sf.sh | head -5
 
 ---
 
-## 2. 文件清单（本目录）
+## 2. 文件清单
+
+**仓库内（本目录，可推送）：**
 
 | 文件 | 用途 |
 |---|---|
 | `sf.conf.json` | 产品配置：名称/简介(markdown)/标签/平台清单/一键安装脚本/文档。发布脚本的唯一内容来源 |
 | `sf-icon.png` | 产品图标（≤500KB，4.2KB） |
-| `publish-0.1.0.ps1` | 仙缘渡发布脚本（支持 `-DryRun`）。**含 UTF-8 BOM，勿用无 BOM 编辑器重存**（见 §4） |
-| `cleanup-latest.py` | 清理仙缘渡旧版本（先 unset isLatest 再 DELETE，每平台只留当前版） |
 | `.github/workflows/release.yml` | GitHub 全平台构建工作流 |
-| `result/sf-*`（仓库外，`D:\aiprjs\sflang\result`） | 本地构建产物副本，发布脚本从这里取 Linux/macOS 二进制 |
+
+**工作区根目录（`D:\aiprjs\sflang\`，仓库外，不推送）：**
+
+| 文件 | 用途 |
+|---|---|
+| `publish-0.1.0.ps1` | 仙缘渡发布脚本（支持 `-DryRun`）。**含管理凭据与 UTF-8 BOM，严禁移入 repo/ 推送**（见 §4） |
+| `cleanup-latest.py` | 清理仙缘渡旧版本（先 unset isLatest 再 DELETE，每平台只留当前版）。同上含凭据 |
+| `result/sf-*` | 本地构建产物副本，发布脚本从这里取二进制 |
 
 ## 3. 注意事项与已踩过的坑
 
@@ -98,7 +107,7 @@ curl -fsSL https://magicdo.top/install/sf.sh | head -5
 4. **仙缘渡上传要求文件名带扩展名**：macOS/Linux 产物命名统一 `.bin` 后缀（`sf-macos-universal.bin`、`sf-linux-arm64.bin`）。
 5. **产品已存在时必须 PUT**：POST 会报"产品 ID 已存在"。发布脚本已自动处理（先查再定 POST/PUT）。
 6. **installScripts 与 versions 必须一致**：不要配置没有对应二进制的安装入口（曾出现 macOS 安装按钮无下载支撑，被真实用户环境暴露）。加新平台的正确顺序：先上传 version，再加安装入口。
-7. **凭据走环境变量**：发布脚本与 cleanup-latest.py 从环境变量读取 magicdo.top 管理凭据——`MAGICDO_USERNAME`（缺省 `topget`）与 `MAGICDO_PASSWORD`（必填）。仓库不含明文凭据；发布前先设置好环境变量，缺失时脚本会明确报错退出。
+7. **凭据与仓库隔离**：发布脚本（`publish-0.1.0.ps1`、`cleanup-latest.py`）内含 magicdo.top 管理凭据，位于工作区根目录、**在 git 仓库之外**（同 xxssh 布局）。这两个文件严禁移入 `repo/` 推送；`.gitignore` 已加兜底条目，`git status` 里若出现它们说明放错了位置。
 
 ## 4. 新增平台的步骤（示例：未来加 FreeBSD/iOS）
 

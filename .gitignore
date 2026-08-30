@@ -16,3 +16,7 @@ err.txt
 .DS_Store
 Thumbs.db
 temp/
+
+# 发布脚本含 magicdo.top 凭据，只允许存在于仓库外的工作区根目录（见 publish.md §3）
+publish-*.ps1
+cleanup-latest.py
