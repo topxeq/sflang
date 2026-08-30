@@ -98,7 +98,7 @@ curl -fsSL https://magicdo.top/install/sf.sh | head -5
 4. **仙缘渡上传要求文件名带扩展名**：macOS/Linux 产物命名统一 `.bin` 后缀（`sf-macos-universal.bin`、`sf-linux-arm64.bin`）。
 5. **产品已存在时必须 PUT**：POST 会报"产品 ID 已存在"。发布脚本已自动处理（先查再定 POST/PUT）。
 6. **installScripts 与 versions 必须一致**：不要配置没有对应二进制的安装入口（曾出现 macOS 安装按钮无下载支撑，被真实用户环境暴露）。加新平台的正确顺序：先上传 version，再加安装入口。
-7. **凭据**：管理员账号密码内置于发布脚本与 cleanup-latest.py（私有工作区约定）；仓库为公开仓库，**这些文件不应包含真实凭据对外**——若仓库转公开，先把凭据改为环境变量读取。
+7. **凭据走环境变量**：发布脚本与 cleanup-latest.py 从环境变量读取 magicdo.top 管理凭据——`MAGICDO_USERNAME`（缺省 `topget`）与 `MAGICDO_PASSWORD`（必填）。仓库不含明文凭据；发布前先设置好环境变量，缺失时脚本会明确报错退出。
 
 ## 4. 新增平台的步骤（示例：未来加 FreeBSD/iOS）
 

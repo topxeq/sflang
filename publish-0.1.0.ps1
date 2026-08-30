@@ -62,11 +62,13 @@ if ($DryRun) {
 }
 
 # ============================================================
-# 2. 登录
+# 2. 登录（凭据从环境变量读取：MAGICDO_USERNAME 缺省 topget，MAGICDO_PASSWORD 必填）
 # ============================================================
 Write-Host ""
 Write-Host "=== 2. 登录 ===" -ForegroundColor Cyan
-$loginJson = '{"username":"topget","password":"***REDACTED***"}'
+if (-not $env:MAGICDO_PASSWORD) { Write-Host "FATAL: 未设置环境变量 MAGICDO_PASSWORD（magicdo.top 管理密码）" -ForegroundColor Red; exit 1 }
+$magicdoUser = if ($env:MAGICDO_USERNAME) { $env:MAGICDO_USERNAME } else { "topget" }
+$loginJson = '{"username":"' + $magicdoUser + '","password":"' + $env:MAGICDO_PASSWORD + '"}'
 [System.IO.File]::WriteAllText("$TMP\sf_login.json", $loginJson, $UTF8)
 & $CURL -sS --max-time 30 -X POST "$BASE/api/admin/auth" -H "Content-Type: application/json" --data-binary "@$TMP\sf_login.json" -o "$TMP\sf_login_resp.json"
 $loginResp = Get-Content "$TMP\sf_login_resp.json" -Raw -Encoding UTF8 | ConvertFrom-Json

@@ -6,12 +6,18 @@ entries entirely. Each platform keeps ONLY the current release.
 Usage: python cleanup-latest.py <version-to-keep>   (called by publish-*.ps1)
 """
 import json
+import os
 import sys
 import urllib.request
 
 BASE = 'https://magicdo.top'
 PRODUCT_ID = 'sf'
 KEEP = sys.argv[1] if len(sys.argv) > 1 else '0.1.0'
+
+# 凭据从环境变量读取（仓库不含明文）：MAGICDO_USERNAME 缺省 topget，MAGICDO_PASSWORD 必填
+MAGICDO_USER = os.environ.get('MAGICDO_USERNAME', 'topget')
+MAGICDO_PASSWORD = os.environ.get('MAGICDO_PASSWORD')
+assert MAGICDO_PASSWORD, '请先设置环境变量 MAGICDO_PASSWORD（magicdo.top 管理密码）'
 
 def post(url, data=None):
     body = json.dumps(data).encode() if data is not None else None
@@ -27,7 +33,7 @@ def get(url):
     return urllib.request.urlopen(url, timeout=60).read().decode('utf-8')
 
 resp = json.loads(post(f'{BASE}/api/admin/auth',
-                       {'username': 'topget', 'password': '***REDACTED***'}))
+                       {'username': MAGICDO_USER, 'password': MAGICDO_PASSWORD}))
 assert resp.get('success'), resp
 token = resp['token']
 
