@@ -1,0 +1,122 @@
+name: release
+
+# Build all-platform binaries on tag push (v* tags).
+# Products land as GitHub Release assets (public download, no auth) under:
+#   sf.exe          - Windows x64 (GUI feature on)
+#   sf              - Linux x64 musl fully static (no GUI)
+#   sf-arm64        - Linux ARM64 musl fully static (no GUI)
+#   sf-universal    - macOS Intel + Apple Silicon (lipo, no GUI)
+# The magicdo.top store publish stays manual (publish-*.ps1 scripts download from here).
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches Cargo.toml version
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          CARGO_VER=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "tag=$VER cargo=$CARGO_VER"
+          [ "$VER" = "$CARGO_VER" ] || { echo "::error::tag $VER != Cargo.toml $CARGO_VER"; exit 1; }
+
+  windows:
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: target/release/sf.exe --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sf-windows-x64
+          path: target/release/sf.exe
+
+  linux:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # GUI feature 需要 webkit2gtk 系统库，服务器目标一律 --no-default-features
+      - run: cargo test --no-default-features
+      - run: cargo build --release --target x86_64-unknown-linux-musl --no-default-features
+      - run: |
+          strip target/x86_64-unknown-linux-musl/release/sf
+          file target/x86_64-unknown-linux-musl/release/sf
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sf-linux-amd64
+          path: target/x86_64-unknown-linux-musl/release/sf
+
+  linux-arm64:
+    needs: check
+    # Native ARM64 runner (free tier compatible); musl-tools' musl-gcc targets the host arch
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --target aarch64-unknown-linux-musl --no-default-features
+      - run: |
+          cp target/aarch64-unknown-linux-musl/release/sf sf-arm64
+          strip sf-arm64
+          file sf-arm64
+          ./sf-arm64 --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sf-linux-arm64
+          path: sf-arm64
+
+  macos:
+    needs: check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          cargo build --release --target x86_64-apple-darwin --no-default-features
+          cargo build --release --target aarch64-apple-darwin --no-default-features
+          lipo -create -output sf-universal \
+            target/x86_64-apple-darwin/release/sf \
+            target/aarch64-apple-darwin/release/sf
+          file sf-universal
+          ./sf-universal --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sf-macos-universal
+          path: sf-universal
+
+  release:
+    needs: [windows, linux, linux-arm64, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/sf.exe
+            dist/sf
+            dist/sf-arm64
+            dist/sf-universal
