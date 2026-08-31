@@ -626,6 +626,9 @@ sha256Hex("abc")               // "ba7816bf8f01cfea..."
 md5("abc")                     // bytes(16)
 sha1("abc")                    // bytes(20)
 sha256("abc")                  // bytes(32)
+sm3("abc")                     // bytes(32)，国密 SM3（GB/T 32905-2016）
+sm3Hex("abc")                  // 64 字符小写 hex
+hmacSm3(key, msg)              // HMAC-SM3 bytes；hmacSm3Hex 为 hex 版
 ```
 
 ### 字节序列
@@ -645,6 +648,17 @@ bytesToData(bytesFromHex("00000000000007ff"), "-endian=B")   // 2047（大端；
 dataToBytes(2047, "-endian=B")                               // 8 字节大端（默认 size=8，可用 "-size=N" 指定 1-16）
 dataToBytes(2047, "-endian=B", "-size=2")                    // 2 字节大端 07FF
 ```
+
+### 国密 SM4（GB/T 32907-2016）
+
+```sflang
+sm4Encrypt(data, key)    // SM4-CBC + PKCS7，输出 [16 字节随机 IV][密文] bytes
+sm4Decrypt(data, key)    // bytes → bytes
+sm4EncryptStr(text, key) // 便捷：字符串 → base64
+sm4DecryptStr(b64, key)  // 便捷：base64 → 字符串
+```
+
+key 固定 16 字节。API 与 aes 系列（aesEncrypt 等）完全对齐。
 
 ### RSA 加密（对标 hlbr/JSEncrypt 服务端约定）
 
@@ -902,7 +916,7 @@ sf --list-builtins math     # 筛选 math 分类
 | containers | 12 | stack（push/pop/peek/len/clear）+ queue（同） |
 | string | 13 | strToUpper/strSplit/strReplace/formatCode/strSub/strTrim/strJoin/strFind ... |
 | ring | 11 | 环形缓冲（push/pop/get/set/insert/remove/size/clear/toList） |
-| hash | 11 | md5/sha1/sha256/hmacSha256/getOtpCode/genOtpCode/checkOtpCode ... |
+| hash | 15 | md5/sha1/sha256/sm3/hmacSha256/hmacSm3/getOtpCode/genOtpCode/checkOtpCode ... |
 | encode | 10 | base64/url/html 编解码全套 |
 | datetime | 10 | now/datetime/dtFormat/dtAddDays/runTicker/formatTime ... |
 | math | 10 | abs/floor/ceil/round/sqrt/pow/min/max/random/randInt |
@@ -917,7 +931,7 @@ sf --list-builtins math     # 筛选 math 分类
 | pinyin | 2 | toPinYin/toPinYinInitial |
 | template | 2 | renderMarkdown/replaceHtmlByMap |
 
-共 **218 个函数** 有详细文档（25 个分类）。其余函数（image/http/db/s3/ssh/ftp/xlsx 等专用模块）暂无详细文档，但 help() 会显示"暂无文档"并提示分类。文档将持续补充。
+共 **226 个函数** 有详细文档（25 个分类）。其余函数（image/http/db/s3/ssh/ftp/xlsx 等专用模块）暂无详细文档，但 help() 会显示"暂无文档"并提示分类。文档将持续补充。
 
 ---
 

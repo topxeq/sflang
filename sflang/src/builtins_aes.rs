@@ -91,12 +91,85 @@ static DOC_AES_DECRYPT_STR: BuiltinDoc = BuiltinDoc {
     ],
 };
 
+static DOC_SM4_ENCRYPT: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "sm4Encrypt(data, key) -> bytes",
+    summary: "国密 SM4-CBC 加密（GB/T 32907-2016，PKCS7 填充），返回 [16 字节 IV][密文] 的 bytes。",
+    params: &[
+        ("data", "string/bytes/byteArray：明文"),
+        ("key", "string/bytes：密钥，固定 16 字节（SM4 密钥 128 位）"),
+    ],
+    returns: "bytes：[16 字节随机 IV][密文]，每次调用 IV 不同",
+    examples: &[
+        "ct := sm4Encrypt(\"hello\", \"0123456789abcdef\")  → 32 字节 bytes（16 IV + 16 密文）",
+    ],
+    errors: &[
+        "key 长度必须为 16 字节",
+        "输出含随机 IV，每次结果不同；用 sm4Decrypt 解密",
+    ],
+};
+
+static DOC_SM4_DECRYPT: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "sm4Decrypt(data, key) -> bytes",
+    summary: "国密 SM4-CBC 解密（输入 sm4Encrypt 的 [IV][密文] 输出）。",
+    params: &[
+        ("data", "bytes/byteArray：sm4Encrypt 的输出（[16 字节 IV][密文]）"),
+        ("key", "string/bytes：密钥（须与加密时相同）"),
+    ],
+    returns: "bytes：解密后的明文；失败返回 error",
+    examples: &[
+        "sm4Decrypt(sm4Encrypt(\"hello\", key), key) → bytes(\"hello\")",
+    ],
+    errors: &[
+        "数据短于 16 字节（IV）或非 16 倍数返回 error",
+        "密钥错误或填充损坏返回 error（不 panic）",
+    ],
+};
+
+static DOC_SM4_ENCRYPT_STR: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "sm4EncryptStr(text, key) -> string",
+    summary: "便捷字符串加密：UTF-8 字节 SM4 加密后输出 base64 字符串。",
+    params: &[
+        ("text", "string：明文（UTF-8 编码）"),
+        ("key", "string/bytes：密钥，固定 16 字节"),
+    ],
+    returns: "string：标准 base64（含 IV），可直接传输/存储",
+    examples: &[
+        "ct := sm4EncryptStr(\"hello\", \"0123456789abcdef\")  → base64 字符串",
+    ],
+    errors: &["等价于 base64(sm4Encrypt(text, key))"],
+};
+
+static DOC_SM4_DECRYPT_STR: BuiltinDoc = BuiltinDoc {
+    category: "crypto",
+    signature: "sm4DecryptStr(base64, key) -> string",
+    summary: "便捷字符串解密：输入 sm4EncryptStr 产生的 base64，返回 UTF-8 字符串。",
+    params: &[
+        ("base64", "string：sm4EncryptStr 的输出（base64）"),
+        ("key", "string/bytes：密钥（须与加密时相同）"),
+    ],
+    returns: "string：解密后的明文（按 UTF-8 解释）；失败返回 error",
+    examples: &[
+        "sm4DecryptStr(sm4EncryptStr(\"hello\", key), key) → \"hello\"",
+    ],
+    errors: &[
+        "base64 解码后数据短于 16 字节返回 error",
+        "密钥错误或填充损坏返回 error（不 panic）",
+    ],
+};
+
 /// register 注册 AES 内置函数。
 pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("aesEncrypt", bi_aes_encrypt, &DOC_AES_ENCRYPT);
     vm.register_builtin_doc("aesDecrypt", bi_aes_decrypt, &DOC_AES_DECRYPT);
     vm.register_builtin_doc("aesEncryptStr", bi_aes_encrypt_str, &DOC_AES_ENCRYPT_STR);
     vm.register_builtin_doc("aesDecryptStr", bi_aes_decrypt_str, &DOC_AES_DECRYPT_STR);
+    vm.register_builtin_doc("sm4Encrypt", bi_sm4_encrypt, &DOC_SM4_ENCRYPT);
+    vm.register_builtin_doc("sm4Decrypt", bi_sm4_decrypt, &DOC_SM4_DECRYPT);
+    vm.register_builtin_doc("sm4EncryptStr", bi_sm4_encrypt_str, &DOC_SM4_ENCRYPT_STR);
+    vm.register_builtin_doc("sm4DecryptStr", bi_sm4_decrypt_str, &DOC_SM4_DECRYPT_STR);
 }
 
 /// to_bytes 将参数转为字节 Vec。
@@ -289,5 +362,114 @@ fn bi_aes_decrypt_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         Ok(plaintext) => Ok(Value::str_from(String::from_utf8_lossy(&plaintext).into_owned())),
         // 返回 Err（可被脚本 try-catch 捕获），与 aesEncrypt 的错误行为一致
         Err(e) => Err(crate::value::error_value(format!("aesDecryptStr() 解密失败: {}", e))),
+    }
+}
+
+/// bi_sm4_encrypt 国密 SM4-CBC 加密（API 与 aesEncrypt 对齐）。
+///
+/// 用法：sm4Encrypt(data, key) → bytes
+/// data: string/bytes/byteArray（明文）；key: string/bytes，固定 16 字节
+/// 返回：[16字节IV][密文] 的 bytes
+fn bi_sm4_encrypt(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "sm4Encrypt")?;
+    bh::require_arg(args, 1, "sm4Encrypt")?;
+    let data = to_bytes(&args[0])?;
+    let key = to_bytes(&args[1])?;
+    if key.len() != 16 {
+        return Err(crate::value::error_value(format!(
+            "sm4Encrypt() 密钥长度必须为 16 字节（SM4 密钥固定 128 位），得到 {} 字节",
+            key.len()
+        )));
+    }
+    let iv = random_iv();
+    let mut key16 = [0u8; 16];
+    key16.copy_from_slice(&key);
+    let mut iv16 = [0u8; 16];
+    iv16.copy_from_slice(&iv);
+    let encrypted = crate::sm::sm4_cbc_encrypt(&data, &key16, &iv16);
+    // 输出：IV + 密文
+    let mut result = Vec::with_capacity(16 + encrypted.len());
+    result.extend_from_slice(&iv);
+    result.extend_from_slice(&encrypted);
+    Ok(Value::Bytes(Arc::new(result)))
+}
+
+/// bi_sm4_decrypt 国密 SM4-CBC 解密（API 与 aesDecrypt 对齐）。
+///
+/// 用法：sm4Decrypt(data, key) → bytes
+/// data: sm4Encrypt 输出的 [16字节IV][密文]
+fn bi_sm4_decrypt(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "sm4Decrypt")?;
+    bh::require_arg(args, 1, "sm4Decrypt")?;
+    let data = to_bytes(&args[0])?;
+    let key = to_bytes(&args[1])?;
+    if key.len() != 16 {
+        return Err(crate::value::error_value(format!(
+            "sm4Decrypt() 密钥长度必须为 16 字节（SM4 密钥固定 128 位），得到 {} 字节",
+            key.len()
+        )));
+    }
+    if data.len() < 16 {
+        // 返回 Err（可被脚本 try-catch 捕获），与 sm4Encrypt 的错误行为一致
+        return Err(crate::value::error_value("sm4Decrypt() 数据太短（至少需要 16 字节 IV）"));
+    }
+    let mut iv = [0u8; 16];
+    iv.copy_from_slice(&data[..16]);
+    let ciphertext = &data[16..];
+    let mut key16 = [0u8; 16];
+    key16.copy_from_slice(&key);
+    match crate::sm::sm4_cbc_decrypt(ciphertext, &key16, &iv) {
+        Ok(plaintext) => Ok(Value::Bytes(Arc::new(plaintext))),
+        Err(e) => Err(crate::value::error_value(format!("sm4Decrypt() 解密失败: {}", e))),
+    }
+}
+
+/// bi_sm4_encrypt_str 便捷：字符串加密 → base64 输出。
+///
+/// 用法：sm4EncryptStr(text, key) → base64 字符串
+fn bi_sm4_encrypt_str(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "sm4EncryptStr")?;
+    bh::require_arg(args, 1, "sm4EncryptStr")?;
+    let encrypted = bi_sm4_encrypt(vm, args)?;
+    // 转 base64（复用 builtins_encode 的统一实现，与 aesEncryptStr 一致）
+    match &encrypted {
+        Value::Bytes(b) => Ok(Value::str_from(crate::builtins_encode::base64_encode_bytes(b))),
+        other => Ok(other.clone()), // 错误值直接返回
+    }
+}
+
+/// bi_sm4_decrypt_str 便捷：base64 输入 → 字符串解密。
+///
+/// 用法：sm4DecryptStr(base64, key) → 字符串
+fn bi_sm4_decrypt_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "sm4DecryptStr")?;
+    bh::require_arg(args, 1, "sm4DecryptStr")?;
+    // base64 解码：严格模式（与 aesDecryptStr 一致）
+    let b64 = bh::as_str(args, 0, "sm4DecryptStr")?;
+    let data = crate::builtins_encode::base64_decode_strict(b64).map_err(|e| {
+        crate::value::error_value(format!(
+            "sm4DecryptStr() base64 解码失败: {} (可能原因：输入不是 sm4EncryptStr 产生的标准 base64)",
+            e,
+        ))
+    })?;
+
+    let key = to_bytes(&args[1])?;
+    if key.len() != 16 {
+        return Err(crate::value::error_value(format!(
+            "sm4DecryptStr() 密钥长度必须为 16 字节（SM4 密钥固定 128 位），得到 {} 字节",
+            key.len()
+        )));
+    }
+    if data.len() < 16 {
+        return Err(crate::value::error_value("sm4DecryptStr() base64 解码后数据太短（至少需要 16 字节 IV）"));
+    }
+    let mut iv = [0u8; 16];
+    iv.copy_from_slice(&data[..16]);
+    let ciphertext = &data[16..];
+    let mut key16 = [0u8; 16];
+    key16.copy_from_slice(&key);
+    match crate::sm::sm4_cbc_decrypt(ciphertext, &key16, &iv) {
+        Ok(plaintext) => Ok(Value::str_from(String::from_utf8_lossy(&plaintext).into_owned())),
+        Err(e) => Err(crate::value::error_value(format!("sm4DecryptStr() 解密失败: {}", e))),
     }
 }

@@ -187,6 +187,59 @@ static DOC_CHECK_OTP_CODE: BuiltinDoc = BuiltinDoc {
     ],
 };
 
+static DOC_SM3: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "sm3(data) -> bytes",
+    summary: "计算 SM3 密码杂凑（GB/T 32905-2016 国密标准），返回 32 字节 bytes。",
+    params: &[
+        ("data", "string/bytes/byteArray：待杂凑的数据"),
+    ],
+    returns: "bytes：32 字节 SM3 摘要",
+    examples: &[
+        // 与 charlang sm3、pip gmssl 交叉验证一致
+        "bytesHex(sm3(\"abc\")) → \"66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0\"",
+    ],
+    errors: &[],
+};
+
+static DOC_SM3_HEX: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "sm3Hex(data) -> string",
+    summary: "计算 SM3 并返回 64 字符小写十六进制字符串。",
+    params: &[
+        ("data", "string/bytes/byteArray：待杂凑的数据"),
+    ],
+    returns: "string：64 字符小写 hex",
+    examples: &["sm3Hex(\"abc\")"],
+    errors: &[],
+};
+
+static DOC_HMAC_SM3: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "hmacSm3(key, message) -> bytes",
+    summary: "计算 HMAC-SM3（RFC 2104 构造），返回 32 字节 bytes。",
+    params: &[
+        ("key", "string/bytes/byteArray：HMAC 密钥"),
+        ("message", "string/bytes/byteArray：待认证的消息"),
+    ],
+    returns: "bytes：32 字节 HMAC-SM3 摘要",
+    examples: &["bytesHex(hmacSm3(\"key\", \"message\"))"],
+    errors: &["参数顺序为 key 在前、message 在后"],
+};
+
+static DOC_HMAC_SM3_HEX: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "hmacSm3Hex(key, message) -> string",
+    summary: "计算 HMAC-SM3 并返回 64 字符小写十六进制字符串。",
+    params: &[
+        ("key", "string/bytes/byteArray：HMAC 密钥"),
+        ("message", "string/bytes/byteArray：待认证的消息"),
+    ],
+    returns: "string：64 字符小写 hex",
+    examples: &["hmacSm3Hex(\"key\", \"message\")"],
+    errors: &[],
+};
+
 pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("md5", bi_md5, &DOC_MD5);
     vm.register_builtin_doc("sha1", bi_sha1, &DOC_SHA1);
@@ -194,6 +247,10 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("md5Hex", bi_md5_hex, &DOC_MD5_HEX);
     vm.register_builtin_doc("sha1Hex", bi_sha1_hex, &DOC_SHA1_HEX);
     vm.register_builtin_doc("sha256Hex", bi_sha256_hex, &DOC_SHA256_HEX);
+    vm.register_builtin_doc("sm3", bi_sm3, &DOC_SM3);
+    vm.register_builtin_doc("sm3Hex", bi_sm3_hex, &DOC_SM3_HEX);
+    vm.register_builtin_doc("hmacSm3", bi_hmac_sm3, &DOC_HMAC_SM3);
+    vm.register_builtin_doc("hmacSm3Hex", bi_hmac_sm3_hex, &DOC_HMAC_SM3_HEX);
     vm.register_builtin_doc("hmacSha256", bi_hmac_sha256, &DOC_HMAC_SHA256);
     vm.register_builtin_doc("hmacSha256Hex", bi_hmac_sha256_hex, &DOC_HMAC_SHA256_HEX);
     vm.register_builtin_doc("getOtpCode", bi_get_otp_code, &DOC_GET_OTP_CODE);
@@ -249,6 +306,36 @@ fn bi_sha256_hex(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     bh::require_arg(args, 0, "sha256Hex")?;
     let data = to_bytes(&args[0])?;
     let hex: String = crate::hash::sha256(&data).iter().map(|b| format!("{:02x}", b)).collect();
+    Ok(Value::str_from(hex))
+}
+
+fn bi_sm3(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "sm3")?;
+    let data = to_bytes(&args[0])?;
+    Ok(Value::Bytes(Arc::new(crate::sm::sm3(&data))))
+}
+
+fn bi_sm3_hex(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "sm3Hex")?;
+    let data = to_bytes(&args[0])?;
+    let hex: String = crate::sm::sm3(&data).iter().map(|b| format!("{:02x}", b)).collect();
+    Ok(Value::str_from(hex))
+}
+
+fn bi_hmac_sm3(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "hmacSm3")?;
+    bh::require_arg(args, 1, "hmacSm3")?;
+    let key = to_bytes(&args[0])?;
+    let message = to_bytes(&args[1])?;
+    Ok(Value::Bytes(Arc::new(crate::sm::hmac_sm3(&key, &message))))
+}
+
+fn bi_hmac_sm3_hex(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "hmacSm3Hex")?;
+    bh::require_arg(args, 1, "hmacSm3Hex")?;
+    let key = to_bytes(&args[0])?;
+    let message = to_bytes(&args[1])?;
+    let hex: String = crate::sm::hmac_sm3(&key, &message).iter().map(|b| format!("{:02x}", b)).collect();
     Ok(Value::str_from(hex))
 }
 
