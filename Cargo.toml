@@ -10,7 +10,7 @@ resolver = "2"
 
 # workspace 级别的依赖统一管理
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.85"
 authors = ["topxeq"]
