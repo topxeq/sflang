@@ -108,7 +108,12 @@ curl -fsSL https://magicdo.top/install/sf.sh | head -5
 5. **产品已存在时必须 PUT**：POST 会报"产品 ID 已存在"。发布脚本已自动处理（先查再定 POST/PUT）。
 6. **installScripts 与 versions 必须一致**：不要配置没有对应二进制的安装入口（曾出现 macOS 安装按钮无下载支撑，被真实用户环境暴露）。加新平台的正确顺序：先上传 version，再加安装入口。
 7. **凭据与仓库隔离**：发布脚本（`publish-0.1.0.ps1`、`cleanup-latest.py`）内含 magicdo.top 管理凭据，位于工作区根目录、**在 git 仓库之外**（同 xxssh 布局）。这两个文件严禁移入 `repo/` 推送；`.gitignore` 已加兜底条目，`git status` 里若出现它们说明放错了位置。
-8. **不再自动部署 /tools/sf**：往服务器手工目录（如 wl 的 `/tools/sf`）分发由项目负责人手工操作，发布流程只到 GitHub Release + 仙缘渡为止。
+8. **Linux musl 产物必须为 static-PIE（ET_DYN）**：Android/Termux 只接受 PIE 可执行文件，
+   非 PIE 静态二进制在 Termux 报 `unexpected e_type: 2`。构建配方（CI 与本地一致）：
+   `RUSTFLAGS="-C link-self-contained=no -C relocation-model=pic -C link-arg=-static -C link-arg=-pie"`
+   + `cargo zigbuild`（zig cc 不认识合并写法 `-static-pie`，必须拆成 `-static -pie` 并让
+   zig 驱动自选 rcrt1.o）。CI 已内置 PIE 校验（file grep "pie executable"）。
+9. **不再自动部署 /tools/sf**：往服务器手工目录（如 wl 的 `/tools/sf`）分发由项目负责人手工操作，发布流程只到 GitHub Release + 仙缘渡为止。
 
 ## 4. 新增平台的步骤（示例：未来加 FreeBSD/iOS）
 
