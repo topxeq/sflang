@@ -41,19 +41,22 @@ jobs:
   linux:
     needs: check
     runs-on: ubuntu-latest
+    # static-PIE（ET_DYN）构建：Android/Termux 只接受 PIE 可执行文件，
+    # zig 驱动自选 rcrt1.o，配方与本地 publish 流程一致（见 publish.md）
+    env:
+      RUSTFLAGS: "-C link-self-contained=no -C relocation-model=pic -C link-arg=-static -C link-arg=-pie"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y musl-tools
-      # 注：CI 不跑测试套件（部分用例依赖本机环境会挂起），测试由开发机覆盖；
-      # GUI feature 需要 webkit2gtk 系统库，服务器目标一律 --no-default-features
-      - run: cargo build --release --target x86_64-unknown-linux-musl --no-default-features
+      - run: pip install cargo-zigbuild ziglang
+      - run: cargo zigbuild --release --target x86_64-unknown-linux-musl --no-default-features
       - run: |
+          file target/x86_64-unknown-linux-musl/release/sf | grep -q "pie executable" || { echo "::error::not a PIE binary"; exit 1; }
           strip target/x86_64-unknown-linux-musl/release/sf
-          file target/x86_64-unknown-linux-musl/release/sf
+          target/x86_64-unknown-linux-musl/release/sf --version
       - uses: actions/upload-artifact@v4
         with:
           name: sf-linux-amd64
@@ -61,20 +64,22 @@ jobs:
 
   linux-arm64:
     needs: check
-    # Native ARM64 runner (free tier compatible); musl-tools' musl-gcc targets the host arch
+    # Native ARM64 runner (free tier compatible)
     runs-on: ubuntu-24.04-arm
+    env:
+      RUSTFLAGS: "-C link-self-contained=no -C relocation-model=pic -C link-arg=-static -C link-arg=-pie"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - run: cargo build --release --target aarch64-unknown-linux-musl --no-default-features
+      - run: pip install cargo-zigbuild ziglang
+      - run: cargo zigbuild --release --target aarch64-unknown-linux-musl --no-default-features
       - run: |
           cp target/aarch64-unknown-linux-musl/release/sf sf-arm64
+          file sf-arm64 | grep -q "pie executable" || { echo "::error::not a PIE binary"; exit 1; }
           strip sf-arm64
-          file sf-arm64
           ./sf-arm64 --version
       - uses: actions/upload-artifact@v4
         with:
