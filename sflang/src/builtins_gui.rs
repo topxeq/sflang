@@ -1,6 +1,9 @@
 //! builtins_gui.rs — GUI 内置函数（基于 wry/tao WebView）
 //!
 //! 对标 Charlang 的 WebView2 GUI 支持。
+//! 【平台范围】GUI 功能当前仅在 Windows 平台提供（系统自带 WebView2）。
+//! 非 Windows 平台编译 builtins_gui_stub（同名函数返回明确错误）。
+//! 若未来支持其他平台，放开 lib.rs / vm.rs 中 builtins_gui 的 target_os 门即可。
 //! 采用"协作式移交"模式：guiShow 阻塞 VM 线程进入事件循环，
 //! JS 通过 window.ipc.postMessage() 发消息，IPC handler 在同一线程
 //! 安全重入执行 Sflang 的 handler 函数。

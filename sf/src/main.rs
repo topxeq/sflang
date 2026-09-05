@@ -6,6 +6,7 @@
 //   sf -e "<code>"           执行代码字符串
 //   sf --remote <url>        从 URL 下载并执行脚本
 //   sf --cloud <name>        从云端执行脚本（基础 URL 配置于 ~/.sf/cloud.cfg）
+//   sf --edit [file.sf]      内嵌 GUI 编辑器（仅 Windows）：新建窗口或打开文件编辑
 //   sf -server [options]     启动 HTTP 应用服务器
 //   sf --build <script.sf>   编译脚本为独立可执行文件
 //   sf -h | --help | help    显示帮助
@@ -26,6 +27,13 @@ use std::process::ExitCode;
 
 use sflang::value::Value;
 use sflang::Sflang;
+
+/// 内嵌 GUI 编辑器脚本源码（仅 Windows，经 --edit 启动）。
+///
+/// 源文件随仓库维护（sf/resources/sf_editor.sf），编译期内嵌进二进制，
+/// 无需随 sf.exe 分发额外文件。编辑器自身解析 argsG：
+/// 第一个非 -- 开头参数为预载文件路径，--debug 开启调试输出。
+const EDITOR_SRC: &str = include_str!("../resources/sf_editor.sf");
 
 /// 嵌入脚本标记。追加到 exe 末尾：[脚本内容][脚本长度u64 LE][SFLANG_PACK]
 const PACK_MAGIC: &[u8] = b"SFLANG_PACK";
@@ -155,6 +163,18 @@ fn real_main() -> ExitCode {
                     ExitCode::from(1)
                 }
             }
+        }
+        "--edit" | "-edit" => {
+            // 内嵌 GUI 编辑器：sf --edit [文件路径] [--debug]
+            // GUI 功能仅在 Windows 平台提供（WebView2），其他平台明确报错
+            if !cfg!(windows) {
+                eprintln!("错误：--edit（内嵌 GUI 编辑器）仅在 Windows 平台可用 (GUI 功能基于 WebView2)");
+                eprintln!("说明：非 Windows 平台可用任意文本编辑器编辑 .sf 文件后用 sf 执行");
+                return ExitCode::from(1);
+            }
+            // 参数原样传给编辑器脚本：它自己解析预载文件路径与 --debug 开关
+            let editor_args: Vec<String> = args[2..].to_vec();
+            run_string(EDITOR_SRC, "<editor>", editor_args)
         }
         "-v" | "--version" => {
             println!("sf {} (Sflang, Rust implementation)", env!("CARGO_PKG_VERSION"));
@@ -586,6 +606,9 @@ fn print_help() {
     println!("  sf --cloud <脚本名>      从云端执行脚本（基础 URL 配置于 ~/.sf/cloud.cfg）");
     println!("      示例：cloud.cfg 内容为 https://script.example.com/ 时，");
     println!("            sf --cloud basic.sf 等同于 sf --remote https://script.example.com/basic.sf");
+    println!("  sf --edit [file.sf]      内嵌 GUI 编辑器（仅 Windows）：新建窗口编辑，");
+    println!("                           或打开指定 .sf 文件编辑；编辑器内可运行/构建，");
+    println!("                           --debug 开启调试输出");
     println!("  sf -server [options]     启动 HTTP 应用服务器");
     println!("      --port=80             HTTP 服务端口（默认 80）");
     println!("      --sslPort=443         HTTPS 服务端口（指定 --certDir 且证书存在时启用，默认 443）");
@@ -690,6 +713,15 @@ fn print_repl_help() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 内嵌编辑器源码必须始终可编译：--edit 是编译期内嵌（include_str!），
+    /// 若脚本语法出错只会在用户运行 sf --edit 时才暴露，故用编译检查兜底。
+    /// 注意：仅验证词法/语法/编译层，GUI 窗口行为无法自动化测试。
+    #[test]
+    fn test_embedded_editor_compiles() {
+        let r = Sflang::compile_source(EDITOR_SRC, "<editor>");
+        assert!(r.is_ok(), "内嵌编辑器源码编译失败: {:?}", r.err());
+    }
 
     /// parse_cfg_content：普通 URL、注释、BOM、空白
     #[test]

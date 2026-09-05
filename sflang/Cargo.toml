@@ -19,8 +19,9 @@ path = "src/lib.rs"
 # 跨平台编译到无 GUI 系统库的目标（如 Linux 服务器）时，
 # 用 --no-default-features 关闭 GUI，可避免 webkit2gtk 等系统依赖。
 default = ["gui"]
-# GUI 支持（基于 wry/tao WebView）。Linux/macOS 上需要 webkit2gtk/WKWebView 等系统库，
-# 服务器或无头环境通常不需要，编译时关闭即可。
+# GUI 支持（基于 wry/tao WebView），仅在 Windows 平台提供（WebView2）。
+# 非 Windows 平台编译 builtins_gui_stub：同名函数调用时返回明确的平台不支持错误，
+# wry/tao 不会参与非 Windows 目标的编译链接。
 gui = ["dep:wry", "dep:tao"]
 
 [dependencies]
@@ -51,9 +52,6 @@ futures-util = { workspace = true }
 oracle-rs = { workspace = true }
 # FTP 客户端（纯 Rust FTP/FTPS）
 suppaftp = { workspace = true }
-# GUI WebView 支持（可选，受 gui feature 控制）
-wry = { workspace = true, optional = true }
-tao = { workspace = true, optional = true }
 # SSH 客户端
 russh = { workspace = true }
 russh-keys = { workspace = true }
@@ -83,3 +81,6 @@ rand = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
+# GUI WebView 支持（可选，受 gui feature 控制；GUI 仅在 Windows 平台提供）
+wry = { workspace = true, optional = true }
+tao = { workspace = true, optional = true }

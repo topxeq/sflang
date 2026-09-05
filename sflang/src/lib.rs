@@ -56,8 +56,12 @@ pub mod sql_engine;
 pub mod aes;
 pub mod builtins_aes;
 pub mod txde;
-#[cfg(feature = "gui")]
+// GUI 内置函数仅在 Windows 平台提供（基于 WebView2，wry/tao）。
+// 其他平台编译 builtins_gui_stub：注册同名函数，调用时返回明确的平台不支持错误。
+#[cfg(all(feature = "gui", target_os = "windows"))]
 pub mod builtins_gui;
+#[cfg(all(feature = "gui", not(target_os = "windows")))]
+pub mod builtins_gui_stub;
 pub mod builtins_ssh;
 pub mod builtins_le;
 pub mod builtins_email;

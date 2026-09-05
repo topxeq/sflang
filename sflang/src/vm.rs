@@ -209,8 +209,11 @@ impl VM {
         crate::builtins_db::register(&mut vm);
         crate::builtins_aes::register(&mut vm);
         crate::txde::register(&mut vm);
-        #[cfg(feature = "gui")]
+        // GUI 仅 Windows 提供；其他平台注册桩函数（调用返回明确的平台不支持错误）
+        #[cfg(all(feature = "gui", target_os = "windows"))]
         crate::builtins_gui::register(&mut vm);
+        #[cfg(all(feature = "gui", not(target_os = "windows")))]
+        crate::builtins_gui_stub::register(&mut vm);
         crate::builtins_ssh::register(&mut vm);
         crate::builtins_le::register(&mut vm);
         crate::builtins_email::register(&mut vm);
