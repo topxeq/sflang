@@ -211,6 +211,8 @@ impl Parser {
     ///
     /// 语法：
     ///   var ( name = expr; name = expr; ... )
+    ///   var ( name, name )                  // 纯声明（值为 undefined），兼容 charlang
+    ///   var ( name = expr, name = expr )    // 逗号分隔的单行写法
     ///   const ( name = expr; name; ... )    // const 分组内支持 iota 和省略表达式
     ///
     /// is_const=true 时启用 iota 计数器和省略表达式复用（Go 风格）。
@@ -262,9 +264,11 @@ impl Parser {
                 }
             }
 
-            // 分隔符：分号或换行（Sflang 中换行不产生 token，用分号或直接下一个标识符）
+            // 分隔符：分号或逗号（var (a, b) 纯声明与 var (a = 1, b = 2) 单行写法；
+            // Sflang 中换行不产生 token，多行写法也可省略分隔符直接换行）
             if !self.check(TokenKind::RParen) {
                 self.match_token(TokenKind::Semicolon);
+                self.match_token(TokenKind::Comma);
             }
         }
 
@@ -841,13 +845,20 @@ impl Parser {
                     let tok = self.advance();
                     let mut args = Vec::new();
                     while !self.check(TokenKind::RParen) {
-                        // 支持 ...arr 展开调用
+                        // 支持 ...arr 前缀展开调用
                         if self.check(TokenKind::Ellipsis) {
                             let spread_tok = self.advance();
                             let inner = self.parse_expr()?;
                             args.push(Expr::Spread { tok: spread_tok, expr: Box::new(inner) });
                         } else {
-                            args.push(self.parse_expr()?);
+                            let e = self.parse_expr()?;
+                            // 支持 arr... 尾缀展开调用（与 ...arr 等价，兼容两种书写习惯）
+                            if self.check(TokenKind::Ellipsis) {
+                                let spread_tok = self.advance();
+                                args.push(Expr::Spread { tok: spread_tok, expr: Box::new(e) });
+                            } else {
+                                args.push(e);
+                            }
                         }
                         if !self.match_token(TokenKind::Comma) { break; }
                     }

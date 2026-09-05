@@ -407,6 +407,22 @@ static DOC_PL: BuiltinDoc = BuiltinDoc {
     errors: &[],
 };
 
+static DOC_PLNOW: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "plNow(fmt, args...) -> undefined",
+    summary: "带本地时间戳的格式化打印：输出 \"[yyyy-MM-dd HH:mm:ss] \" 前缀 + 格式化内容并换行（对标 charlang 的 plNow）。",
+    params: &[
+        ("fmt", "格式字符串（Go 风格占位符，与 pl 相同）"),
+        ("args", "对应占位符的参数（可变）"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "plNow(\"Daily checking...\")       // [2026-09-03 13:41:40] Daily checking...",
+        "plNow(\"Processing %v...\", name)  // [2026-09-03 13:41:40] Processing xxx...",
+    ],
+    errors: &["时间戳取自本地时区（与 getNowStr 一致）"],
+};
+
 static DOC_FATALF: BuiltinDoc = BuiltinDoc {
     category: "core",
     signature: "fatalf(fmt, args...) -> !",
@@ -1267,6 +1283,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("prf", bi_printf, &DOC_PRF);
     vm.register_builtin_doc("printfln", bi_printfln, &DOC_PRINTFLN);
     vm.register_builtin_doc("pl", bi_printfln, &DOC_PL);
+    vm.register_builtin_doc("plNow", bi_pl_now, &DOC_PLNOW);
     vm.register_builtin_doc("fatalf", bi_fatalf, &DOC_FATALF);
     vm.register_builtin_doc("len", bi_len, &DOC_LEN);
     vm.register_builtin_doc("keys", bi_keys, &DOC_KEYS);
@@ -1415,6 +1432,21 @@ fn bi_fatalf(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let s = sprintf(args)?;
     eprintln!("{}", s);
     std::process::exit(1);
+}
+
+/// bi_pl_now 带本地时间戳的格式化打印（对标 charlang 的 plNow）。
+///
+/// 用法：plNow(fmt, args...) → 输出 "[yyyy-MM-dd HH:mm:ss] <格式化内容>" 并换行。
+///
+/// 实现说明：先对用户参数做 sprintf，再拼接时间戳直写输出——不能把用户
+/// fmt 嵌进外层格式串二次 sprintf，否则用户数据中含 % 字符时会被误格式化。
+fn bi_pl_now(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let msg = if args.is_empty() { String::new() } else { sprintf(args)? };
+    let ts = crate::datetime::DateTime::now().format("2006-01-02 15:04:05");
+    let out = _vm.output_handle();
+    writeln!(out.lock().unwrap(), "[{}] {}", ts, msg)
+        .map_err(|e| crate::value::error_value(e.to_string()))?;
+    Ok(Value::Undefined)
 }
 
 /// sprintf 格式化核心：args[0] 为格式串，args[1..] 为占位符实参。

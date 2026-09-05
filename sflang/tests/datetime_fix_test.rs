@@ -229,3 +229,32 @@ fn test_year_out_of_range_error() {
     assert_eq!(eval("return datetime(1, 1, 1).year"), Value::Int(1));
     assert_eq!(eval("return datetime(9999, 12, 31).year"), Value::Int(9999));
 }
+
+// ---- 8. getNowStr / nowDT 本地时区 ----
+
+/// tz_hhmm 以时区偏移分钟数推导 Go 风格 +HHMM/-HHMM 字符串（如 480 → "+0800"）。
+fn tz_hhmm(offset_min: i32) -> String {
+    let sign = if offset_min >= 0 { '+' } else { '-' };
+    let abs = offset_min.unsigned_abs();
+    format!("{}{:02}{:02}", sign, abs / 60, abs % 60)
+}
+
+#[test]
+fn test_getnowstr_and_nowdt_use_local_timezone() {
+    // 历史问题：文档曾宣称 getNowStr/nowDT 恒为 UTC（本地时区偏移未实现）。
+    // 实际 DateTime::now() 已接入 local_tz_offset_minutes，此测试锁定该行为，
+    // 且断言方式与运行机器的时区无关。
+    let offset = sflang::datetime::local_tz_offset_minutes();
+    let expected_tz = tz_hhmm(offset);
+
+    // getNowStr 带 -0700 布局应输出本机时区偏移（如 +0800），而非恒 +0000
+    let s = eval(r#"return getNowStr("2006-01-02 -0700")"#).to_str();
+    let tail = &s[s.len() - 5..];
+    assert_eq!(tail, expected_tz, "getNowStr 应输出本地时区偏移 {}", expected_tz);
+
+    // nowDT 的 tz_offset 应与系统时区偏移一致
+    match eval("return nowDT()") {
+        Value::DateTime(dt) => assert_eq!(dt.tz_offset, offset, "nowDT 的 tz_offset 应取系统时区"),
+        other => panic!("nowDT() 应返回 datetime，得到 {:?}", other.type_name()),
+    }
+}

@@ -272,10 +272,13 @@ static DOC_DTTOMILLIS: BuiltinDoc = BuiltinDoc {
 static DOC_GETNOWSTR: BuiltinDoc = BuiltinDoc {
     category: "datetime",
     signature: "getNowStr([fmt]) -> string",
-    summary: "返回当前时间格式化字符串。当前为 UTC 时间（本地时区偏移未实现，local_tz_offset_minutes 恒 0）。",
+    summary: "返回当前本地时间格式化字符串（按系统时区换算；需要 UTC 表示时用 dtFormat(datetime(now()), fmt)）。",
     params: &[("fmt", "可选。Go 风格格式")],
-    returns: "string 当前时间（UTC）的格式化结果",
-    examples: &[],
+    returns: "string 当前本地时间的格式化结果",
+    examples: &[
+        "getNowStr()                  → \"2026-09-02 15:47:20\"",
+        "getNowStr(\"2006-01-02\")     → \"2026-09-02\"",
+    ],
     errors: &[],
 };
 
@@ -360,9 +363,7 @@ fn bi_clock(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
 
 // ---- datetime 类型函数 ----
 
-/// bi_now_dt 返回当前时间（datetime）。
-///
-/// 注：当前为 UTC 时间（本地时区偏移未实现，local_tz_offset_minutes 恒 0）。
+/// bi_now_dt 返回当前时间（datetime，本地时区，DateTime::now 内部调用 local_tz_offset_minutes）。
 fn bi_now_dt(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
     Ok(Value::DateTime(std::sync::Arc::new(DateTime::now())))
 }
@@ -503,12 +504,10 @@ fn bi_dt_to_millis(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Int(dt.to_millis()))
 }
 
-/// bi_get_now_str 返回当前时间的格式化字符串。
+/// bi_get_now_str 返回当前本地时间的格式化字符串。
 ///
-/// 注：当前为 UTC 时间（本地时区偏移未实现，local_tz_offset_minutes 恒 0）。
-///
-/// 用法：getNowStr() → "2026-07-11 14:30:25"（默认格式）
-///       getNowStr("2006-01-02") → "2026-07-11"（自定义格式）
+/// 用法：getNowStr() → "2026-09-02 15:47:20"（默认格式，本地时区）
+///       getNowStr("2006-01-02") → "2026-09-02"（自定义格式）
 fn bi_get_now_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     use crate::builtins_helpers as bh;
     let fmt = if args.is_empty() {

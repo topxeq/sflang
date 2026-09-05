@@ -389,3 +389,103 @@ pln(strJoin(released, ","))"#);
     assert!(r.is_ok());
     assert_eq!(lines(&out), vec!["a,b"]);
 }
+
+// ---- var 分组声明的逗号分隔（兼容 charlang 的 var (a, b)）----
+
+#[test]
+fn test_var_group_comma_declaration_works() {
+    // var (a, b) 声明后可正常赋值使用
+    assert_eq!(
+        eval(r#"
+            var (a, b)
+            a = 10
+            b = a + 5
+            return b
+        "#),
+        Value::Int(15),
+    );
+    // 纯声明的变量初始值为 undefined
+    assert_eq!(
+        eval(r#"
+            var (a, b)
+            return isUndefined(b)
+        "#),
+        Value::Bool(true),
+    );
+}
+
+#[test]
+fn test_var_group_comma_with_initializers() {
+    // 逗号分隔的单行带初值写法
+    assert_eq!(
+        eval(r#"var (a = 1, b = 2, c) return a + b + (isUndefined(c) ? 0 : 1)"#),
+        Value::Int(3),
+    );
+}
+
+// ---- 调用处展开参数（...arr 前缀 与 arr... 尾缀）----
+
+#[test]
+fn test_call_spread_leading_and_trailing() {
+    // 前缀展开 ...arr（原有支持）
+    assert_eq!(
+        eval(r#"
+            func add(a, b) { return a + b }
+            var arr = [1, 2]
+            return add(...arr)
+        "#),
+        Value::Int(3),
+    );
+    // 尾缀展开 arr...（与 ...arr 等价）
+    assert_eq!(
+        eval(r#"
+            func add(a, b) { return a + b }
+            var arr = [1, 2]
+            return add(arr...)
+        "#),
+        Value::Int(3),
+    );
+    // 混合：普通参数 + 展开参数
+    assert_eq!(
+        eval(r#"
+            func add3(a, b, c) { return a + b + c }
+            var rest = [2, 3]
+            return add3(1, rest...)
+        "#),
+        Value::Int(6),
+    );
+}
+
+// ---- plNow 带本地时间戳打印 ----
+
+#[test]
+fn test_plnow_prints_local_timestamp() {
+    let (r, buf) = run_out(r#"plNow("Daily checking...")"#);
+    assert!(r.is_ok());
+    let ls = lines(&buf);
+    assert_eq!(ls.len(), 1);
+    let s = &ls[0];
+    // 形如 [2026-09-03 13:41:40] Daily checking...
+    assert!(s.ends_with("] Daily checking..."), "plNow 输出应含时间戳前缀: {}", s);
+    let close = s.find(']').unwrap();
+    let ts = &s[1..close];
+    assert_eq!(ts.len(), 19, "时间戳应为 yyyy-MM-dd HH:mm:ss 格式: {}", ts);
+    assert_eq!(&ts[4..5], "-", "年月日分隔符错误: {}", ts);
+    assert_eq!(&ts[7..8], "-", "月日分隔符错误: {}", ts);
+    assert_eq!(&ts[10..11], " ", "日期时间分隔符错误: {}", ts);
+    assert_eq!(&ts[13..14], ":", "时分分隔符错误: {}", ts);
+    assert_eq!(&ts[16..17], ":", "分秒分隔符错误: {}", ts);
+}
+
+#[test]
+fn test_plnow_formats_args_and_respects_percent_in_data() {
+    // 带占位符的格式化
+    let (r, buf) = run_out(r#"plNow("Processing %v...", "task1")"#);
+    assert!(r.is_ok());
+    assert!(lines(&buf)[0].ends_with("] Processing task1..."));
+
+    // 用户数据含 % 时不得被二次格式化（历史隐患：把用户 fmt 嵌入外层格式串的实现会在这里出错）
+    let (r2, buf2) = run_out(r#"plNow("%v ok", "100%")"#);
+    assert!(r2.is_ok());
+    assert!(lines(&buf2)[0].ends_with("] 100% ok"));
+}

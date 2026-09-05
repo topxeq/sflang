@@ -72,12 +72,13 @@ static DOC_SSH_LIST: BuiltinDoc = BuiltinDoc {
 
 static DOC_SSH_UPLOAD: BuiltinDoc = BuiltinDoc {
     category: "ssh",
-    signature: "sshUpload(\"--host=...\", \"--user=...\", \"--password=...\", \"--localPath=...\", \"--remotePath=...\") -> undefined",
-    summary: "用 SFTP 将本地文件上传到远程主机。",
+    signature: "sshUpload(\"--host=...\", \"--user=...\", \"--password=...\", \"--localPath=...\", \"--remotePath=...\" [, \"--append\"]) -> undefined",
+    summary: "用 SFTP 将本地文件上传到远程主机。默认覆盖写入；指定 --append 时追加到远程文件末尾（文件不存在则创建）。",
     params: &[
         ("--host/--user/--password", "认证参数"),
         ("--localPath", "本地源文件路径（必填）"),
         ("--remotePath", "远程目标文件路径（必填）"),
+        ("--append", "可选开关。追加模式：数据写入远程文件末尾而非覆盖"),
     ],
     returns: "undefined：上传成功；失败返回 error",
     examples: &[
@@ -215,19 +216,21 @@ static DOC_SSH_CREATE_FILE: BuiltinDoc = BuiltinDoc {
 
 static DOC_SSH_UPLOAD_BYTES: BuiltinDoc = BuiltinDoc {
     category: "ssh",
-    signature: "sshUploadBytes(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/f\", dataBytes) -> undefined",
-    summary: "用 SFTP 将 bytes/byteArray 内存数据上传到远程文件。",
+    signature: "sshUploadBytes(data, \"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/f\" [, \"--append\"]) -> undefined",
+    summary: "用 SFTP 将内存数据上传到远程文件。数据可为 bytes/byteArray/string（string 按 UTF-8 编码）。默认覆盖写入；指定 --append 时追加到文件末尾（文件不存在则创建）。",
     params: &[
         ("--host/--user/--password", "认证参数"),
         ("--remotePath", "远程目标文件路径（必填）"),
-        ("dataBytes", "要上传的 bytes 或 byteArray（最后一个非 -- 开头的参数）"),
+        ("--append", "可选开关。追加模式：数据写入远程文件末尾而非覆盖"),
+        ("data", "要上传的 bytes/byteArray/string（最后一个非开关参数；以 - 开头的字符串视为开关参数）"),
     ],
     returns: "undefined：上传成功；失败返回 error",
     examples: &[
         "sshUploadBytes(\"--host=10.0.0.1\", \"--user=app\", \"--password=secret\", \"--remotePath=/tmp/data.bin\", fileReadBytes(\"./local.bin\"))",
+        "sshUploadBytes(getNowStr() + \"\\n\", \"--host=h\", \"--user=u\", \"--password=p\", \"--remotePath=/var/log/app.log\", \"--append\")  // 直接上传字符串并追加一行",
     ],
     errors: &[
-        "缺少 bytes/byteArray 参数（最后一个非 -- 开头的参数）",
+        "缺少数据参数（bytes/byteArray/string，最后一个非开关参数）",
         "SFTP 创建 / 写入失败：远程路径无效 / 权限不足",
         "缺少 --remotePath 参数",
     ],
@@ -513,6 +516,48 @@ async fn sftp_open(handle: &russh::client::Handle<SshHandler>) -> Result<russh_s
         .await.map_err(|e| format!("SFTP 会话失败: {}", e))
 }
 
+/// sftp_write_file 将内存数据写入远程文件（供 sshUpload / sshUploadBytes 共用）。
+///
+/// append 为 false 时覆盖写入（文件不存在则创建，即 SFTP 的 CREATE|TRUNC|WRITE）。
+/// append 为 true 时追加到文件末尾：先查询远程文件当前大小，再以 CREATE|WRITE
+/// 方式打开（不截断）并 seek 到末尾写入。
+///
+/// 说明：SFTPv3 协议虽有 SSH_FXF_APPEND 标志，但 OpenSSH 等主流服务器会忽略它，
+/// 因此追加不依赖该标志，用「查大小 + seek」方式保证跨服务器可移植。
+async fn sftp_write_file(
+    sftp: &russh_sftp::client::SftpSession,
+    remote_path: &str,
+    data: &[u8],
+    append: bool,
+) -> Result<(), String> {
+    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+    let mut file = if append {
+        // 远程文件当前大小；文件不存在或查询失败按 0 处理（随后打开失败会给出确切错误）
+        let offset = match sftp.metadata(remote_path).await {
+            Ok(meta) => meta.size.unwrap_or(0),
+            Err(_) => 0,
+        };
+        // CREATE|WRITE：不存在则创建，存在则保留原内容（区别于 create 的 TRUNCATE）
+        let mut file = sftp.open_with_flags(
+            remote_path,
+            russh_sftp::protocol::OpenFlags::CREATE | russh_sftp::protocol::OpenFlags::WRITE,
+        ).await.map_err(|e| format!("SFTP 打开文件失败: {}", e))?;
+        // 定位到原文件末尾，实现追加写入
+        file.seek(std::io::SeekFrom::Start(offset)).await
+            .map_err(|e| format!("SFTP 定位文件末尾失败 (offset={}): {}", offset, e))?;
+        file
+    } else {
+        sftp.create(remote_path).await
+            .map_err(|e| format!("SFTP 创建文件失败: {}", e))?
+    };
+
+    file.write_all(data).await
+        .map_err(|e| format!("SFTP 写入失败: {}", e))?;
+    file.flush().await.ok();
+    Ok(())
+}
+
 // ---- 内置函数 ----
 
 fn bi_ssh_run(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
@@ -606,20 +651,22 @@ pub fn ssh_upload_impl(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         return Ok(crate::value::error_value("sshUpload() 需要 --localPath 和 --remotePath 参数"));
     }
 
-    let file_data = std::fs::read(&local_path).map_err(|e| {
-        crate::value::error_value(format!("sshUpload() 读取本地文件 '{}' 失败: {}", local_path, e))
-    })?;
+    // --append：追加模式（数据写到远程文件末尾而非覆盖）
+    let append = has_switch(args, "append");
+
+    // 读取本地文件失败按约定返回 error 对象（而非抛出异常），与文档一致
+    let file_data = match std::fs::read(&local_path) {
+        Ok(data) => data,
+        Err(e) => return Ok(crate::value::error_value(format!(
+            "sshUpload() 读取本地文件 '{}' 失败: {}", local_path, e,
+        ))),
+    };
 
     match do_ssh(&params, |handle| async move {
         let sftp = sftp_open(&handle).await?;
-        let mut file = sftp.create(&remote_path).await
-            .map_err(|e| format!("SFTP 创建文件失败: {}", e))?;
-        use tokio::io::AsyncWriteExt;
-        file.write_all(&file_data).await
-            .map_err(|e| format!("SFTP 写入失败: {}", e))?;
-        file.flush().await.ok();
+        let result = sftp_write_file(&sftp, &remote_path, &file_data, append).await;
         let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
-        Ok::<(), String>(())
+        result
     }) {
         Ok(()) => Ok(Value::Undefined),
         Err(e) => Ok(crate::value::error_value(e)),
@@ -906,23 +953,30 @@ fn bi_ssh_upload_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         return Ok(crate::value::error_value("sshUploadBytes() 需要 --remotePath 参数"));
     }
 
-    // 找 bytes 参数（最后一个非 -- 开头的参数）
-    let data = match args.iter().rev().find(|arg| matches!(arg, Value::Bytes(_) | Value::ByteArray(_))) {
+    // --append：追加模式（数据写到远程文件末尾而非覆盖）
+    let append = has_switch(args, "append");
+
+    // 找数据参数（最后一个满足条件的参数）：
+    //   bytes / byteArray 原样上传；string 按 UTF-8 编码后上传。
+    //   以 - 开头的字符串视为开关参数（如 --append），不作为数据。
+    let data = match args.iter().rev().find(|arg| match arg {
+        Value::Bytes(_) | Value::ByteArray(_) => true,
+        Value::Str(s) => !s.starts_with('-'),
+        _ => false,
+    }) {
         Some(Value::Bytes(b)) => b.as_ref().to_vec(),
         Some(Value::ByteArray(b)) => b.lock().unwrap().clone(),
-        _ => return Ok(crate::value::error_value("sshUploadBytes() 需要 bytes/byteArray 参数")),
+        Some(Value::Str(s)) => s.as_bytes().to_vec(),
+        _ => return Ok(crate::value::error_value(
+            "sshUploadBytes() 需要 bytes/byteArray/string 数据参数 (string 按 UTF-8 编码；以 - 开头的字符串视为开关参数，不会作为数据)",
+        )),
     };
 
     match do_ssh(&params, |handle| async move {
         let sftp = sftp_open(&handle).await?;
-        let mut file = sftp.create(&remote_path).await
-            .map_err(|e| format!("SFTP 创建文件失败: {}", e))?;
-        use tokio::io::AsyncWriteExt;
-        file.write_all(&data).await
-            .map_err(|e| format!("SFTP 写入失败: {}", e))?;
-        file.flush().await.ok();
+        let result = sftp_write_file(&sftp, &remote_path, &data, append).await;
         let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
-        Ok::<(), String>(())
+        result
     }) {
         Ok(()) => Ok(Value::Undefined),
         Err(e) => Ok(crate::value::error_value(e)),
@@ -1504,7 +1558,6 @@ fn bi_ssh_shell_write(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             None => return Err("会话已关闭".to_string()),
         };
         // russh 0.46 的 Channel::data<R: AsyncRead>：用 Cursor 作为 AsyncRead
-        use tokio::io::AsyncReadExt;
         let cursor = std::io::Cursor::new(data_bytes);
         channel.data(cursor).await
             .map_err(|_e| "SSH 写入失败（连接可能已断开）".to_string())?;
