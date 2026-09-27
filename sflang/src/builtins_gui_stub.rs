@@ -16,24 +16,25 @@ use crate::vm::VM;
 const MSG: &str = "{}() GUI 功能当前仅支持 Windows 平台 (当前平台不可用；如需 GUI 编程请在 Windows 上运行，或在非 Windows 平台改用命令行/服务器方式)";
 
 /// 生成桩函数：接受任意参数，返回平台不支持错误对象。
+/// $api_name 为脚本可见的函数名（错误消息用），不能用 stringify!(Rust 函数名)。
 macro_rules! gui_stub {
-    ($fn_name:ident) => {
+    ($fn_name:ident, $api_name:literal) => {
         fn $fn_name(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
             Ok(crate::value::error_value(
-                MSG.replace("{}", stringify!($fn_name)),
+                MSG.replace("{}", $api_name),
             ))
         }
     };
 }
 
-gui_stub!(bi_gui_new_window);
-gui_stub!(bi_gui_set_html);
-gui_stub!(bi_gui_set_url);
-gui_stub!(bi_gui_set_handler);
-gui_stub!(bi_gui_show);
-gui_stub!(bi_gui_eval);
-gui_stub!(bi_gui_set_title);
-gui_stub!(bi_gui_close);
+gui_stub!(bi_gui_new_window, "guiNewWindow");
+gui_stub!(bi_gui_set_html, "guiSetHtml");
+gui_stub!(bi_gui_set_url, "guiSetUrl");
+gui_stub!(bi_gui_set_handler, "guiSetHandler");
+gui_stub!(bi_gui_show, "guiShow");
+gui_stub!(bi_gui_eval, "guiEval");
+gui_stub!(bi_gui_set_title, "guiSetTitle");
+gui_stub!(bi_gui_close, "guiClose");
 
 /// 为桩函数生成统一的文档（签名与 Windows 版一致，summary 标注平台限制）。
 macro_rules! gui_stub_doc {

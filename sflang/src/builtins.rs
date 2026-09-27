@@ -1444,8 +1444,13 @@ fn bi_pl_now(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let msg = if args.is_empty() { String::new() } else { sprintf(args)? };
     let ts = crate::datetime::DateTime::now().format("2006-01-02 15:04:05");
     let out = _vm.output_handle();
-    writeln!(out.lock().unwrap(), "[{}] {}", ts, msg)
-        .map_err(|e| crate::value::error_value(e.to_string()))?;
+    // 消息为空时只输出时间戳行，避免行尾悬空空格
+    if msg.is_empty() {
+        writeln!(out.lock().unwrap(), "[{}]", ts)
+    } else {
+        writeln!(out.lock().unwrap(), "[{}] {}", ts, msg)
+    }
+    .map_err(|e| crate::value::error_value(e.to_string()))?;
     Ok(Value::Undefined)
 }
 

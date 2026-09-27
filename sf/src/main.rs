@@ -166,10 +166,14 @@ fn real_main() -> ExitCode {
         }
         "--edit" | "-edit" => {
             // 内嵌 GUI 编辑器：sf --edit [文件路径] [--debug]
-            // GUI 功能仅在 Windows 平台提供（WebView2），其他平台明确报错
-            if !cfg!(windows) {
-                eprintln!("错误：--edit（内嵌 GUI 编辑器）仅在 Windows 平台可用 (GUI 功能基于 WebView2)");
-                eprintln!("说明：非 Windows 平台可用任意文本编辑器编辑 .sf 文件后用 sf 执行");
+            // GUI 功能仅在 Windows 平台且启用 gui feature 时可用，其他情形明确报错
+            if !cfg!(all(windows, feature = "gui")) {
+                if cfg!(windows) {
+                    eprintln!("错误：--edit（内嵌 GUI 编辑器）需要启用 gui feature 的构建 (当前二进制以 --no-default-features 编译)");
+                } else {
+                    eprintln!("错误：--edit（内嵌 GUI 编辑器）仅在 Windows 平台可用 (GUI 功能基于 WebView2)");
+                    eprintln!("说明：非 Windows 平台可用任意文本编辑器编辑 .sf 文件后用 sf 执行");
+                }
                 return ExitCode::from(1);
             }
             // 参数原样传给编辑器脚本：它自己解析预载文件路径与 --debug 开关
