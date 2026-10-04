@@ -489,3 +489,49 @@ fn test_plnow_formats_args_and_respects_percent_in_data() {
     assert!(r2.is_ok());
     assert!(lines(&buf2)[0].ends_with("] 100% ok"));
 }
+
+// ---- 程序末尾表达式作为返回值（REPL 回显的基础）----
+
+/// run_program 直接以程序（非函数包装）执行代码，返回 vm.run 的 Ok 值。
+/// 注意：eval 是函数体包装（顶部最后语句为 var 声明），测不到本特性。
+fn run_program(src: &str) -> Value {
+    let mut sf = Sflang::new();
+    match sf.run_string(src) {
+        Ok(v) => v,
+        Err(e) => panic!("run_program failed: {}", e.inspect()),
+    }
+}
+
+#[test]
+fn test_program_returns_last_expression_value() {
+    // 末尾是表达式语句：其值作为程序返回值（此前恒为 undefined，REPL 无法回显）
+    assert_eq!(run_program("1 * 2"), Value::Int(2));
+    assert_eq!(run_program("var a = 1; a + 41"), Value::Int(42));
+    // 字符串原样返回
+    assert_eq!(run_program(r#""hello""#), Value::str("hello"));
+}
+
+#[test]
+fn test_program_non_expression_end_returns_undefined() {
+    // 末尾不是表达式语句（声明/控制流/函数定义）：仍返回 undefined
+    assert!(matches!(run_program("var x = 1"), Value::Undefined));
+    assert!(matches!(run_program("func f() { return 1 }"), Value::Undefined));
+    assert!(matches!(run_program("if true { }"), Value::Undefined));
+    // 空程序
+    assert!(matches!(run_program(""), Value::Undefined));
+}
+
+#[test]
+fn test_program_return_value_does_not_break_scripts() {
+    // 值返回不影响正常脚本语义：语句、循环、提前 return 均照常
+    assert_eq!(
+        run_program(r#"
+            var s = 0
+            for i in range(4) { s += i }
+            s
+        "#),
+        Value::Int(6),
+    );
+    // 顶层 return 仍然生效且返回其值
+    assert_eq!(run_program("return 7"), Value::Int(7));
+}

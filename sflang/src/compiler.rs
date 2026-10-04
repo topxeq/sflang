@@ -126,9 +126,23 @@ impl Compiler {
     }
 
     /// compile_program 编译整个程序为顶层 Code。
+    ///
+    /// 末尾语句是表达式语句时，不求值后立即丢弃（Pop），而是用 Return 把该值作为
+    /// 程序返回值——REPL 依据 vm.run 的 Ok 值回显；脚本执行方（CLI）忽略该值，
+    /// 行为不变。其余情况以 ReturnVoid 结束（返回 undefined）。
     pub fn compile_program(prog: &Program) -> Result<Code, CompileError> {
         let mut c = Compiler::new(&prog.file, "<script>");
-        c.compile_stmts(&prog.stmts)?;
+        if let Some(Stmt::ExprStmt { .. }) = prog.stmts.last() {
+            let (head, tail) = prog.stmts.split_at(prog.stmts.len() - 1);
+            c.compile_stmts(head)?;
+            if let Some(Stmt::ExprStmt { expr, tok }) = tail.first() {
+                c.set_line(tok.line);
+                c.compile_expr(expr)?;
+                c.code.emit(Opcode::Return);
+            }
+        } else {
+            c.compile_stmts(&prog.stmts)?;
+        }
         c.code.emit(Opcode::ReturnVoid);
         c.code.num_locals = c.func_local_count;
         Ok(c.code)
