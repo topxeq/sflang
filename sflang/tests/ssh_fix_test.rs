@@ -85,3 +85,60 @@ fn test_ssh_upload_append_flag_reaches_local_read() {
         "读取本地文件",
     );
 }
+
+// ---- //TXDEF# 加密密码自动解密（对标 charlang ssh*/ftp* 约定）----
+
+#[test]
+fn test_ssh_password_txdef_auto_decrypt_reaches_connection() {
+    // encryptText 生成 TXDEF hex，加 //TXDEF# 前缀后作为密码传入：
+    // 解密成功 → 密码非空 → 走到连接阶段（SSH 连接失败）；
+    // 若解密路径损坏（返回空），会报 "SSH 需要 --password 或 --key 认证参数"
+    assert_err_contains(
+        r#"
+        var enc = "//TXDEF#" + encryptText("SampleTxdeKey#2026")
+        return sshRun("-host=127.0.0.1", "-port=1", "-user=u", "-password=" + enc, "-cmd=x")
+    "#,
+        "SSH 连接失败",
+    );
+}
+
+#[test]
+fn test_ssh_password_740404_auto_decrypt_reaches_connection() {
+    // 740404 前缀同样支持
+    assert_err_contains(
+        r#"
+        var enc = "740404" + encryptText("SampleTxdeKey#2026")
+        return sshRun("-host=127.0.0.1", "-port=1", "-user=u", "-password=" + enc, "-cmd=x")
+    "#,
+        "SSH 连接失败",
+    );
+}
+
+#[test]
+fn test_ssh_password_txdef_garbage_fails_password_check() {
+    // 前缀在但密文损坏（解密失败返回空）→ 触发"缺少密码"检查。
+    // 注：该检查走 parse_ssh_params 的 Err 路径（脚本级异常，与缺 host/user 一致的
+    // 既有约定），故断言 Err 信息而非 error 对象。
+    let mut sf = Sflang::new();
+    let r = sf.run_string(
+        r#"return sshRun("-host=127.0.0.1", "-port=1", "-user=u", "-password=//TXDEF#zzzz", "-cmd=x")"#,
+    );
+    match r {
+        Err(Value::Error(e)) => assert!(
+            e.message.contains("--password"),
+            "错误信息应包含 '--password'，实际: {}",
+            e.message
+        ),
+        Err(other) => panic!("应为 Value::Error，得到 {:?}", other.type_name()),
+        Ok(v) => panic!("应返回错误，得到 ok 值: {}", v.inspect()),
+    }
+}
+
+#[test]
+fn test_ssh_password_plaintext_untouched() {
+    // 明文密码（无前缀）行为不变：原样使用，走到连接阶段
+    assert_err_contains(
+        r#"return sshRun("-host=127.0.0.1", "-port=1", "-user=u", "-password=plain", "-cmd=x")"#,
+        "SSH 连接失败",
+    );
+}

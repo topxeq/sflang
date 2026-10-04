@@ -27,7 +27,7 @@ static DOC_FTP_LIST: BuiltinDoc = BuiltinDoc {
         ("--host", "FTP 服务器地址（必填）"),
         ("--port", "FTP 端口，默认 21"),
         ("--user", "登录用户名，默认 anonymous"),
-        ("--password", "登录密码（匿名可留空）"),
+        ("--password", "登录密码（匿名可留空；支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "要列出的远程目录，默认 /"),
     ],
     returns: "array<string>：LIST 命令返回的每行（含权限、大小、文件名等原始格式）；失败返回 error",
@@ -48,7 +48,7 @@ static DOC_FTP_UPLOAD: BuiltinDoc = BuiltinDoc {
     signature: "ftpUpload(\"--host=...\", \"--user=...\", \"--password=...\", \"--localPath=...\", \"--remotePath=...\") -> undefined",
     summary: "将本地文件上传到 FTP 远程主机。",
     params: &[
-        ("--host/--port/--user/--password", "连接与认证参数"),
+        ("--host/--port/--user/--password", "连接与认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--localPath", "本地源文件路径（必填）"),
         ("--remotePath", "远程目标文件路径（必填）"),
     ],
@@ -68,7 +68,7 @@ static DOC_FTP_DOWNLOAD: BuiltinDoc = BuiltinDoc {
     signature: "ftpDownload(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=...\", \"--localPath=...\") -> undefined",
     summary: "将 FTP 远程文件下载到本地磁盘。",
     params: &[
-        ("--host/--port/--user/--password", "连接与认证参数"),
+        ("--host/--port/--user/--password", "连接与认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "远程源文件路径（必填）"),
         ("--localPath", "本地目标文件路径（必填）"),
     ],
@@ -88,7 +88,7 @@ static DOC_FTP_DOWNLOAD_BYTES: BuiltinDoc = BuiltinDoc {
     signature: "ftpDownloadBytes(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/f\") -> bytes",
     summary: "将 FTP 远程文件下载到内存 bytes（不落本地磁盘）。",
     params: &[
-        ("--host/--port/--user/--password", "连接与认证参数"),
+        ("--host/--port/--user/--password", "连接与认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "远程源文件路径（必填）"),
     ],
     returns: "bytes：文件全部内容；失败返回 error",
@@ -107,7 +107,7 @@ static DOC_FTP_CREATE_DIR: BuiltinDoc = BuiltinDoc {
     signature: "ftpCreateDir(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/dir\") -> undefined",
     summary: "在 FTP 远程主机创建单个目录（非递归，父目录须存在）。",
     params: &[
-        ("--host/--port/--user/--password", "连接与认证参数"),
+        ("--host/--port/--user/--password", "连接与认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "要创建的远程目录路径（必填）"),
     ],
     returns: "undefined：创建成功；失败返回 error",
@@ -125,7 +125,7 @@ static DOC_FTP_REMOVE_FILE: BuiltinDoc = BuiltinDoc {
     signature: "ftpRemoveFile(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/f\") -> undefined",
     summary: "删除 FTP 远程文件（DELE 命令，仅文件不能删目录）。",
     params: &[
-        ("--host/--port/--user/--password", "连接与认证参数"),
+        ("--host/--port/--user/--password", "连接与认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "要删除的远程文件路径（必填）"),
     ],
     returns: "undefined：删除成功；失败返回 error",
@@ -143,7 +143,7 @@ static DOC_FTP_SIZE: BuiltinDoc = BuiltinDoc {
     signature: "ftpSize(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/f\") -> int",
     summary: "获取 FTP 远程文件大小（字节，SIZE 命令）。",
     params: &[
-        ("--host/--port/--user/--password", "连接与认证参数"),
+        ("--host/--port/--user/--password", "连接与认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "远程文件路径（必填）"),
     ],
     returns: "int：文件字节数；失败返回 error",
@@ -162,7 +162,7 @@ static DOC_FTP_CREATE_FILE: BuiltinDoc = BuiltinDoc {
     signature: "ftpCreateFile(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/f\", \"--content=...\") -> undefined",
     summary: "在 FTP 远程主机创建文件并写入指定内容。",
     params: &[
-        ("--host/--port/--user/--password", "连接与认证参数"),
+        ("--host/--port/--user/--password", "连接与认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "远程目标文件路径（必填）"),
         ("--content", "文件内容字符串（默认空串，创建空文件）"),
     ],
@@ -182,7 +182,7 @@ static DOC_FTP_UPLOAD_BYTES: BuiltinDoc = BuiltinDoc {
     signature: "ftpUploadBytes(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/f\", dataBytes) -> undefined",
     summary: "将 bytes/byteArray 内存数据上传到 FTP 远程文件。",
     params: &[
-        ("--host/--port/--user/--password", "连接与认证参数"),
+        ("--host/--port/--user/--password", "连接与认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "远程目标文件路径（必填）"),
         ("dataBytes", "要上传的 bytes 或 byteArray（最后一个非 -- 开头的参数）"),
     ],
@@ -243,7 +243,8 @@ fn parse_ftp_params(args: &[Value]) -> Result<FtpParams, Value> {
         host: get_switch(args, "host", ""),
         port: get_switch(args, "port", "21").parse().unwrap_or(21),
         user: get_switch(args, "user", "anonymous"),
-        password: get_switch(args, "password", ""),
+        // 密码支持 //TXDEF# / 740404 加密格式，自动解密（对标 charlang 约定）
+        password: crate::txde::decrypt_switch_password(&get_switch(args, "password", "")),
     };
     if p.host.is_empty() {
         return Err(crate::value::error_value("FTP 需要 --host 参数"));

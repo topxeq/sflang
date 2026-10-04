@@ -226,6 +226,27 @@ pub fn is_encrypted_txdef(data: &[u8]) -> bool {
     data.starts_with(TXDEF_HEAD)
 }
 
+/// decrypt_switch_password 对可能带加密前缀的密码/密钥参数自动解密（对标 charlang
+/// ssh*/ftp* 系列的约定）。
+///
+/// 输入以 "//TXDEF#" 或 "740404" 开头时视为 TXDEF 加密串（hex），解密后返回
+/// （首尾空白裁掉，与 charlang 的 TrimSpace 行为一致）；否则原样返回。
+/// 解密/hex 解码失败返回空串，由调用方既有的"缺少密码"检查给出提示。
+pub fn decrypt_switch_password(pw: &str) -> String {
+    let trimmed = pw.trim();
+    let payload = if let Some(rest) = trimmed.strip_prefix("//TXDEF#") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("740404") {
+        rest
+    } else {
+        return trimmed.to_string();
+    };
+    let decrypted = hex_decode(payload)
+        .and_then(|data| decrypt_data_txdef(&data, ""))
+        .map(|v| String::from_utf8_lossy(&v).trim().to_string());
+    decrypted.unwrap_or_default()
+}
+
 // ---- TXDEM ----
 
 const TXDEM_SEED_LEN: usize = 32;

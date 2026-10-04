@@ -30,7 +30,7 @@ static DOC_SSH_RUN: BuiltinDoc = BuiltinDoc {
     params: &[
         ("--host", "远程主机地址（必填）"),
         ("--user", "登录用户名（必填）"),
-        ("--password", "密码认证（与 --key 二选一）"),
+        ("--password", "密码认证（与 --key 二选一；支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--key", "私钥文件路径（与 --password 二选一）"),
         ("--keyPassphrase", "私钥口令（可选，私钥加密时）"),
         ("--port", "SSH 端口，默认 22"),
@@ -75,7 +75,7 @@ static DOC_SSH_UPLOAD: BuiltinDoc = BuiltinDoc {
     signature: "sshUpload(\"--host=...\", \"--user=...\", \"--password=...\", \"--localPath=...\", \"--remotePath=...\" [, \"--append\"]) -> undefined",
     summary: "用 SFTP 将本地文件上传到远程主机。默认覆盖写入；指定 --append 时追加到远程文件末尾（文件不存在则创建）。",
     params: &[
-        ("--host/--user/--password", "认证参数"),
+        ("--host/--user/--password", "认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--localPath", "本地源文件路径（必填）"),
         ("--remotePath", "远程目标文件路径（必填）"),
         ("--append", "可选开关。追加模式：数据写入远程文件末尾而非覆盖"),
@@ -97,7 +97,7 @@ static DOC_SSH_DOWNLOAD: BuiltinDoc = BuiltinDoc {
     signature: "sshDownload(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=...\", \"--localPath=...\") -> undefined",
     summary: "用 SFTP 将远程文件下载到本地。",
     params: &[
-        ("--host/--user/--password", "认证参数"),
+        ("--host/--user/--password", "认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "远程源文件路径（必填）"),
         ("--localPath", "本地目标文件路径（必填）"),
     ],
@@ -117,7 +117,7 @@ static DOC_SSH_MKDIR: BuiltinDoc = BuiltinDoc {
     signature: "sshMkdir(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/dir\") -> undefined",
     summary: "用 SFTP 在远程创建单个目录（父目录必须存在，非递归）。",
     params: &[
-        ("--host/--user/--password", "认证参数"),
+        ("--host/--user/--password", "认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "要创建的远程目录路径（必填）"),
     ],
     returns: "undefined：创建成功；失败返回 error",
@@ -135,7 +135,7 @@ static DOC_SSH_REMOVE: BuiltinDoc = BuiltinDoc {
     signature: "sshRemove(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/path\") -> undefined",
     summary: "删除远程文件或目录（自动尝试先删文件再删目录）。",
     params: &[
-        ("--host/--user/--password", "认证参数"),
+        ("--host/--user/--password", "认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "要删除的远程文件或目录路径（必填）"),
     ],
     returns: "undefined：删除成功；失败返回 error",
@@ -154,7 +154,7 @@ static DOC_SSH_MOVE: BuiltinDoc = BuiltinDoc {
     signature: "sshMove(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/a\", \"--targetPath=/b\") -> undefined",
     summary: "移动或重命名远程文件 / 目录（SFTP rename）。",
     params: &[
-        ("--host/--user/--password", "认证参数"),
+        ("--host/--user/--password", "认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "源路径（必填）"),
         ("--targetPath", "目标路径（必填）"),
     ],
@@ -174,7 +174,7 @@ static DOC_SSH_SYNC: BuiltinDoc = BuiltinDoc {
     signature: "sshSync(\"--host=...\", \"--localPath=...\", \"--remotePath=...\", \"--direction=push|pull\", opts...) -> array<string>",
     summary: "在本地与远程之间同步目录（push 本地→远程，pull 远程→本地）。",
     params: &[
-        ("--host/--user/--password", "认证参数"),
+        ("--host/--user/--password", "认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--localPath", "本地目录（必填）"),
         ("--remotePath", "远程目录（必填）"),
         ("--direction", "方向：push（默认）或 pull"),
@@ -199,7 +199,7 @@ static DOC_SSH_CREATE_FILE: BuiltinDoc = BuiltinDoc {
     signature: "sshCreateFile(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/f\", \"--content=...\") -> undefined",
     summary: "在远程创建文件并写入指定内容（通过 SFTP）。",
     params: &[
-        ("--host/--user/--password", "认证参数"),
+        ("--host/--user/--password", "认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "远程目标文件路径（必填）"),
         ("--content", "文件内容字符串（默认空串）"),
     ],
@@ -219,7 +219,7 @@ static DOC_SSH_UPLOAD_BYTES: BuiltinDoc = BuiltinDoc {
     signature: "sshUploadBytes(data, \"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/f\" [, \"--append\"]) -> undefined",
     summary: "用 SFTP 将内存数据上传到远程文件。数据可为 bytes/byteArray/string（string 按 UTF-8 编码）。默认覆盖写入；指定 --append 时追加到文件末尾（文件不存在则创建）。",
     params: &[
-        ("--host/--user/--password", "认证参数"),
+        ("--host/--user/--password", "认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "远程目标文件路径（必填）"),
         ("--append", "可选开关。追加模式：数据写入远程文件末尾而非覆盖"),
         ("data", "要上传的 bytes/byteArray/string（最后一个非开关参数；以 - 开头的字符串视为开关参数）"),
@@ -241,7 +241,7 @@ static DOC_SSH_DOWNLOAD_BYTES: BuiltinDoc = BuiltinDoc {
     signature: "sshDownloadBytes(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/f\") -> bytes",
     summary: "用 SFTP 下载远程文件到内存 bytes（不落本地磁盘）。",
     params: &[
-        ("--host/--user/--password", "认证参数"),
+        ("--host/--user/--password", "认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "远程源文件路径（必填）"),
     ],
     returns: "bytes：文件全部内容的字节串；失败返回 error",
@@ -260,7 +260,7 @@ static DOC_SSH_IF_FILE_EXISTS: BuiltinDoc = BuiltinDoc {
     signature: "sshIfFileExists(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/path\") -> bool",
     summary: "检查远程文件或目录是否存在（通过 SFTP stat）。",
     params: &[
-        ("--host/--user/--password", "认证参数"),
+        ("--host/--user/--password", "认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "要检查的远程路径（必填）"),
     ],
     returns: "bool：true 存在（文件或目录），false 不存在；连接失败返回 error",
@@ -278,7 +278,7 @@ static DOC_SSH_GET_FILE_INFO: BuiltinDoc = BuiltinDoc {
     signature: "sshGetFileInfo(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/path\") -> map",
     summary: "获取远程文件信息（大小、修改时间、是否目录等）。",
     params: &[
-        ("--host/--user/--password", "认证参数"),
+        ("--host/--user/--password", "认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "远程文件或目录路径（必填）"),
     ],
     returns: "map：{size:int, mtime:int, atime:int, isDir:bool, isFile:bool, isSymlink:bool}；文件不存在返回 error",
@@ -299,7 +299,7 @@ static DOC_SSH_ENSURE_MAKE_DIRS: BuiltinDoc = BuiltinDoc {
     signature: "sshEnsureMakeDirs(\"--host=...\", \"--user=...\", \"--password=...\", \"--remotePath=/a/b/c\") -> undefined",
     summary: "递归创建远程目录（类似 mkdir -p），已存在的目录跳过。",
     params: &[
-        ("--host/--user/--password", "认证参数"),
+        ("--host/--user/--password", "认证参数（--password 支持 //TXDEF# / 740404 加密格式，自动解密）"),
         ("--remotePath", "要递归创建的远程目录路径（必填）"),
     ],
     returns: "undefined：创建成功；失败返回 error",
@@ -419,7 +419,8 @@ fn parse_ssh_params(args: &[Value]) -> Result<SshParams, Value> {
         host: get_switch(args, "host", ""),
         port: get_switch(args, "port", "22").parse().unwrap_or(22),
         user: get_switch(args, "user", ""),
-        password: get_switch(args, "password", ""),
+        // 密码支持 //TXDEF# / 740404 加密格式，自动解密（对标 charlang 约定）
+        password: crate::txde::decrypt_switch_password(&get_switch(args, "password", "")),
         key_path: get_switch(args, "key", ""),
         key_passphrase: get_switch(args, "keyPassphrase", ""),
         cmd_timeout: get_switch(args, "cmdTimeout", "0").parse().unwrap_or(0),
