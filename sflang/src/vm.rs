@@ -115,6 +115,45 @@ struct DeferEntry {
     args: Vec<Value>,
 }
 
+/// FinishState 帧收尾状态：帧逻辑结束后、defers 迭代执行期间的暂存信息。
+///
+/// 迭代化后 defers 不再内联递归执行，而是经帧栈逐个发起调用：
+/// 帧以"收尾中"状态留在栈上，每个 defer 调用作为普通被调帧执行，
+/// 其结果记回本状态（错误覆盖语义与原递归版一致）。
+struct FinishState {
+    /// result 帧的原始结束结果（Return 或 Throw；defer 错误可能覆盖为 Throw）。
+    result: FlowResult,
+    /// remaining_defers 待执行的 defer（逆序弹出执行）。
+    remaining_defers: Vec<DeferEntry>,
+    /// defer_err 已发生的 defer 错误（后执行的覆盖先前的）。
+    defer_err: Option<Value>,
+}
+
+/// Resume 帧结束结果的交付协议（帧创建时确定，不变）。
+///
+/// 决定帧最终结束（defers 全部执行完）时结果去向：
+#[derive(Clone, Copy, PartialEq)]
+enum Resume {
+    /// TopLevel 顶层帧：结果作为 execute_frames 的返回值交给 Rust 调用方
+    /// （run() 顶层执行、import 子脚本、call_function_value 发起的调用）。
+    TopLevel,
+    /// PushResult 调用返回：结果交付给调用方帧——
+    /// Return 值压回操作数栈；Throw 沿调用方 try 栈传播（可被 catch/finally 接住）。
+    PushResult,
+}
+
+/// CallErr start_call 的失败/切换结果。
+///
+/// 与 Result<Value, Value> 区分：EnterFrame 不是错误，而是"已生成被调帧、
+/// 需交回机器循环"的迭代式调用信号。
+enum CallErr {
+    /// Thrown 调用失败（不可调用/超最大深度/内置函数抛错），携带异常值。
+    Thrown(Value),
+    /// EnterFrame 被调方是用户函数，携带其新帧——调用方先压回自身帧（ip 已
+    /// 推进过调用指令），再压入此帧，返回机器循环。
+    EnterFrame(Frame),
+}
+
 /// Frame 调用帧。
 struct Frame {
     /// code 本帧执行的字节码。
@@ -131,6 +170,10 @@ struct Frame {
     defers: Vec<DeferEntry>,
     /// try_stack try 上下文栈。
     try_stack: Vec<TryEntry>,
+    /// resume 帧结束结果的交付协议（创建时确定；见 Resume）。
+    resume: Resume,
+    /// finish 收尾状态：帧逻辑结束后进入（defers 迭代执行期间）；None 表示执行中。
+    finish: Option<FinishState>,
 }
 
 impl Frame {
@@ -144,18 +187,103 @@ impl Frame {
             free_vars,
             defers: Vec::new(),
             try_stack: Vec::new(),
+            resume: Resume::TopLevel,
+            finish: None,
         }
     }
+}
+
+/// 全局核心内置函数表（进程内仅构建一次，所有 VM 共享只读引用）。
+///
+/// 背景：此前每个 VM（包括 run/runAsync 启动的每个子线程 VM）都要重新注册
+/// 700+ 个内置函数，每次耗时数微秒、占约几十 KB 内存。改为进程级 OnceLock
+/// 静态表后，VM::new 只需共享引用，子线程 VM 的创建成本大幅下降。
+/// 每个 VM 仍可注册自定义内置函数（extra_builtins，查找优先于核心表），
+/// 保持嵌入式 API 可扩展、可覆盖的既有语义。
+static CORE_BUILTINS: std::sync::OnceLock<std::collections::HashMap<&'static str, Builtin>> =
+    std::sync::OnceLock::new();
+
+/// core_builtins 获取全局核心内置函数表（首次访问时构建）。
+///
+/// 构建方式：用裸 VM（new_raw，不注册任何函数）作暂存区执行全部核心模块
+/// 注册，再把表抽走。Builtin.name 本身是 &'static str，直接作键，
+/// 无分配无泄漏。OnceLock 保证并发首访只构建一次。
+fn core_builtins() -> &'static std::collections::HashMap<&'static str, Builtin> {
+    CORE_BUILTINS.get_or_init(|| {
+        let mut vm = VM::new_raw();
+        register_all_core(&mut vm);
+        vm.extra_builtins.into_values().map(|b| (b.name, b)).collect()
+    })
+}
+
+/// register_all_core 注册全部核心内置函数模块（构建全局表用，进程内仅执行一次）。
+///
+/// 模块清单与历史 VM::new 完全一致（核心/字符串/数学/数组/时间/文件/JSON/
+/// 并发/GUI 等），保证内置函数集不变。
+fn register_all_core(vm: &mut VM) {
+    crate::builtins::register(vm);
+    crate::builtins_str::register(vm);
+    crate::builtins_math::register(vm);
+    crate::builtins_arr::register(vm);
+    crate::builtins_time::register(vm);
+    crate::builtins_fs::register(vm);
+    crate::builtins_json::register(vm);
+    crate::builtins_bytes::register(vm);
+    crate::builtins_bigint::register(vm);
+    crate::builtins_regex::register(vm);
+    crate::builtins_encode::register(vm);
+    crate::builtins_hash::register(vm);
+    crate::builtins_sys::register(vm);
+    crate::concurrency::register(vm);
+    crate::builtins_ring::register(vm);
+    crate::builtins_csv::register(vm);
+    crate::builtins_xlsx::register(vm);
+    crate::builtins_docx::register(vm);
+    crate::builtins_db::register(vm);
+    crate::builtins_aes::register(vm);
+    crate::txde::register(vm);
+    // GUI 仅 Windows 提供；其他平台注册桩函数（调用返回明确的平台不支持错误）
+    #[cfg(all(feature = "gui", target_os = "windows"))]
+    crate::builtins_gui::register(vm);
+    #[cfg(all(feature = "gui", not(target_os = "windows")))]
+    crate::builtins_gui_stub::register(vm);
+    crate::builtins_ssh::register(vm);
+    crate::builtins_le::register(vm);
+    crate::builtins_email::register(vm);
+    crate::builtins_ftp::register(vm);
+    crate::builtins_http::register(vm);
+    crate::builtins_zip::register(vm);
+    crate::builtins_containers::register(vm);
+    crate::builtins_xml::register(vm);
+    crate::builtins_clipboard::register(vm);
+    crate::builtins_dialog::register(vm);
+    crate::builtins_async::register(vm);
+    crate::builtins_test::register(vm);
+    crate::builtins_pinyin::register(vm);
+    crate::builtins_jwt::register(vm);
+    crate::builtins_rsa::register(vm);
+    crate::builtins_cfg::register(vm);
+    crate::builtins_template::register(vm);
+    crate::builtins_tcp::register(vm);
+    crate::builtins_proxy::register(vm);
+    crate::builtins_xxci::register(vm);
+    crate::builtins_image::register(vm);
+    crate::builtins_image_gen::register(vm);
+    crate::builtins_seq::register(vm);
+    crate::builtins_s3::register(vm);
 }
 
 /// VM 虚拟机。
 pub struct VM {
     /// stack 操作数栈。
     stack: Vec<Value>,
+    /// frames 调用帧栈（迭代式执行：函数调用压帧而非递归，任务状态可整体保存/恢复）。
+    frames: Vec<Frame>,
     /// globals 全局变量（跨线程共享，run 启动的线程与本 VM 共享同一份）。
     globals: Arc<Mutex<std::collections::HashMap<String, Value>>>,
-    /// builtins 内置函数表。
-    builtins: std::collections::HashMap<String, Builtin>,
+    /// extra_builtins 本 VM 额外注册的自定义内置函数（覆盖全局核心表同名函数）。
+    /// 通常为空（核心函数在全局表 CORE_BUILTINS 中，进程内共享）。
+    extra_builtins: std::collections::HashMap<String, Builtin>,
     /// out 标准输出（跨线程共享）。
     out: Arc<Mutex<dyn std::io::Write + Send>>,
     /// max_call_depth 最大调用深度。
@@ -169,15 +297,29 @@ pub struct VM {
 }
 
 impl VM {
-    /// new 创建虚拟机并注册内置函数。
+    /// new 创建虚拟机（内置函数取自全局核心表，进程内仅注册一次）。
     ///
-    /// 在此统一注册所有内置函数模块（核心/字符串/数学/数组/时间/文件/JSON/并发），
-    /// 保证 VM::new 与 Sflang::new 入口的内置函数集完全一致。
+    /// 在此统一预置各 VM 实例私有的部分（预定义数学常量等全局变量）；
+    /// 核心内置函数表由 core_builtins() 保证进程内仅构建一次。
     pub fn new() -> Self {
-        let mut vm = VM {
+        // 确保全局核心内置函数表已构建（并发首访时仅一次）
+        let _ = core_builtins();
+        let mut vm = VM::new_raw();
+        // 预定义数学常量全局变量（globals 为每 VM 私有，不能进全局函数表）
+        vm.set_global("piG", Value::Float(std::f64::consts::PI));
+        vm.set_global("eG", Value::Float(std::f64::consts::E));
+        vm
+    }
+
+    /// new_raw 创建裸 VM（不注册核心内置函数、不预置全局变量）。
+    ///
+    /// 仅供 core_builtins() 构建全局表时作暂存区使用，外部应使用 new()。
+    fn new_raw() -> Self {
+        VM {
             stack: Vec::with_capacity(1024),
+            frames: Vec::with_capacity(16),
             globals: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            builtins: std::collections::HashMap::new(),
+            extra_builtins: std::collections::HashMap::new(),
             out: Arc::new(Mutex::new(std::io::sink())),
             // max_call_depth 限制递归深度。
             // 注意：VM 的函数调用通过 Rust 递归实现（run_frame → do_call → run_frame），
@@ -187,61 +329,7 @@ impl VM {
             depth: 0,
             import_stack: Vec::new(),
             imported_modules: Vec::new(),
-        };
-        crate::builtins::register(&mut vm);
-        crate::builtins_str::register(&mut vm);
-        crate::builtins_math::register(&mut vm);
-        crate::builtins_arr::register(&mut vm);
-        crate::builtins_time::register(&mut vm);
-        crate::builtins_fs::register(&mut vm);
-        crate::builtins_json::register(&mut vm);
-        crate::builtins_bytes::register(&mut vm);
-        crate::builtins_bigint::register(&mut vm);
-        crate::builtins_regex::register(&mut vm);
-        crate::builtins_encode::register(&mut vm);
-        crate::builtins_hash::register(&mut vm);
-        crate::builtins_sys::register(&mut vm);
-        crate::concurrency::register(&mut vm);
-        crate::builtins_ring::register(&mut vm);
-        crate::builtins_csv::register(&mut vm);
-        crate::builtins_xlsx::register(&mut vm);
-        crate::builtins_docx::register(&mut vm);
-        crate::builtins_db::register(&mut vm);
-        crate::builtins_aes::register(&mut vm);
-        crate::txde::register(&mut vm);
-        // GUI 仅 Windows 提供；其他平台注册桩函数（调用返回明确的平台不支持错误）
-        #[cfg(all(feature = "gui", target_os = "windows"))]
-        crate::builtins_gui::register(&mut vm);
-        #[cfg(all(feature = "gui", not(target_os = "windows")))]
-        crate::builtins_gui_stub::register(&mut vm);
-        crate::builtins_ssh::register(&mut vm);
-        crate::builtins_le::register(&mut vm);
-        crate::builtins_email::register(&mut vm);
-        crate::builtins_ftp::register(&mut vm);
-        crate::builtins_http::register(&mut vm);
-        crate::builtins_zip::register(&mut vm);
-        crate::builtins_containers::register(&mut vm);
-        crate::builtins_xml::register(&mut vm);
-        crate::builtins_clipboard::register(&mut vm);
-        crate::builtins_dialog::register(&mut vm);
-        crate::builtins_async::register(&mut vm);
-        crate::builtins_test::register(&mut vm);
-        crate::builtins_pinyin::register(&mut vm);
-        crate::builtins_jwt::register(&mut vm);
-        crate::builtins_rsa::register(&mut vm);
-        crate::builtins_cfg::register(&mut vm);
-        crate::builtins_template::register(&mut vm);
-        crate::builtins_tcp::register(&mut vm);
-        crate::builtins_proxy::register(&mut vm);
-        crate::builtins_xxci::register(&mut vm);
-        crate::builtins_image::register(&mut vm);
-        crate::builtins_image_gen::register(&mut vm);
-        crate::builtins_seq::register(&mut vm);
-        crate::builtins_s3::register(&mut vm);
-        // 预定义数学常量全局变量
-        vm.set_global("piG", Value::Float(std::f64::consts::PI));
-        vm.set_global("eG", Value::Float(std::f64::consts::E));
-        vm
+        }
     }
 
     /// set_output 设置标准输出（须 Send 以支持跨线程共享）。
@@ -269,54 +357,81 @@ impl VM {
         self.globals.lock().unwrap().get(name).cloned()
     }
 
-    /// register_builtin 注册内置函数。
+    /// register_builtin 注册自定义内置函数（本 VM 私有，覆盖全局核心表同名函数）。
+    ///
+    /// 核心内置函数在进程级全局表中（core_builtins，进程内仅注册一次），
+    /// 此方法用于嵌入式场景追加自定义函数。
     pub fn register_builtin(&mut self, name: &'static str, func: crate::function::BuiltinFn) {
-        self.builtins.insert(name.to_string(), Builtin::new(name, func));
+        self.extra_builtins.insert(name.to_string(), Builtin::new(name, func));
     }
 
-    /// register_builtin_doc 注册带文档的内置函数（用于 help 系统）。
+    /// register_builtin_doc 注册带文档的自定义内置函数（用于 help 系统）。
+    /// 覆盖语义同 register_builtin。
     pub fn register_builtin_doc(
         &mut self,
         name: &'static str,
         func: crate::function::BuiltinFn,
         doc: &'static crate::function::BuiltinDoc,
     ) {
-        self.builtins
+        self.extra_builtins
             .insert(name.to_string(), Builtin::new_with_doc(name, func, doc));
     }
 
-    /// builtin_names 返回所有内置函数名（按字母序）。
+    /// lookup_builtin 按名查找内置函数，返回克隆（Builtin 为 3 个字，克隆廉价）。
+    ///
+    /// 查找顺序：本 VM 自定义表（可覆盖）→ 全局核心表。
+    fn lookup_builtin(&self, name: &str) -> Option<Builtin> {
+        if let Some(b) = self.extra_builtins.get(name) {
+            return Some(b.clone());
+        }
+        core_builtins().get(name).cloned()
+    }
+
+    /// builtin_names 返回所有内置函数名（按字母序，含自定义覆盖项）。
     /// 用于 help() 无参调用时列出全部函数。
     pub fn builtin_names(&self) -> Vec<&'static str> {
         let mut names: Vec<&'static str> = self
-            .builtins
+            .extra_builtins
             .values()
             .map(|b| b.name)
             .collect();
+        names.extend(core_builtins().values().map(|b| b.name));
         names.sort();
         names.dedup();
         names
     }
 
-    /// builtin_exists 判断内置函数是否存在（按名字）。
+    /// builtin_exists 判断内置函数是否存在（按名字，含自定义表）。
     pub fn builtin_exists(&self, name: &str) -> bool {
-        self.builtins.contains_key(name)
+        self.extra_builtins.contains_key(name) || core_builtins().contains_key(name)
     }
 
     /// builtin_doc 查询某内置函数的文档元数据。
     /// 返回 None 表示函数不存在或暂无文档。
     pub fn builtin_doc(&self, name: &str) -> Option<&'static crate::function::BuiltinDoc> {
-        self.builtins.get(name).and_then(|b| b.doc)
+        if let Some(b) = self.extra_builtins.get(name) {
+            return b.doc;
+        }
+        core_builtins().get(name).and_then(|b| b.doc)
     }
 
     /// builtin_categories 按分类聚合内置函数名。
     /// 返回 (分类, [函数名]) 列表，分类按字母序，函数名按字母序。
-    /// 无文档的函数归入 "(uncategorized)" 分类。
+    /// 无文档的函数归入 "(uncategorized)" 分类。自定义表优先（同名覆盖核心表）。
     pub fn builtin_categories(&self) -> Vec<(&'static str, Vec<&'static str>)> {
         use std::collections::BTreeMap;
         // 用 BTreeMap 自动按分类名排序
         let mut by_cat: BTreeMap<&'static str, Vec<&'static str>> = BTreeMap::new();
-        for b in self.builtins.values() {
+        // 自定义表先入（同名者覆盖核心表，核心表阶段跳过）
+        for b in self.extra_builtins.values() {
+            let cat = b.doc.map(|d| d.category).unwrap_or("(uncategorized)");
+            by_cat.entry(cat).or_default().push(b.name);
+        }
+        let core = core_builtins();
+        for b in core.values() {
+            if self.extra_builtins.contains_key(b.name) {
+                continue; // 被本 VM 自定义函数覆盖
+            }
             let cat = b.doc.map(|d| d.category).unwrap_or("(uncategorized)");
             by_cat.entry(cat).or_default().push(b.name);
         }
@@ -344,9 +459,14 @@ impl VM {
     }
 
     /// run 执行顶层 Code。
+    ///
+    /// 迭代化后：压入 TopLevel 帧交给 execute_frames 驱动。
+    /// 可重入：import 在机器执行中途调用本方法时，子脚本帧压在现有帧栈之上，
+    /// 只运行到该帧结束，不影响下方暂停中的调用链。
     pub fn run(&mut self, code: Arc<Code>) -> Result<Value, Value> {
-        let frame = Frame::new(code, Vec::new());
-        let res = self.run_frame(frame);
+        let frame = Frame::new(code, Vec::new()); // resume 默认 TopLevel
+        self.frames.push(frame);
+        let res = self.execute_frames();
         match res.kind {
             FlowKind::Throw => Err(res.value),
             _ => Ok(res.value),
@@ -356,14 +476,37 @@ impl VM {
     /// call_function_value 调用一个函数值（Func 或 Builtin），返回其结果。
     ///
     /// 供内置函数调用用户函数（如 onceDo 执行一次性回调、sort 自定义比较器等）。
-    /// 直接复用 do_call 机制，错误转为 Result。
+    /// 用户函数经帧栈迭代执行（TopLevel 帧），错误转为 Result；
+    /// Rust 侧递归深度只随"内置→脚本"嵌套层数增长（受 max_call_depth 约束），
+    /// 不随脚本调用深度增长。
     pub fn call_function_value(&mut self, callee: Value, args: Vec<Value>) -> Result<Value, Value> {
-        let argc = args.len();
-        self.push(callee);
-        for a in args {
-            self.push(a);
+        match callee {
+            Value::Builtin(b) => (b.func)(self, &args),
+            Value::Func(f) => {
+                if self.depth >= self.max_call_depth {
+                    return Err(error_value(format!(
+                        "max call depth exceeded ({}); 可能原因：递归过深", self.max_call_depth
+                    )));
+                }
+                self.depth += 1;
+                let mut new_frame = Frame::new(f.body.clone(), f.free_vars.clone());
+                self.bind_params(&f, &args, &mut new_frame);
+                new_frame.resume = Resume::TopLevel;
+                self.frames.push(new_frame);
+                let res = self.execute_frames();
+                self.depth -= 1;
+                match res.kind {
+                    FlowKind::Throw => Err(res.value),
+                    _ => Ok(res.value),
+                }
+            }
+            Value::Undefined => Err(error_value(
+                "not callable: undefined (可能原因：调用了未定义的函数名；请检查函数是否已定义、拼写是否正确；内置函数可用 help(分类) 查询，未定义变量可用 explainUndef(\"名字\") 诊断)",
+            )),
+            other => Err(error_value(format!(
+                "not callable: {} (可能原因：调用了非函数值；请检查变量是否为函数)", other.type_name()
+            ))),
         }
-        self.do_call(argc)
     }
 
     fn push(&mut self, v: Value) {
@@ -377,25 +520,75 @@ impl VM {
         self.stack.last().expect("stack empty")
     }
 
-    /// run_frame 执行一帧。
+    /// execute_frames 迭代式执行帧栈，直到顶层帧结束并返回其结果。
     ///
-    /// 控制流状态机：指令循环内产生的 return/throw/break 穿越事件不递归重入
-    /// run_frame，而是记录到 ev 并跳出循环，由外层 dispatch_event 在本帧的
-    /// try 栈上处置（进 catch / 挂起进 finally / 穿透出帧）。这保证深循环中的
-    /// try-catch 不会累积 Rust 栈帧（避免栈溢出）。
-    fn run_frame(&mut self, mut frame: Frame) -> FlowResult {
-        let code = frame.code.clone();
-        let insts = code.insts.clone();
-        // ev 待处置的控制流事件。None 时执行指令循环。
-        let mut ev: Option<Event> = None;
-        loop {
-            if let Some(e) = ev.take() {
-                match self.dispatch_event(&mut frame, e) {
-                    DispatchOutcome::Continue => continue,
-                    DispatchOutcome::Done(r) => return r,
+    /// 阶段一（解释器迭代化）：函数调用不再递归进入 run_frame，而是把调用方
+    /// 帧压回 self.frames 后压入被调帧，由本循环统一驱动。任意深度的 Sflang
+    /// 调用链只占用固定大小的 Rust 栈帧，任务状态（帧栈 + 操作数栈）可整体
+    /// 保存/恢复——这是 goroutine 式调度（任务挂起/恢复）的前提。
+    ///
+    /// 每轮循环：
+    ///   1. 取出栈顶帧；若处于收尾状态（finish），先按收尾状态机发起下一个
+    ///      defer 调用（经帧栈迭代）或结束该帧；
+    ///   2. 执行指令直到：控制流事件（ev）/ 发起用户函数调用（压帧换栈顶）；
+    ///   3. 事件交 dispatch_event 在本帧 try 栈处置（进 catch / 挂起进
+    ///      finally / 穿透出帧）——与原递归版语义一致；
+    ///   4. 帧逻辑结束后有 defer 则进入收尾状态；否则按 resume 协议交付结果。
+    fn execute_frames(&mut self) -> FlowResult {
+        'machine: loop {
+            let mut frame = match self.frames.pop() {
+                Some(f) => f,
+                None => unreachable!("execute_frames: 帧栈为空"),
+            };
+
+            // ---- 收尾状态机：该帧正在逆序执行 defers（经帧栈迭代，不递归） ----
+            if let Some(fin) = frame.finish.as_mut() {
+                if let Some(d) = fin.remaining_defers.pop() {
+                    let argc = d.args.len();
+                    // 本帧以收尾状态压回，defer 调用作为普通调用发起
+                    self.frames.push(frame);
+                    self.push(d.callee);
+                    for a in &d.args {
+                        self.push(a.clone());
+                    }
+                    match self.start_call(argc) {
+                        // 内置函数 defer：已执行完成（返回值按语义丢弃）
+                        Ok(_v) => continue 'machine,
+                        Err(CallErr::Thrown(e)) => {
+                            // 内置 defer 抛错：记入栈顶收尾帧的 defer_err
+                            // （后执行的覆盖先前的；继续执行剩余 defer，与原递归语义一致）
+                            let top = self.frames.last_mut().unwrap();
+                            top.finish.as_mut().unwrap().defer_err = Some(e);
+                            continue 'machine;
+                        }
+                        Err(CallErr::EnterFrame(cf)) => {
+                            // 用户函数 defer：被调帧入栈（收尾帧在其下），交回机器
+                            self.frames.push(cf);
+                            continue 'machine;
+                        }
+                    }
+                }
+                // 剩余 defer 为空：帧最终结束（深度已在进入收尾时扣减）
+                let fin = frame.finish.take().unwrap();
+                let result = match fin.defer_err {
+                    Some(e) => FlowResult { value: e, kind: FlowKind::Throw },
+                    None => fin.result,
+                };
+                match self.deliver_frame_result(frame, result) {
+                    Some(final_res) => return final_res,
+                    None => continue 'machine,
                 }
             }
-            // 指令循环：任何错误/return/throw 都置 ev 后 break，交由外层处置
+
+            // ---- 正常指令执行 ----
+            let code: Arc<Code> = frame.code.clone();
+            let insts = &code.insts;
+            // ev 待处置的控制流事件。None 时执行指令循环。
+            let mut ev: Option<Event> = None;
+            // 发起了用户函数调用（被调帧暂存于此，循环外统一入栈）
+            let mut entered_frame = false;
+            let mut pending_callee: Option<Frame> = None;
+            // 指令循环：任何错误/return/throw 都置 ev 后 break，交由事件处置
             while frame.ip < insts.len() {
                 let op_byte = insts[frame.ip];
                 let op = match Opcode::from_u8(op_byte) {
@@ -426,8 +619,8 @@ impl VM {
                             let globals = self.globals.lock().unwrap();
                             if let Some(v) = globals.get(name) {
                                 v.clone()
-                            } else if let Some(b) = self.builtins.get(name) {
-                                Value::Builtin(b.clone())
+                            } else if let Some(b) = self.lookup_builtin(name) {
+                                Value::Builtin(b)
                             } else {
                                 // 未定义：返回 undefined（不抛错）
                                 Value::Undefined
@@ -459,8 +652,8 @@ impl VM {
                             let globals = self.globals.lock().unwrap();
                             if let Some(v) = globals.get(name) {
                                 v.clone()
-                            } else if let Some(b) = self.builtins.get(name) {
-                                Value::Builtin(b.clone())
+                            } else if let Some(b) = self.lookup_builtin(name) {
+                                Value::Builtin(b)
                             } else {
                                 Value::Undefined
                             }
@@ -722,9 +915,15 @@ impl VM {
                         self.push(a);
                     }
                     // 调用：argc = N + 1（含隐式 self）
-                    match self.do_call(argc + 1) {
+                    match self.start_call(argc + 1) {
                         Ok(v) => { self.push(v); }
-                        Err(e) => { ev = Some(Event::Throw(e)); break; }
+                        Err(CallErr::Thrown(e)) => { ev = Some(Event::Throw(e)); break; }
+                        Err(CallErr::EnterFrame(cf)) => {
+                            // 被调帧暂存，循环外与调用方帧一起入栈（避免循环内移动 frame）
+                            pending_callee = Some(cf);
+                            entered_frame = true;
+                            break;
+                        }
                     }
                 }
                 Opcode::SpreadCall => {
@@ -742,9 +941,15 @@ impl VM {
                     for a in &all_args {
                         self.push(a.clone());
                     }
-                    match self.do_call(all_args.len()) {
+                    match self.start_call(all_args.len()) {
                         Ok(v) => { self.push(v); }
-                        Err(e) => { ev = Some(Event::Throw(e)); break; }
+                        Err(CallErr::Thrown(e)) => { ev = Some(Event::Throw(e)); break; }
+                        Err(CallErr::EnterFrame(cf)) => {
+                            // 被调帧暂存，循环外与调用方帧一起入栈（避免循环内移动 frame）
+                            pending_callee = Some(cf);
+                            entered_frame = true;
+                            break;
+                        }
                     }
                 }
                 Opcode::MethodSpreadCall => {
@@ -770,18 +975,30 @@ impl VM {
                     for a in &all_args {
                         self.push(a.clone());
                     }
-                    match self.do_call(all_args.len() + 1) {
+                    match self.start_call(all_args.len() + 1) {
                         Ok(v) => { self.push(v); }
-                        Err(e) => { ev = Some(Event::Throw(e)); break; }
+                        Err(CallErr::Thrown(e)) => { ev = Some(Event::Throw(e)); break; }
+                        Err(CallErr::EnterFrame(cf)) => {
+                            // 被调帧暂存，循环外与调用方帧一起入栈（避免循环内移动 frame）
+                            pending_callee = Some(cf);
+                            entered_frame = true;
+                            break;
+                        }
                     }
                 }
                 Opcode::Call => {
                     let argc = insts[frame.ip + 1] as usize;
                     frame.ip += 2;
-                    match self.do_call(argc) {
+                    match self.start_call(argc) {
                         Ok(v) => { self.push(v); }
                         // Throw 事件在本帧的 try 栈中查找 catch/finally（dispatch_event 处置）
-                        Err(e) => { ev = Some(Event::Throw(e)); break; }
+                        Err(CallErr::Thrown(e)) => { ev = Some(Event::Throw(e)); break; }
+                        Err(CallErr::EnterFrame(cf)) => {
+                            // 被调帧暂存，循环外与调用方帧一起入栈（避免循环内移动 frame）
+                            pending_callee = Some(cf);
+                            entered_frame = true;
+                            break;
+                        }
                     }
                 }
                 Opcode::Return => {
@@ -1082,48 +1299,139 @@ impl VM {
                     }
                 }
             }
-        }
-        // 指令循环结束：若有事件交由外层处置；否则自然结束（无 return）→ 返回 undefined
-        if ev.is_none() {
-            ev = Some(Event::Return(Value::Undefined));
-        }
-        } // 外层事件处置 loop
+            } // while 指令循环
+
+            // 发起了用户函数调用：调用方帧（ip 已推进）与被调帧依次入栈，
+            // 交回机器循环执行被调帧
+            if entered_frame {
+                self.frames.push(frame);
+                self.frames.push(pending_callee.take().unwrap());
+                continue 'machine;
+            }
+
+            // 指令循环结束：若无事件则自然结束（无 return）→ 返回 undefined
+            let e = match ev {
+                Some(e) => e,
+                None => Event::Return(Value::Undefined),
+            };
+            // 事件在本帧 try 栈上处置（catch/finally/穿透/帧逻辑结束）
+            match self.dispatch_event(&mut frame, e) {
+                DispatchOutcome::Continue => {
+                    // 已设置新 ip：帧压回，下一轮继续执行
+                    self.frames.push(frame);
+                    continue 'machine;
+                }
+                DispatchOutcome::Done(r) => {
+                    // 帧逻辑结束（try 栈走完）：扣减调用深度，进入 defer 收尾或交付结果
+                    if frame.resume == Resume::PushResult {
+                        self.depth -= 1;
+                    }
+                    match self.conclude_frame(frame, r) {
+                        Some(final_res) => return final_res,
+                        None => continue 'machine,
+                    }
+                }
+            }
+        } // 'machine
     }
 
-    /// do_call 执行函数调用。
+    /// conclude_frame 处理"帧逻辑结束"（dispatch 返回 Done）：
+    /// 有 defer 则转入收尾状态机（经帧栈迭代执行），无则直接交付结果。
+    /// 返回 Some 表示整个 execute_frames 结束（结果交 Rust 调用方）。
+    fn conclude_frame(&mut self, frame: Frame, result: FlowResult) -> Option<FlowResult> {
+        if !frame.defers.is_empty() {
+            let mut frame = frame;
+            frame.finish = Some(FinishState {
+                result,
+                remaining_defers: std::mem::take(&mut frame.defers),
+                defer_err: None,
+            });
+            self.frames.push(frame);
+            return None;
+        }
+        self.deliver_frame_result(frame, result)
+    }
+
+    /// deliver_frame_result 把一帧的最终结果按 resume 协议交付。
+    ///
+    /// frame 已弹出帧栈。返回 Some 表示整个 execute_frames 结束。
+    fn deliver_frame_result(&mut self, frame: Frame, result: FlowResult) -> Option<FlowResult> {
+        match frame.resume {
+            Resume::TopLevel => Some(result),
+            Resume::PushResult => {
+                let mut caller = self.frames.pop().expect("deliver_frame_result: 调用方帧缺失");
+                // 调用方处于收尾状态：本结果是它的某个 defer 调用的结果
+                if caller.finish.is_some() {
+                    if result.kind == FlowKind::Throw {
+                        // defer 调用抛错：记录（后执行的覆盖先前的）
+                        caller.finish.as_mut().unwrap().defer_err = Some(result.value);
+                    }
+                    // Ok：defer 返回值无用途，丢弃
+                    self.frames.push(caller);
+                    return None;
+                }
+                if result.kind == FlowKind::Throw {
+                    // 异常向调用方传播（可能被 catch/finally 接住，或调用方也结束）
+                    match self.dispatch_event(&mut caller, Event::Throw(result.value)) {
+                        DispatchOutcome::Continue => {
+                            self.frames.push(caller);
+                            None
+                        }
+                        DispatchOutcome::Done(r2) => {
+                            // 调用方帧逻辑结束：扣深度，进入收尾或继续上传
+                            if caller.resume == Resume::PushResult {
+                                self.depth -= 1;
+                            }
+                            self.conclude_frame(caller, r2)
+                        }
+                    }
+                } else {
+                    // 正常返回：值压回操作数栈，调用方继续执行（ip 已在调用指令之后）
+                    self.push(result.value);
+                    self.frames.push(caller);
+                    None
+                }
+            }
+        }
+    }
+
+    /// start_call 发起一次调用（从操作数栈弹出 callee 与实参）。
     ///
     /// 栈布局：[callee, arg1, ..., argN]，调用后弹出 callee 与全部实参。
-    /// 返回 Ok(返回值)（不压栈，由调用方决定是否压入）或 Err(异常值)。
-    fn do_call(&mut self, argc: usize) -> Result<Value, Value> {
+    /// 返回：
+    ///   - Ok(v)：被调方是内置函数且已执行完成，v 为结果（调用方决定压栈或丢弃）；
+    ///   - Err(Thrown(e))：调用失败（不可调用/超最大深度/内置抛错），e 为异常值；
+    ///   - Err(EnterFrame(f))：被调方是用户函数——调用方须先压回自身帧
+    ///     （ip 已推进过调用指令），再压入 f，交回机器循环（迭代式调用，不递归）。
+    fn start_call(&mut self, argc: usize) -> Result<Value, CallErr> {
         let stack_len = self.stack.len();
         let callee = self.stack[stack_len - argc - 1].clone();
         let args: Vec<Value> = self.stack[stack_len - argc..].to_vec();
         self.stack.truncate(stack_len - argc - 1);
 
         match &callee {
-            Value::Builtin(b) => (b.func)(self, &args),
+            Value::Builtin(b) => match (b.func)(self, &args) {
+                Ok(v) => Ok(v),
+                Err(e) => Err(CallErr::Thrown(e)),
+            },
             Value::Func(f) => {
                 if self.depth >= self.max_call_depth {
-                    return Err(error_value(format!(
+                    return Err(CallErr::Thrown(error_value(format!(
                         "max call depth exceeded ({}); 可能原因：递归过深", self.max_call_depth
-                    )));
+                    ))));
                 }
                 self.depth += 1;
                 let mut new_frame = Frame::new(f.body.clone(), f.free_vars.clone());
                 self.bind_params(f, &args, &mut new_frame);
-                let res = self.run_frame(new_frame);
-                self.depth -= 1;
-                match res.kind {
-                    FlowKind::Throw => Err(res.value),
-                    _ => Ok(res.value),
-                }
+                new_frame.resume = Resume::PushResult;
+                Err(CallErr::EnterFrame(new_frame))
             }
-            Value::Undefined => Err(error_value(
+            Value::Undefined => Err(CallErr::Thrown(error_value(
                 "not callable: undefined (可能原因：调用了未定义的函数名；请检查函数是否已定义、拼写是否正确；内置函数可用 help(分类) 查询，未定义变量可用 explainUndef(\"名字\") 诊断)",
-            )),
-            _ => Err(error_value(format!(
-                "not callable: {} (可能原因：调用了非函数值；请检查变量是否为函数)", callee.type_name()
             ))),
+            _ => Err(CallErr::Thrown(error_value(format!(
+                "not callable: {} (可能原因：调用了非函数值；请检查变量是否为函数)", callee.type_name()
+            )))),
         }
     }
 
@@ -1284,28 +1592,14 @@ impl VM {
         }
     }
 
-    /// finish_frame_with_defers 帧退出收尾：逆序执行全部 defers，返回帧结果。
+    /// finish_frame_with_defers 帧逻辑结束收尾（try 栈走完时调用）。
     ///
-    /// defer 在函数的任何退出路径（正常 return 或异常穿透）都执行；
-    /// 任一 defer 抛错时继续执行剩余 defer（保证资源全部释放，避免锁泄漏），
-    /// 最后一个 defer 错误覆盖帧的原始结果（对齐 Go 的 defer/panic 语义）。
-    fn finish_frame_with_defers(&mut self, frame: &mut Frame, mut result: FlowResult) -> DispatchOutcome {
-        let defers = std::mem::take(&mut frame.defers);
-        let mut defer_err: Option<Value> = None;
-        for d in defers.into_iter().rev() {
-            self.push(d.callee);
-            for a in &d.args {
-                self.push(a.clone());
-            }
-            if let Err(e) = self.do_call(d.args.len()) {
-                // 记录 defer 错误（后执行的 defer 错误覆盖先前的），继续执行剩余 defer
-                defer_err = Some(e);
-            }
-        }
-        if let Some(e) = defer_err {
-            result = FlowResult { value: e, kind: FlowKind::Throw };
-        }
-        // 清理本帧可能残留的 try 入口
+    /// 迭代化后本函数不再内联执行 defers——defers 留在帧上，由 execute_frames
+    /// 的收尾状态机经帧栈逐个发起调用（见 FinishState）。此处仅清理 try 栈。
+    /// defer 的执行语义（任何退出路径都执行、错误不中断剩余 defer、最后一个
+    /// defer 错误覆盖帧原始结果）由收尾状态机保持，与原递归版一致。
+    fn finish_frame_with_defers(&mut self, frame: &mut Frame, result: FlowResult) -> DispatchOutcome {
+        // 清理本帧残留的 try 入口（defers 执行期间不再有 try 语义）
         frame.try_stack.clear();
         DispatchOutcome::Done(result)
     }
@@ -1474,11 +1768,7 @@ impl VM {
                 let mut vm = VM::new();
                 vm.set_globals_handle(globals);
                 vm.set_output_handle(out);
-                vm.push(callee);
-                for a in &args {
-                    vm.push(a.clone());
-                }
-                let res = vm.do_call(args.len());
+                let res = vm.call_function_value(callee, args);
                 // 子线程内异常：打印提示，不传播（避免 panic）
                 if let Err(v) = res {
                     let msg = match &v {

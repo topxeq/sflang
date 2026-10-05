@@ -17,7 +17,7 @@
 
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
 use crate::function::BuiltinDoc;
 use crate::value::Value;
@@ -268,6 +268,30 @@ static DOC_ONCE_DO: BuiltinDoc = BuiltinDoc {
     ],
 };
 
+static DOC_POOL_RUN: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "poolRun(fn, workers, items) -> array",
+    summary: "有界并发执行：启动 workers 个工作线程，并发处理 items 中的每一项（对每项调用 fn(item)）。阻塞直到全部完成，返回与 items 等长的结果数组（顺序与 items 一一对应）。fn 抛异常时对应位置返回 error 值，不影响其余项。workers 大于 items 数量时按 items 数量启动（不启多余线程）。",
+    params: &[
+        ("fn", "处理函数，接收一个 item，返回结果"),
+        ("workers", "工作线程数（整数，1..=1024）"),
+        ("items", "待处理项数组"),
+    ],
+    returns: "array 结果数组，results[i] 为 fn(items[i]) 的返回值（异常时为 error 值）",
+    examples: &[
+        "var urls = [\"http://a\", \"http://b\", \"http://c\"]",
+        "var bodies = poolRun(func(u) { return getWeb(u) }, 8, urls)",
+        "for i in range(len(bodies)) { pln(urls[i], \"->\", len(bodies[i])) }",
+    ],
+    errors: &[
+        "fn 不是函数值时返回错误",
+        "workers 非整数或超出 1..=1024 范围时返回错误",
+        "items 不是数组时返回错误",
+        "items 为空数组时直接返回空数组（不启动线程）",
+        "fn 对某项抛异常时该项结果为 error 值（用 isErr 判断），整体不中断",
+    ],
+};
+
 /// register 注册所有并发相关内置函数。
 pub fn register(vm: &mut VM) {
     // channel
@@ -298,6 +322,8 @@ pub fn register(vm: &mut VM) {
     // once
     vm.register_builtin_doc("newOnce", bi_new_once, &DOC_NEW_ONCE);
     vm.register_builtin_doc("onceDo", bi_once_do, &DOC_ONCE_DO);
+    // 有界工作池
+    vm.register_builtin_doc("poolRun", bi_pool_run, &DOC_POOL_RUN);
 }
 
 // ============ 通用 downcast 辅助 ============
@@ -865,4 +891,116 @@ fn bi_once_do(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             }
         }
     }
+}
+
+// ============ poolRun 有界工作池 ============
+
+/// bi_pool_run 有界并发执行：workers 个线程消费 items，结果按输入顺序返回。
+///
+/// 实现要点：
+///   - 原子索引分发任务：工作线程循环 next.fetch_add(1) 抢占下一项，
+///     无锁分发、天然负载均衡（慢线程少拿任务）
+///   - 结果槽按输入顺序预分配（Arc<Vec<Arc<Mutex<Option<Value>>>>>），
+///     工作线程按下标写入，保证结果顺序与 items 一一对应
+///   - 每个工作线程独立 VM（共享 globals 与输出），与 run 子线程同模型；
+///     内置函数表已全局化（阶段0a），每线程不再重复注册
+///   - fn 对某项抛异常：该项结果槽写入 error 值（符合"返回错误对象为主"约定），
+///     不中断其余项
+fn bi_pool_run(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 3 {
+        return Err(crate::value::error_value(
+            "poolRun() 需要 3 个参数 (fn, workers, items)",
+        ));
+    }
+    // 参数校验：函数 / 工作线程数 / 数组，非法时给出 AI 友好错误
+    let func = args[0].clone();
+    if !matches!(func, Value::Func(_) | Value::Builtin(_)) {
+        return Err(crate::value::error_value(format!(
+            "poolRun() 第 1 个参数应为函数值，得到 {} (可能原因：参数顺序错误，应为 poolRun(fn, workers, items))",
+            func.type_name()
+        )));
+    }
+    let workers = args[1].to_int().ok_or_else(|| {
+        crate::value::error_value(
+            "poolRun() 第 2 个参数 workers 需为整数 (可能原因：传入了字符串或 undefined)",
+        )
+    })?;
+    if workers < 1 || workers > 1024 {
+        return Err(crate::value::error_value(format!(
+            "poolRun() workers 超出范围: {} (合法范围 1..=1024; 可能原因：worker 数传了 0/负数或过大值)",
+            workers
+        )));
+    }
+    let items: Arc<Vec<Value>> = match &args[2] {
+        Value::Array(a) => Arc::new(a.lock().unwrap().clone()),
+        other => {
+            return Err(crate::value::error_value(format!(
+                "poolRun() 第 3 个参数应为数组，得到 {} (可能原因：参数顺序错误)",
+                other.type_name()
+            )))
+        }
+    };
+    // 空任务直接返回空数组（不启动线程）
+    if items.is_empty() {
+        return Ok(Value::Array(Arc::new(Mutex::new(Vec::new()))));
+    }
+
+    // 原子任务索引：工作线程抢占下一项
+    let next = Arc::new(AtomicUsize::new(0));
+    // 结果槽：预分配、按下标写入（保证结果顺序与输入一致）
+    let slots: Arc<Vec<Arc<Mutex<Option<Value>>>>> = Arc::new(
+        (0..items.len()).map(|_| Arc::new(Mutex::new(None))).collect(),
+    );
+
+    // 工作线程数不超过任务数（不启多余线程）
+    let n_workers = (workers as usize).min(items.len());
+    let globals = vm.globals_handle();
+    let out = vm.output_handle();
+
+    let mut handles = Vec::with_capacity(n_workers);
+    for _ in 0..n_workers {
+        let func = func.clone();
+        let items = items.clone();
+        let next = next.clone();
+        let slots = slots.clone();
+        let globals = globals.clone();
+        let out = out.clone();
+        handles.push(std::thread::spawn(move || {
+            // 工作线程独立 VM（共享全局环境与输出），与 run 子线程同模型
+            let mut wvm = VM::new();
+            wvm.set_globals_handle(globals);
+            wvm.set_output_handle(out);
+            loop {
+                let idx = next.fetch_add(1, Ordering::SeqCst);
+                if idx >= items.len() {
+                    break;
+                }
+                // fn 对该项抛异常：统一包装为 error 值写入结果槽，不中断其余项
+                // （throw 的非 error 值也包装，保证 results 中异常项恒为 error 类型，
+                //   脚本侧用 isErr 判断即可，符合"返回错误对象为主"的约定）
+                let val = match wvm.call_function_value(func.clone(), vec![items[idx].clone()]) {
+                    Ok(v) => v,
+                    Err(e) => match e {
+                        Value::Error(_) => e,
+                        other => crate::value::error_value(format!(
+                            "poolRun: 任务处理函数抛出异常: {}",
+                            other.to_str()
+                        )),
+                    },
+                };
+                *slots[idx].lock().unwrap() = Some(val);
+            }
+        }));
+    }
+    for h in handles {
+        let _ = h.join();
+    }
+
+    // 汇总结果（顺序与 items 一致；每个槽必被恰好写入一次）
+    let mut results = Vec::with_capacity(items.len());
+    for slot in slots.iter() {
+        let v = slot.lock().unwrap().take().unwrap_or(Value::Undefined);
+        results.push(v);
+    }
+    Ok(Value::Array(Arc::new(Mutex::new(results))))
 }

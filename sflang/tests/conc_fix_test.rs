@@ -337,3 +337,110 @@ return 1
     let r = run_with_timeout(src, Duration::from_secs(10));
     assert_eq!(r, Value::Int(1), "rwmutex 基本操作应正常");
 }
+
+// ---- poolRun 有界工作池（阶段0b） ----
+
+/// test_poolrun_preserves_order 结果顺序与输入一一对应。
+#[test]
+fn test_poolrun_preserves_order() {
+    let src = r#"
+var items = []
+for i in range(20) { push(items, i) }
+var results = poolRun(func(x) { return x * 10 }, 4, items)
+return results[0] + results[7] + results[19]
+"#;
+    let r = run_with_timeout(src, Duration::from_secs(20));
+    // 0*10 + 7*10 + 19*10 = 260；顺序错乱会得到别的和
+    assert_eq!(r, Value::Int(260), "poolRun 结果顺序应与输入一致");
+}
+
+/// test_poolrun_respects_worker_bound 并发峰值不超过 workers。
+#[test]
+fn test_poolrun_respects_worker_bound() {
+    // 借助 mutex 保护的峰值计数器验证并发上界
+    let src = r#"
+var mu = newMutex()
+var cur = 0
+var peak = 0
+var items = []
+for i in range(32) { push(items, i) }
+poolRun(func(x) {
+    lock(mu)
+    cur = cur + 1
+    if cur > peak { peak = cur }
+    unlock(mu)
+    sleepMs(20)
+    lock(mu)
+    cur = cur - 1
+    unlock(mu)
+    return x
+}, 3, items)
+return peak
+"#;
+    let r = run_with_timeout(src, Duration::from_secs(30));
+    match r {
+        Value::Int(p) => assert!(p >= 1 && p <= 3, "并发峰值应在 1..=3，实际 {}", p),
+        other => panic!("峰值应为 Int，得到 {:?}", other),
+    }
+}
+
+/// test_poolrun_error_isolation 单项异常不影响其余项，位置为 error 值。
+#[test]
+fn test_poolrun_error_isolation() {
+    let src = r#"
+var items = [1, 2, 3, 4, 5]
+var results = poolRun(func(x) {
+    if x == 3 { throw "boom" }
+    return x * 2
+}, 2, items)
+var ok = 0
+var errAt = -1
+for i in range(len(results)) {
+    if isErr(results[i]) { errAt = i } else { ok = ok + 1 }
+}
+return [ok, errAt, results[0], results[4]]
+"#;
+    let r = run_with_timeout(src, Duration::from_secs(20));
+    let vals = as_ints(r);
+    assert_eq!(vals[0], 4, "应有 4 个正常结果");
+    assert_eq!(vals[1], 2, "第 3 项（下标 2）应为 error");
+    assert_eq!(vals[2], 2, "results[0] 应为 2");
+    assert_eq!(vals[3], 10, "results[4] 应为 10");
+}
+
+/// test_poolrun_empty_and_bad_args 空数组与非法参数。
+#[test]
+fn test_poolrun_empty_and_bad_args() {
+    // 空数组直接返回空数组
+    let src = r#"
+return len(poolRun(func(x) { return x }, 4, []))
+"#;
+    let r = run_with_timeout(src, Duration::from_secs(10));
+    assert_eq!(r, Value::Int(0));
+
+    // workers 非法（0 / 超上限）返回错误
+    let mut sf = Sflang::new();
+    assert!(sf.run_string("poolRun(func(x){return x}, 0, [1])").is_err());
+    let mut sf = Sflang::new();
+    assert!(sf.run_string("poolRun(func(x){return x}, 2000, [1])").is_err());
+    // 第 1 参非函数返回错误
+    let mut sf = Sflang::new();
+    assert!(sf.run_string("poolRun(\"nofunc\", 2, [1])").is_err());
+    // 第 3 参非数组返回错误
+    let mut sf = Sflang::new();
+    assert!(sf.run_string("poolRun(func(x){return x}, 2, \"notarray\")").is_err());
+}
+
+/// test_poolrun_sees_globals 工作线程与主线程共享全局环境。
+#[test]
+fn test_poolrun_sees_globals() {
+    let src = r#"
+var total = 0
+var items = []
+for i in range(10) { push(items, i) }
+poolRun(func(x) { total = total + x; return x }, 3, items)
+return total
+"#;
+    let r = run_with_timeout(src, Duration::from_secs(20));
+    assert_eq!(r, Value::Int(45), "工作线程应共享全局变量（0+..+9=45）");
+}
