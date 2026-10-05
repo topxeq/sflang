@@ -95,6 +95,11 @@ pub struct HttpResponse {
     pub headers: Vec<(String, String)>,
     /// body 响应体。
     pub body: Vec<u8>,
+    /// is_head 是否为 HEAD 请求的响应。
+    ///
+    /// HEAD 响应按 RFC 7231 应携带与 GET 相同的响应头（含按 GET 计算的
+    /// Content-Length），但不发送响应体字节。write_response 据此跳过 body 写入。
+    pub is_head: bool,
 }
 
 impl HttpResponse {
@@ -104,6 +109,7 @@ impl HttpResponse {
             status: 200,
             headers: Vec::new(),
             body: Vec::new(),
+            is_head: false,
         }
     }
 
@@ -377,8 +383,9 @@ pub fn write_response<W: std::io::Write>(stream: &mut W, resp: &HttpResponse) ->
     // 空行分隔 headers 与 body
     stream.write_all(b"\r\n")?;
 
-    // Body（204/304 不应有 body）
-    if resp.status != 204 && resp.status != 304 && !resp.body.is_empty() {
+    // Body（204/304 不应有 body；HEAD 请求只发头，不发 body 字节，
+    // 但 Content-Length 仍按 GET 语义输出，供客户端预判大小）
+    if resp.status != 204 && resp.status != 304 && !resp.body.is_empty() && !resp.is_head {
         stream.write_all(&resp.body)?;
     }
 
@@ -710,7 +717,7 @@ fn days_since_sunday(secs: u64) -> u64 {
 /// 不在白名单内的文件扩展名不会被直接服务（安全考虑）。
 pub const WEB_EXTS: &[&str] = &[
     "html", "htm", "css", "js", "mjs", "json", "xml",
-    "txt", "log", "csv", "md", "svg",
+    "txt", "log", "csv", "md", "svg", "gbk",
     "png", "jpg", "jpeg", "gif", "ico", "bmp", "webp",
     "woff", "woff2", "ttf", "otf", "eot",
     "pdf", "wasm", "map",

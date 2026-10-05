@@ -104,6 +104,20 @@ impl Sflang {
         })
     }
 
+    /// run_source_with_name 以指定文件名执行源码。
+    ///
+    /// 与 run_string 的区别：file 参数会作为脚本的 cur_file，
+    /// 影响 import 相对路径解析（基于该"脚本"所在目录）与错误信息中的行号定位。
+    /// 典型用途：HTTP 服务器执行 .sf 脚本文件时传入真实路径，
+    /// 使脚本内的 import "lib/xxx.sf" 按脚本自身目录解析。
+    pub fn run_source_with_name(&mut self, src: &str, file: &str) -> Result<Value, Value> {
+        guard_catch(|| {
+            let code = Self::compile_source(src, file)
+                .map_err(|e| crate::value::error_value(e))?;
+            self.vm.run(code)
+        })
+    }
+
     /// vm_run_code 执行预编译的 Code。
     ///
     /// VM 执行被 catch_unwind 包裹，内部 panic 转为 Err 返回。

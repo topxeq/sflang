@@ -2089,6 +2089,15 @@ impl ServerHandler {
                 params_map.set(k.clone(), Value::str(v));
             }
             g.insert("routeParamsG".to_string(), Value::Map(Arc::new(Mutex::new(params_map))));
+
+            // 查询参数 Map（paraMapG）与静态根目录（webRootG），与 CLI 服务器模式对齐
+            g.insert("paraMapG".to_string(), query_params_map(&req_guard));
+            g.insert(
+                "webRootG".to_string(),
+                Value::str(&self.static_dir.as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default()),
+            );
         }
 
         // 注册到 ActiveVMs
@@ -2467,7 +2476,12 @@ fn handle_connection_impl<S: std::io::Read + std::io::Write>(
             eprintln!("{} {} {}", req.method, req.uri, req.remote_addr);
         }
 
-        let resp = handler.handle(req);
+        // HEAD 请求：保留 GET 语义的响应头（含 Content-Length），但不发送 body 字节
+        let is_head = req.method == "HEAD";
+        let mut resp = handler.handle(req);
+        if is_head {
+            resp.is_head = true;
+        }
 
         let should_close = resp.headers.iter().any(|(k, v)| {
             k.eq_ignore_ascii_case("connection") && v.eq_ignore_ascii_case("close")
@@ -2522,12 +2536,13 @@ fn format_error_json(e: &SfError) -> String {
 /// # 参数
 /// - `args`: 命令行参数（含 -server 本身）
 ///
-/// # 路由规则
-/// 1. 路径对应目录 → 找 index.sf
-/// 2. 路径对应 .sf 文件 → 编译执行
-/// 3. 路径对应白名单扩展名文件 → 静态服务
-/// 4. 追加 .sf 再试
-/// 5. 无匹配 → 404
+/// # 路由规则（脚本根目录 = --msDir，URL 镜像文件路径，Charlang 式最大灵活度）
+/// 1. <path> -> msDir/<path>：.sf 执行 / .sfp 渲染；目录回落 index.sf/index.sfp；
+///    可追加 .sf/.sfp 再试（clean URL：/api/products -> api/products.sf）
+/// 2. 子目录名任意、层级任意，页面与接口脚本可同目录混放，服务端不做分类
+/// 3. 脚本树内非脚本文件一律私有（不服务、不放行）——数据文件可安全放树内
+/// 4. 静态文件一律走 --webDir（白名单扩展名，目录回落 index.html，支持 .sfAllow）
+/// 5. 无匹配 -> 404
 pub fn run_server_cli(args: &[String]) -> i32 {
     // 默认值与 Charlang `char -server` 对齐：HTTP 默认 :80，SSL 默认 :443。
     // 指定 --certDir 且证书加载成功时，会在 SSL 端口额外起一个 HTTPS 服务，
@@ -2535,8 +2550,16 @@ pub fn run_server_cli(args: &[String]) -> i32 {
     let port = get_switch_str(args, "port", "80");
     let ssl_port = get_switch_str(args, "sslPort", "443");
     let host = get_switch_str(args, "host", "0.0.0.0");
-    let base_dir = get_switch_str(args, "dir", ".");
-    let web_dir = get_switch_str(args, "webDir", &base_dir);
+    // msDir：脚本根目录（唯一脚本来源），URL 镜像文件路径：
+    //   子目录名任意、页面与接口脚本可混放；脚本树内非 .sf/.sfp 文件一律私有
+    let mut ms_dir = get_switch_str(args, "msDir", "");
+    let web_dir = get_switch_str(args, "webDir", ".");
+    // --dir 为废弃参数：仅为兼容旧命令行保留，等价于 --msDir（布局需符合 pages//api/ 约定）
+    let legacy_dir = get_switch_str(args, "dir", "");
+    if ms_dir.is_empty() && !legacy_dir.is_empty() {
+        eprintln!("提示: --dir 已废弃，请改用 --msDir（脚本根目录，URL 镜像文件路径）");
+        ms_dir = legacy_dir;
+    }
     let admin_token = get_switch_str(args, "adminToken", "sflang");
     let verbose = has_switch_str(args, "verbose");
     let cert_dir = get_switch_str(args, "certDir", "");
@@ -2544,8 +2567,8 @@ pub fn run_server_cli(args: &[String]) -> i32 {
     let http_addr = format!("{}:{}", host, port);
     let ssl_addr = format!("{}:{}", host, ssl_port);
 
-    let base_path = std::path::PathBuf::from(&base_dir);
     let web_path = std::path::PathBuf::from(&web_dir);
+    let ms_path = if ms_dir.is_empty() { None } else { Some(std::path::PathBuf::from(&ms_dir)) };
 
     // 加载 TLS 配置（仅当指定了 --certDir）。
     // 与 Charlang 一致：证书加载失败只打印警告并降级为纯 HTTP，不中止进程。
@@ -2569,7 +2592,11 @@ pub fn run_server_cli(args: &[String]) -> i32 {
     if tls_config.is_some() {
         eprintln!("Sflang CLI HTTPS server starting on {}", ssl_addr);
     }
-    eprintln!("  script dir: {}", base_dir);
+    if let Some(ref m) = ms_path {
+        eprintln!("  script root: {}（URL 镜像文件路径，.sf/.sfp 为脚本，树内其他文件私有）", m.display());
+    } else {
+        eprintln!("  (no script root: pure static server)");
+    }
     eprintln!("  web dir: {}", web_dir);
 
     // 共享停止标志：HTTP 与 HTTPS 两个 listener 任一检测到停止都会退出。
@@ -2581,17 +2608,17 @@ pub fn run_server_cli(args: &[String]) -> i32 {
 
     // 若启用了 TLS，在独立线程中启动 HTTPS 监听（与 HTTP 并行，对齐 Charlang 行为）。
     if let Some(tls) = tls_config.clone() {
-        let base = base_path.clone();
         let web = web_path.clone();
+        let ms = ms_path.clone();
         let token = admin_token.clone();
         let stop_ss = stop.clone();
         std::thread::spawn(move || {
-            run_cli_listener(&ssl_addr, base, web, token, verbose, Some(tls), stop_ss);
+            run_cli_listener(&ssl_addr, web, ms, token, verbose, Some(tls), stop_ss);
         });
     }
 
     // HTTP 主服务跑在当前（主）线程，阻塞直到收到停止信号。
-    run_cli_listener(&http_addr, base_path, web_path, admin_token, verbose, None, stop);
+    run_cli_listener(&http_addr, web_path, ms_path, admin_token, verbose, None, stop);
 
     0
 }
@@ -2603,8 +2630,8 @@ pub fn run_server_cli(args: &[String]) -> i32 {
 /// `stop` 是跨 listener 共享的停止标志，置位后 accept 循环退出。
 fn run_cli_listener(
     addr: &str,
-    base_path: std::path::PathBuf,
     web_path: std::path::PathBuf,
+    ms_path: Option<std::path::PathBuf>,
     admin_token: String,
     verbose: bool,
     tls_config: Option<TlsConfig>,
@@ -2633,13 +2660,13 @@ fn run_cli_listener(
                 // 必须切回阻塞模式：http_lite::parse_request 与 rustls 握手都依赖
                 // 阻塞式 read，否则会立刻收到 WouldBlock(10035) 并误判为连接错误。
                 let _ = stream.set_nonblocking(false);
-                let base = base_path.clone();
                 let web = web_path.clone();
+                let ms = ms_path.clone();
                 let token = admin_token.clone();
                 let verb = verbose;
                 let tls = tls_config.clone();
                 std::thread::spawn(move || {
-                    handle_cli_connection(stream, &base, &web, &token, verb, tls);
+                    handle_cli_connection(stream, &web, ms.as_deref(), &token, verb, tls);
                 });
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -2656,14 +2683,14 @@ fn run_cli_listener(
 /// handle_cli_connection 处理 CLI 服务器的一个连接。
 fn handle_cli_connection(
     stream: std::net::TcpStream,
-    base_dir: &std::path::Path,
     web_dir: &std::path::Path,
+    ms_dir: Option<&std::path::Path>,
     admin_token: &str,
     verbose: bool,
     tls_config: Option<TlsConfig>,
 ) {
     // 在 TLS 包装前获取 TCP 对端地址；包装后 StreamOwned 不再暴露 peer_addr。
-    // 该地址会注入 requestG.remote_addr，脚本可用 getReqRemoteAddr 读取（如 IP 反馈微服务）。
+    // 该地址会注入 requestG.remote_addr，脚本可用 getReqField(req, "remoteAddr") 读取。
     let peer = stream
         .peer_addr()
         .map(|a| a.ip().to_string())
@@ -2674,7 +2701,7 @@ fn handle_cli_connection(
         match rustls::ServerConnection::new(tls_cfg.clone()) {
             Ok(server_conn) => {
                 let tls_stream = rustls::StreamOwned::new(server_conn, stream);
-                handle_cli_connection_impl(tls_stream, &peer, base_dir, web_dir, admin_token, verbose);
+                handle_cli_connection_impl(tls_stream, &peer, web_dir, ms_dir, admin_token, verbose);
             }
             Err(e) => {
                 if verbose {
@@ -2683,7 +2710,7 @@ fn handle_cli_connection(
             }
         }
     } else {
-        handle_cli_connection_impl(stream, &peer, base_dir, web_dir, admin_token, verbose);
+        handle_cli_connection_impl(stream, &peer, web_dir, ms_dir, admin_token, verbose);
     }
 }
 
@@ -2693,8 +2720,8 @@ fn handle_cli_connection(
 fn handle_cli_connection_impl<S: std::io::Read + std::io::Write>(
     stream: S,
     peer: &str,
-    base_dir: &std::path::Path,
     web_dir: &std::path::Path,
+    ms_dir: Option<&std::path::Path>,
     admin_token: &str,
     verbose: bool,
 ) {
@@ -2751,13 +2778,21 @@ fn handle_cli_connection_impl<S: std::io::Read + std::io::Write>(
 
         // 管理端点
         if req.path == "/admin/status" || req.path == "/admin/kill" {
-            let resp = handle_cli_admin(&req, admin_token);
+            let mut resp = handle_cli_admin(&req, admin_token);
+            if req.method == "HEAD" {
+                resp.is_head = true;
+            }
             let _ = http_lite::write_response(reader.get_mut(), &resp);
             continue;
         }
 
         // 文件路由
-        let resp = route_and_execute(&req, base_dir, web_dir);
+        let mut resp = route_and_execute(&req, ms_dir, web_dir);
+
+        // HEAD 请求：保留 GET 语义的响应头（含 Content-Length），但不发送 body 字节
+        if req.method == "HEAD" {
+            resp.is_head = true;
+        }
 
         let should_close = resp.headers.iter().any(|(k, v)| {
             k.eq_ignore_ascii_case("connection") && v.eq_ignore_ascii_case("close")
@@ -2773,95 +2808,209 @@ fn handle_cli_connection_impl<S: std::io::Read + std::io::Write>(
 
 /// route_and_execute CLI 服务器的文件路由与脚本执行。
 ///
-/// 路由规则：
-/// 1. 目录 -> 找 index.sf -> index.sfp -> index.html
-/// 2. .sf 文件 -> 编译执行
-/// 3. .sfp 文件 -> 动态页面渲染（HTML + 内嵌 <?sf ... ?> 代码块）
-/// 4. 白名单扩展名 -> 静态服务
-/// 5. 非白名单扩展名 -> 检查 .sfAllow 文件（glob 白名单）
-/// 6. 追加 .sf 再试
-/// 7. web 目录查找静态文件（同样支持 .sfAllow）
-/// 8. 404
-fn route_and_execute(req: &LiteReq, base_dir: &std::path::Path, web_dir: &std::path::Path) -> LiteResp {
-    let rel_path = req.path.trim_start_matches('/');
+/// 设计原则（对齐 Charlang `-server` 的最大灵活度）：
+///   - 脚本根目录（script_root，--msDir）就是完整的 URL 空间：URL 路径镜像文件路径，
+///     子目录名任意、层级任意，页面脚本与接口脚本可同目录混放，服务端不做任何分类。
+///   - 脚本树内只有 `.sf` / `.sfp` 会被响应执行；其余文件（数据、笔记、任何非脚本）
+///     一律不对外——数据文件可放在树内任意位置而无泄露之虞。静态资源统一放 --webDir。
+///
+/// 查找顺序：
+///   1. 目录 -> 找 index.sf -> index.sfp ->（回落 web 目录 index.html）
+///   2. .sf 文件 -> 编译执行；.sfp 文件 -> 动态页面渲染
+///   3. 追加 .sf / .sfp 再试（如 /api/products -> api/products.sf）
+///   4. web 目录查找静态文件（白名单扩展名；目录回落 index.html；支持 .sfAllow）
+///   5. 404
+fn route_and_execute(
+    req: &LiteReq,
+    script_root: Option<&std::path::Path>,
+    web_dir: &std::path::Path,
+) -> LiteResp {
+    let Some(ms) = script_root else {
+        // 未配置脚本根目录：纯静态服务器模式
+        return serve_web_static(req, web_dir);
+    };
+
+    // URL 路径按段做百分号解码（中文文件名等场景），并拒绝解码后出现
+    // ".."/反斜杠/NUL 等不安全成分，防止路径穿越
+    let decoded_path = decode_path_segments(&req.path);
+    if decoded_path.split('/').any(|seg| seg == ".." || seg.contains(BACKSLASH_BYTE as char) || seg.contains(NUL_BYTE as char)) {
+        let mut r = LiteResp::new();
+        r.status = 403;
+        r.set_header("Content-Type".to_string(), "text/plain; charset=utf-8".to_string());
+        r.write_body(b"403 Forbidden: invalid path");
+        return r;
+    }
+
+    let rel_path = decoded_path.trim_start_matches('/');
     let rel_path = if rel_path.is_empty() { "." } else { rel_path };
 
-    // 1. 在脚本目录查找
-    let script_target = base_dir.join(rel_path);
+    // 脚本树：URL 镜像文件路径
+    let script_target = ms.join(rel_path);
 
-    // 目录 -> index.sf -> index.sfp -> index.html
+    // 目录 -> index.sf -> index.sfp -> web 目录 index.html
     if script_target.is_dir() {
         let index_sf = script_target.join("index.sf");
         if index_sf.is_file() {
-            return execute_script_file(&index_sf, req, base_dir);
+            return execute_script_file(&index_sf, req, ms, web_dir);
         }
         let index_sfp = script_target.join("index.sfp");
         if index_sfp.is_file() {
-            return execute_sfp_file(&index_sfp, req, base_dir);
+            return execute_sfp_file(&index_sfp, req, ms, web_dir);
         }
-        // 尝试静态 web 目录的 index.html
+        // 目录无脚本索引：尝试 web 目录同名目录的 index.html；
+        // 仍无则不提前返回——继续走追加 .sf/.sfp（如 /api/admin -> api/admin.sf）
         let web_target = web_dir.join(rel_path).join("index.html");
         if web_target.is_file() {
             return serve_static_file(&web_target);
         }
     }
 
-    // 已存在的文件
+    // 已存在的文件：只有 .sf / .sfp 会被响应；其余文件（数据等）一律私有，
+    // 不做静态服务、不做 .sfAllow 放行，直接进入 web 目录回落
     if script_target.is_file() {
         let ext = script_target.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
         match ext.as_str() {
-            // .sf 文件 -> 执行脚本
-            "sf" => return execute_script_file(&script_target, req, base_dir),
-            // .sfp 文件 -> 动态页面渲染
-            "sfp" => return execute_sfp_file(&script_target, req, base_dir),
+            "sf" => return execute_script_file(&script_target, req, ms, web_dir),
+            "sfp" => return execute_sfp_file(&script_target, req, ms, web_dir),
             _ => {}
         }
-        // 白名单扩展名 -> 静态服务
-        if http_lite::is_web_ext(&script_target.to_string_lossy()) {
-            return serve_static_file(&script_target);
-        }
-        // 非白名单扩展名 -> 检查 .sfAllow
-        if let Some(resp) = check_sf_allow_and_serve(&script_target, req) {
-            return resp;
-        }
+        // 非脚本文件：可能是用户笔误或探测，直接走 web 回落（通常 404）
+        return serve_web_static(req, web_dir);
     }
 
-    // 追加 .sf 再试
+    // 追加 .sf 再试（无扩展名的clean URL：/api/products -> api/products.sf）
     let with_sf = script_target.with_extension("sf");
     if with_sf.is_file() {
-        return execute_script_file(&with_sf, req, base_dir);
+        return execute_script_file(&with_sf, req, ms, web_dir);
     }
 
     // 追加 .sfp 再试
     let with_sfp = script_target.with_extension("sfp");
     if with_sfp.is_file() {
-        return execute_sfp_file(&with_sfp, req, base_dir);
+        return execute_sfp_file(&with_sfp, req, ms, web_dir);
     }
 
-    // 在 web 目录查找静态文件
-    let web_target = web_dir.join(rel_path);
+    // web 目录静态回落
+    serve_web_static(req, web_dir)
+}
+
+/// BACKSLASH_BYTE 反斜杠字节（路径穿越检查用；避免在字面量中直写转义）。
+const BACKSLASH_BYTE: u8 = 0x5C;
+/// NUL_BYTE NUL 字节。
+const NUL_BYTE: u8 = 0;
+
+/// not_found_page 标准 404 响应（文本对齐 Go net/http 惯例）。
+fn not_found_page(path: &str) -> LiteResp {
+    let mut r = LiteResp::new();
+    r.status = 404;
+    r.set_header("Content-Type".to_string(), "text/plain; charset=utf-8".to_string());
+    r.write_body(b"404 page not found
+");
+    r
+}
+
+/// serve_web_static 在 web_dir（--webDir）中查找并返回静态文件。
+///
+/// 这是唯一的静态文件来源（脚本树不服务静态文件）：
+/// 白名单扩展名直接返回；目录回落 index.html；非白名单扩展名可由 .sfAllow 放行。
+fn serve_web_static(req: &LiteReq, web_dir: &std::path::Path) -> LiteResp {
+    let decoded_path = decode_path_segments(&req.path);
+    if decoded_path.split('/').any(|seg| seg == ".." || seg.contains(BACKSLASH_BYTE as char) || seg.contains(NUL_BYTE as char)) {
+        let mut r = LiteResp::new();
+        r.status = 403;
+        r.set_header("Content-Type".to_string(), "text/plain; charset=utf-8".to_string());
+        r.write_body(b"403 Forbidden: invalid path");
+        return r;
+    }
+    let rel_path = decoded_path.trim_start_matches('/');
+    let rel_path = if rel_path.is_empty() { "." } else { rel_path };
+    let mut web_target = web_dir.join(rel_path);
+    if web_target.is_dir() {
+        // 目录 → 尝试 index.html（对齐常见 Web 服务器目录索引行为）
+        let web_index = web_target.join("index.html");
+        if web_index.is_file() {
+            web_target = web_index;
+        }
+    }
     if web_target.is_file() {
         if http_lite::is_web_ext(&web_target.to_string_lossy()) {
             return serve_static_file(&web_target);
         }
-        // web 目录也支持 .sfAllow
+        // web 目录支持 .sfAllow 放行（如需直出的非白名单文件）
         if let Some(resp) = check_sf_allow_and_serve(&web_target, req) {
             return resp;
         }
     }
+    not_found_page(&req.path)
+}
 
-    // 404
-    let mut r = LiteResp::new();
-    r.status = 404;
-    r.set_header("Content-Type".to_string(), "text/plain; charset=utf-8".to_string());
-    r.write_body(format!("404 Not Found: {}", req.path).as_bytes());
-    r
+/// decode_path_segments 对 URL 路径做百分号解码（字节级，保持 UTF-8 正确）。
+///
+/// - '/' 不参与解码（分段边界保持不变），避免 %2F 拼出新路径段；
+/// - '+' 在路径中是字面量，不做空格转换（查询串才做）；
+/// - 解码出 NUL 字节或结果不是合法 UTF-8 时返回原串（保守处理）。
+fn decode_path_segments(path: &str) -> String {
+    let bytes = path.as_bytes();
+    // 无 % 时快速返回
+    if !bytes.contains(&b'%') {
+        return path.to_string();
+    }
+    let mut raw: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'%' && i + 2 < bytes.len() {
+            let h = (bytes[i + 1] as char).to_digit(16);
+            let l = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (h, l) {
+                let val = (h * 16 + l) as u8;
+                if val == 0 {
+                    // NUL 字节危险，整体放弃解码
+                    return path.to_string();
+                }
+                raw.push(val);
+                i += 3;
+                continue;
+            }
+            // 非法 % 序列：按字面量保留
+            raw.push(b'%');
+            i += 1;
+            continue;
+        }
+        raw.push(b);
+        i += 1;
+    }
+    match String::from_utf8(raw) {
+        Ok(s) => s,
+        Err(_) => path.to_string(),
+    }
+}
+
+/// query_params_map 把请求的查询串解析为 Sflang 有序 Map（作为 paraMapG 注入）。
+///
+/// 键和值均做百分号解码（http_lite::url_decode_pairs），
+/// 同名参数取第一个出现的值；无查询串时返回空 Map。
+fn query_params_map(req: &LiteReq) -> Value {
+    let mut m = crate::ord_map::OrdMap::new();
+    for (k, v) in req.parse_query() {
+        // OrdMap::set 语义为"已存在则覆盖"，这里改为仅首个生效以对齐常见
+        // Web 框架行为（取首个），避免重复参数时后者悄悄覆盖前者
+        if m.get(&k).is_none() {
+            m.set(k, Value::str(&v));
+        }
+    }
+    Value::Map(Arc::new(std::sync::Mutex::new(m)))
 }
 
 /// execute_script_file 执行一个 .sf 脚本文件来处理请求。
 ///
 /// 注入请求上下文全局变量，执行脚本，根据返回值类型生成响应。
-fn execute_script_file(script_path: &std::path::Path, req: &LiteReq, base_dir: &std::path::Path) -> LiteResp {
+fn execute_script_file(
+    script_path: &std::path::Path,
+    req: &LiteReq,
+    script_root: &std::path::Path,
+    web_dir: &std::path::Path,
+) -> LiteResp {
     let src = match std::fs::read_to_string(script_path) {
         Ok(s) => s,
         Err(e) => {
@@ -2887,9 +3036,15 @@ fn execute_script_file(script_path: &std::path::Path, req: &LiteReq, base_dir: &
     sf.set_global("reqPathG", Value::str(&req.path));
     sf.set_global("reqMethodG", Value::str(&req.method));
     sf.set_global("inputG", Value::str(&String::from_utf8_lossy(&req.body)));
-    sf.set_global("basePathG", Value::str(&base_dir.to_string_lossy()));
+    // basePathG / msRootG：脚本根目录（pages/ 与 api/ 的共同父目录，数据文件约定在 <根>/data）
+    sf.set_global("basePathG", Value::str(&script_root.to_string_lossy()));
     sf.set_global("scriptPathG", Value::str(&script_path.to_string_lossy()));
     sf.set_global("runModeG", Value::str("sfserver"));
+    // paraMapG：URL 查询参数 Map（键值均做百分号解码）
+    sf.set_global("paraMapG", query_params_map(req));
+    // webRootG：静态 Web 根目录（脚本据此定位 uploads/downloads 等静态资源目录）
+    sf.set_global("webRootG", Value::str(&web_dir.to_string_lossy()));
+    sf.set_global("msRootG", Value::str(&script_root.to_string_lossy()));
 
     // 注册到 ActiveVMs
     let vm_id = VM_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -2898,7 +3053,9 @@ fn execute_script_file(script_path: &std::path::Path, req: &LiteReq, base_dir: &
         start: std::time::Instant::now(),
     });
 
-    let result = sf.run_string(&src);
+    // 用真实脚本路径作为 cur_file：import 相对路径按脚本自身目录解析，
+    // 错误信息中的文件名也是真实路径（便于定位问题）
+    let result = sf.run_source_with_name(&src, &script_path.to_string_lossy());
 
     active_vms().lock().unwrap().remove(&vm_id);
 
@@ -2908,12 +3065,32 @@ fn execute_script_file(script_path: &std::path::Path, req: &LiteReq, base_dir: &
         Ok(ret) => {
             match ret {
                 Value::Str(s) => {
+                    // 字符串 → 响应体；未显式设置 Content-Type 时默认按 HTML 输出
+                    // （对齐主流脚本语言 Web 服务器的行为：动态脚本文本响应即 HTML）
+                    if resp_guard.get_header("Content-Type").is_none() {
+                        resp_guard.set_header(
+                            "Content-Type".to_string(),
+                            "text/html; charset=utf-8".to_string(),
+                        );
+                    }
                     resp_guard.write_body(s.as_bytes());
                 }
                 Value::Bytes(b) => {
+                    if resp_guard.get_header("Content-Type").is_none() {
+                        resp_guard.set_header(
+                            "Content-Type".to_string(),
+                            "application/octet-stream".to_string(),
+                        );
+                    }
                     resp_guard.write_body(&b);
                 }
                 Value::ByteArray(b) => {
+                    if resp_guard.get_header("Content-Type").is_none() {
+                        resp_guard.set_header(
+                            "Content-Type".to_string(),
+                            "application/octet-stream".to_string(),
+                        );
+                    }
                     resp_guard.write_body(&b.lock().unwrap());
                 }
                 Value::Error(e) => {
@@ -2983,7 +3160,12 @@ fn serve_static_file(path: &std::path::Path) -> LiteResp {
 ///
 /// # 错误处理
 /// 单个代码块出错时，错误信息内联显示为 `[块序号] 错误信息`，不中断页面渲染。
-fn execute_sfp_file(sfp_path: &std::path::Path, req: &LiteReq, base_dir: &std::path::Path) -> LiteResp {
+fn execute_sfp_file(
+    sfp_path: &std::path::Path,
+    req: &LiteReq,
+    script_root: &std::path::Path,
+    web_dir: &std::path::Path,
+) -> LiteResp {
     // 读取 .sfp 文件内容
     let template = match std::fs::read_to_string(sfp_path) {
         Ok(s) => s,
@@ -3009,9 +3191,14 @@ fn execute_sfp_file(sfp_path: &std::path::Path, req: &LiteReq, base_dir: &std::p
     sf.set_global("reqPathG", Value::str(&req.path));
     sf.set_global("reqMethodG", Value::str(&req.method));
     sf.set_global("inputG", Value::str(&String::from_utf8_lossy(&req.body)));
-    sf.set_global("basePathG", Value::str(&base_dir.to_string_lossy()));
+    sf.set_global("basePathG", Value::str(&script_root.to_string_lossy()));
     sf.set_global("scriptPathG", Value::str(&sfp_path.to_string_lossy()));
     sf.set_global("runModeG", Value::str("sfp"));
+    // paraMapG：URL 查询参数 Map（键值均做百分号解码），与 .sf 脚本模式一致
+    sf.set_global("paraMapG", query_params_map(req));
+    // webRootG：静态 Web 根目录
+    sf.set_global("webRootG", Value::str(&web_dir.to_string_lossy()));
+    sf.set_global("msRootG", Value::str(&script_root.to_string_lossy()));
 
     // 用正则分割模板：<?sf ... ?> 代码块 vs 静态文本
     // (?s) = dotall（. 匹配换行）；非贪婪匹配支持多个代码块
