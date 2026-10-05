@@ -31,6 +31,7 @@ pub mod parser;
 pub mod opcode;
 pub mod compiler;
 pub mod vm;
+pub mod scheduler;
 pub mod builtins;
 pub mod builtins_helpers;
 pub mod builtins_str;
