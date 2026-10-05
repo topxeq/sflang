@@ -135,8 +135,17 @@ fn next_task_id() -> u64 {
 /// sched 获取全局调度器（首次访问时创建并启动 worker 线程）。
 fn sched() -> &'static Scheduler {
     SCHED.get_or_init(|| {
-        let workers = std::thread::available_parallelism()
-            .map(|n| n.get())
+        // worker 数默认 = CPU 核数；可用环境变量 SF_TASK_WORKERS 覆盖
+        // （IO 密集负载可调大；注意任务内阻塞 IO 本身仍占一个 worker）
+        let workers = std::env::var("SF_TASK_WORKERS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&n| n >= 1 && n <= 1024)
+            .or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .ok()
+            })
             .unwrap_or(4);
         let s = Scheduler {
             inner: Mutex::new(SchedInner {

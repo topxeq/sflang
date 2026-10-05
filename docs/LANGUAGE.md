@@ -502,25 +502,57 @@ checkErr(result, "-format=Error: %v\n")
 
 ---
 
-## 13. 并发
+## 13. 并发（goroutine 式任务）
 
 ```sflang
-// 启动新线程
-run func() { println("子线程") }
+// run 启动并发任务（用户态调度，创建 ~µs 级，可承载十万级阻塞任务）
+func worker(n) {
+    pln("任务执行", n)
+}
+run worker(1)
 
-// Channel（线程间通信）
+// Channel（任务/线程间通信）
 var ch = newChannel()
-run func() { chanSend(ch, 42) }
+func sender() {
+    chanSend(ch, 42)
+}
+run sender()
 println(chanRecv(ch))       // 42
 
 // 同步原语
 var mu = newMutex()
 lock(mu)
-defer close(mu)
+defer unlock(mu)
 // 临界区
 ```
 
-同步原语：`newMutex`/`lock`/`unlock`/`tryLock`、`newRWMutex`/`rlock`/`runlock`/`wlock`/`wunlock`、`newWaitGroup`/`wgAdd`/`wgDone`/`wgWait`、`newSemaphore`/`semAcquire`/`semRelease`、`newOnce`/`onceDo`
+### 执行模型
+
+- `run fn(args)` 把函数调用入队为**调度器任务**：常驻 worker 线程数 = CPU 核数
+  （环境变量 `SF_TASK_WORKERS` 可覆盖），任务在用户态分时调度（每 10 万条指令
+  让出一次），阻塞等待（channel/锁/sleep）时挂起任务而非占用线程。
+- 任务内调用阻塞 IO（getWeb/sshRun/readFile 等）会占用一个 worker 直到完成——
+  大量并发 IO 用 `poolRun(fn, workers, items)`（有界线程池）或 `runAsync`（后台任务）。
+- CPU 密集的长计算若想独占一核，用 `threadRun(fn, args...)`（真线程逃生门）。
+- 任务为 fire-and-forget：返回值经 channel/WaitGroup 获取；异常打印
+  `[run 任务异常] ...` 不传播。任务与派生方共享全局变量。
+
+### 同步原语
+
+| 原语 | 函数 |
+|------|------|
+| 通道 | `newChannel` / `chanSend` / `chanRecv` / `chanTryRecv` |
+| 互斥锁 | `newMutex` / `lock` / `unlock` / `tryLock` |
+| 读写锁 | `newRWMutex` / `rlock` / `runlock` / `wlock` / `wunlock` |
+| 等待组 | `newWaitGroup` / `wgAdd` / `wgDone` / `wgWait` |
+| 信号量 | `newSemaphore` / `semAcquire` / `semRelease` |
+| 单次执行 | `newOnce` / `onceDo` |
+| 有界池 | `poolRun(fn, workers, items) -> array` |
+| 真线程 | `threadRun(fn, args...)` |
+
+全部原语双上下文：任务内挂起（不占线程）、主线程/工作线程内阻塞，行为一致。
+注意：`onceDo`/`sort` 等的回调内不能挂起（chanRecv/lock/sleep 会返回明确错误）；
+`defer` 中不允许值等待类挂起（chanRecv/sleep/onceDo）。
 
 ---
 

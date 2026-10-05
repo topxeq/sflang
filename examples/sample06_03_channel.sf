@@ -11,7 +11,7 @@ func producer() {
     for i in range(1, 6) {
         chanSend(ch, i)
         pln("  (生产者) 发送:", i)
-        sleep(30)
+        sleepMs(30)
     }
     chanSend(ch, -1)    // 结束标记
 }
@@ -35,7 +35,7 @@ var results = map{}
 wgAdd(wg, 3)
 
 func task(id) {
-    sleep(50)
+    sleepMs(50)
     results[id] = "完成"
     wgDone(wg)
 }
@@ -79,7 +79,7 @@ func limitedWorker() {
     if cur[0] > peak[0] { peak[0] = cur[0] }
     unlock(mu2)
 
-    sleep(30)
+    sleepMs(30)
 
     lock(mu2)
     cur[0]--
@@ -91,5 +91,5 @@ run limitedWorker()
 run limitedWorker()
 run limitedWorker()
 run limitedWorker()
-sleep(200)
+sleepMs(200)
 pln("并发峰值 =", peak[0], "(应 <= 2)")

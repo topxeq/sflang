@@ -34,6 +34,24 @@ use crate::vm::VM;
 
 // ---- 并发原语文档 ----
 
+static DOC_THREAD_RUN: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "threadRun(fn, args...) -> undefined",
+    summary: "在独立 OS 线程中执行函数（threadRun 逃生门）。与 run（调度器任务）的区别：threadRun 每次创建真线程（~17µs、~8MB 栈预留），适合单个长时 CPU 密集任务独占一个核；一般并发请用 run（任务，~µs 级、万级可行）。与旧版 run 线程语义一致：共享 globals、异常打印不传播。",
+    params: &[
+        ("fn", "要执行的函数值"),
+        ("args...", "传递给函数的参数"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "threadRun(func(n) { var s = heavyCompute(n) ; pln(s) }, 1000000)",
+    ],
+    errors: &[
+        "fn 不是函数值时打印启动失败提示",
+        "函数内异常打印 [threadRun 线程异常]，不传播",
+    ],
+};
+
 static DOC_POOL_RUN: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "poolRun(fn, workers, items) -> array",
@@ -334,6 +352,54 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("onceDo", bi_once_do, &DOC_ONCE_DO);
     // 有界工作池
     vm.register_builtin_doc("poolRun", bi_pool_run, &DOC_POOL_RUN);
+    // 真线程逃生门（CPU 密集长任务）
+    vm.register_builtin_doc("threadRun", bi_thread_run, &DOC_THREAD_RUN);
+}
+
+/// bi_thread_run 在独立 OS 线程中执行函数（threadRun 逃生门）。
+///
+/// 保留旧版 run 线程语义：独立 VM 共享 globals/out、8MB 栈、异常打印不传播。
+/// 适用场景：单个长时 CPU 密集计算（任务模型下会与其他任务分时共享 worker，
+/// 预算抢占带来切换开销；threadRun 独占线程跑满一核）。一般并发请用 run。
+fn bi_thread_run(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.is_empty() {
+        return Err(crate::value::error_value(
+            "threadRun() 需要 1 个以上参数 (fn, args...)",
+        ));
+    }
+    let callee = args[0].clone();
+    let call_args: Vec<Value> = args[1..].to_vec();
+    let globals = vm.globals_handle();
+    let out = vm.output_handle();
+    // 8MB 栈（与旧 run 线程一致；CPU 密集任务可能深递归）
+    let spawned = std::thread::Builder::new()
+        .name("sf-threadrun".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let mut tvm = VM::new();
+            tvm.set_globals_handle(globals);
+            tvm.set_output_handle(out);
+            let res = tvm.call_function_value(callee, call_args);
+            if let Err(v) = res {
+                let msg = match &v {
+                    Value::Error(e) => e.message.clone(),
+                    other => other.to_str(),
+                };
+                let _ = std::io::Write::write_fmt(
+                    &mut *tvm.output_handle().lock().unwrap(),
+                    format_args!("[threadRun 线程异常] {}
+", msg),
+                );
+            }
+        });
+    if let Err(e) = spawned {
+        let _ = std::io::Write::write_fmt(
+            &mut *vm.output_handle().lock().unwrap(),
+            format_args!("[threadRun 线程启动失败] {}
+", e),
+        );
+    }
+    Ok(Value::Undefined)
 }
 
 // ============ 通用 downcast 辅助 ============

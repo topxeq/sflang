@@ -313,3 +313,35 @@ return 1
     let r = run_with_timeout(src, Duration::from_secs(30));
     assert_eq!(r, Value::Int(1));
 }
+
+// ---- threadRun 逃生门 + worker 配置（阶段6） ----
+
+/// test_thread_run_shares_globals threadRun 真线程共享全局环境。
+#[test]
+fn test_thread_run_shares_globals() {
+    let src = r#"
+var done = newChannel()
+func heavy(n) {
+    var s = 0
+    for i in range(n) {
+        s = s + 1
+    }
+    chanSend(done, s)
+}
+threadRun(heavy, 1000)
+var v = chanRecv(done)
+return v
+"#;
+    let r = run_with_timeout(src, Duration::from_secs(30));
+    assert_eq!(r, Value::Int(1000), "threadRun 在独立线程执行并共享 globals");
+}
+
+/// test_run_named_function_required run 目标必须是函数调用（语法保障）。
+#[test]
+fn test_run_named_function_required() {
+    let mut sf = Sflang::new();
+    assert!(
+        sf.run_string("run 42").is_err(),
+        "run 后非函数调用应报编译错误"
+    );
+}
