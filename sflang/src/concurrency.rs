@@ -1,39 +1,72 @@
-//! concurrency.rs — 并发原语与同步原语
+//! concurrency.rs — 并发原语与同步原语（调度器任务版）
 //!
-//! 设计要点：
-//!   - channel (mpsc)：跨线程通信的主要手段
-//!   - run 关键字启动新线程（vm.rs spawn_thread）
-//!   - 同步原语（阶段三补充）：Mutex / RWMutex / WaitGroup / Semaphore / Once
-//!     全部基于 std::sync 标准库实现，用 Value::Native(Arc<dyn Any + Send + Sync>) 包装
-//!   - 所有原语满足 Send + Sync，可跨 run 启动的线程安全共享
+//! 设计要点（阶段四）：
+//!   - `run` 启动的并发体是调度器任务（scheduler.rs）：阻塞类操作在任务内
+//!     挂起（park），不占 OS 线程；任务可承载量从千级（OS 线程）提升到十万级
+//!   - 双上下文：同一组原语在任务上下文挂起、在线程上下文（主脚本、poolRun
+//!     工作线程、threadRun）Condvar 阻塞——行为对脚本完全一致
+//!   - 两种挂起模型（vm.rs Pause）：
+//!     * 值注入型（chanRecv/onceDo 等待者）：唤醒后从调用指令之后继续，
+//!       结果位占位 undefined 被注入值替换（wake_with）
+//!     * 等待-重试型（wgWait/semAcquire）：唤醒后回退重试调用（重查条件）。
+//!       Mutex 虽是资源等待，但采用交接式注入（unlock 把所有权随唤醒移交），
+//!       避免重试竞争；RWMutex 同理，放行时同步登记状态（readers/writer）
+//!   - 挂起登记与条件检查在同一把原语内部锁内完成（先置 BLOCKED 再入队），
+//!     从根本上消除"检查后、登记前"到达的唤醒丢失窗口
 //!
-//! API 概览：
+//! API 概览（与旧版完全兼容）：
 //!   channel:  newChannel / chanSend / chanRecv / chanTryRecv
 //!   mutex:    newMutex / lock / unlock / tryLock
-//!   rwmutex:  newRWMutex / rlock / runlock（写锁复用 lock/unlock）
+//!   rwmutex:  newRWMutex / rlock / runlock / wlock / wunlock
 //!   waitgroup:newWaitGroup / wgAdd / wgDone / wgWait
 //!   sem:      newSemaphore / semAcquire / semRelease
-//!   once:     newOnce / onceDo（onceDo 接收函数值，保证只执行一次）
+//!   once:     newOnce / onceDo
 
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Condvar, Mutex};
+use std::collections::VecDeque;
+use std::sync::mpsc::Receiver;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use crate::function::BuiltinDoc;
+use crate::scheduler::{self, Task};
 use crate::value::Value;
 use crate::vm::VM;
 
 // ---- 并发原语文档 ----
 
+static DOC_POOL_RUN: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "poolRun(fn, workers, items) -> array",
+    summary: "有界并发执行：启动 workers 个工作线程，并发处理 items 中的每一项（对每项调用 fn(item)）。阻塞直到全部完成，返回与 items 等长的结果数组（顺序与 items 一一对应）。fn 抛异常时对应位置返回 error 值，不影响其余项。workers 大于 items 数量时按 items 数量启动（不启多余线程）。",
+    params: &[
+        ("fn", "处理函数，接收一个 item，返回结果"),
+        ("workers", "工作线程数（整数，1..=1024）"),
+        ("items", "待处理项数组"),
+    ],
+    returns: "array 结果数组，results[i] 为 fn(items[i]) 的返回值（异常时为 error 值）",
+    examples: &[
+        "var urls = [\"http://a\", \"http://b\", \"http://c\"]",
+        "var bodies = poolRun(func(u) { return getWeb(u) }, 8, urls)",
+        "for i in range(len(bodies)) { pln(urls[i], \"->\", len(bodies[i])) }",
+    ],
+    errors: &[
+        "fn 不是函数值时返回错误",
+        "workers 非整数或超出 1..=1024 范围时返回错误",
+        "items 不是数组时返回错误",
+        "items 为空数组时直接返回空数组（不启动线程）",
+        "fn 对某项抛异常时该项结果为 error 值（用 isErr 判断），整体不中断",
+    ],
+};
+
 static DOC_NEW_CHANNEL: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "newChannel() -> channel",
-    summary: "创建无缓冲通道（mpsc），用于跨线程通信。配合 run 和 chanSend/chanRecv 使用。",
+    summary: "创建无缓冲通道（mpsc），用于任务/线程间通信。配合 run 和 chanSend/chanRecv 使用。接收方可挂起等待，不占 OS 线程。",
     params: &[],
     returns: "channel 通道对象",
     examples: &[
         "var ch = newChannel()",
-        "run sender()       // 子线程 chanSend(ch, 42)",
+        "run sender()       // 子任务 chanSend(ch, 42)",
         "var v = chanRecv(ch) // 主线程接收",
     ],
     errors: &[],
@@ -42,7 +75,7 @@ static DOC_NEW_CHANNEL: BuiltinDoc = BuiltinDoc {
 static DOC_CHAN_SEND: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "chanSend(ch, val) -> undefined",
-    summary: "向通道发送值（阻塞直到接收方就绪）。",
+    summary: "向通道发送值。有等待的接收者时直接交接唤醒（值不经队列）；否则入队等待接收。永不阻塞（通道无界）。",
     params: &[("ch", "channel 对象"), ("val", "要发送的值")],
     returns: "undefined",
     examples: &["chanSend(ch, 42)"],
@@ -52,7 +85,7 @@ static DOC_CHAN_SEND: BuiltinDoc = BuiltinDoc {
 static DOC_CHAN_RECV: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "chanRecv(ch) -> value",
-    summary: "从通道接收值（阻塞直到有数据）。",
+    summary: "从通道接收值（无数据时挂起等待：任务内挂起不占 OS 线程，主线程内阻塞）。",
     params: &[("ch", "channel 对象")],
     returns: "接收到的值；通道关闭后返回 undefined",
     examples: &["var v = chanRecv(ch)"],
@@ -72,7 +105,7 @@ static DOC_CHAN_TRY_RECV: BuiltinDoc = BuiltinDoc {
 static DOC_NEW_MUTEX: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "newMutex() -> mutex",
-    summary: "创建互斥锁，用于保护共享数据的并发访问。",
+    summary: "创建互斥锁，用于保护共享数据的并发访问。锁等待在任务内挂起（不占 OS 线程）。",
     params: &[],
     returns: "mutex 锁对象",
     examples: &[
@@ -85,7 +118,7 @@ static DOC_NEW_MUTEX: BuiltinDoc = BuiltinDoc {
 static DOC_LOCK: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "lock(m) -> undefined",
-    summary: "加锁（阻塞直到获取锁）。",
+    summary: "加锁（锁被占时等待：任务内挂起，主线程内阻塞）。解锁时所有权直接交接给被唤醒的等待者。",
     params: &[("m", "mutex 对象")],
     returns: "undefined",
     examples: &["lock(m)"],
@@ -95,7 +128,7 @@ static DOC_LOCK: BuiltinDoc = BuiltinDoc {
 static DOC_UNLOCK: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "unlock(m) -> undefined",
-    summary: "释放锁。不校验属主，任意线程可解锁（与 Go sync.Mutex 一致的宽松语义）；未持锁时调用为无害操作（幂等）。",
+    summary: "释放锁。有任务等待时所有权直接交接（held 保持 true）；否则置空闲并唤醒线程等待者。不校验属主（Go 语义宽松）；未持锁时为幂等空操作。",
     params: &[("m", "mutex 对象")],
     returns: "undefined",
     examples: &["unlock(m)"],
@@ -115,7 +148,7 @@ static DOC_TRY_LOCK: BuiltinDoc = BuiltinDoc {
 static DOC_NEW_RWMUTEX: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "newRWMutex() -> rwmutex",
-    summary: "创建读写锁：允许多个读锁或一个写锁。",
+    summary: "创建读写锁：允许多个读锁或一个写锁。有写者排队时新读者排队（防写者饥饿）。",
     params: &[],
     returns: "rwmutex 读写锁对象",
     examples: &["var rw = newRWMutex()"],
@@ -125,7 +158,7 @@ static DOC_NEW_RWMUTEX: BuiltinDoc = BuiltinDoc {
 static DOC_RLOCK: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "rlock(rw) -> undefined",
-    summary: "获取读锁（允许多个读者并发）。",
+    summary: "获取读锁（共享，多读者并发；有写者持有或排队时等待）。",
     params: &[("rw", "rwmutex 对象")],
     returns: "undefined",
     examples: &["rlock(rw); ... runlock(rw)"],
@@ -135,7 +168,7 @@ static DOC_RLOCK: BuiltinDoc = BuiltinDoc {
 static DOC_RUNLOCK: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "runlock(rw) -> undefined",
-    summary: "释放读锁。",
+    summary: "释放读锁。读者归零时按队列顺序放行等待者（连续读者一并放行，写者需无读者）。",
     params: &[("rw", "rwmutex 对象")],
     returns: "undefined",
     examples: &["runlock(rw)"],
@@ -145,7 +178,7 @@ static DOC_RUNLOCK: BuiltinDoc = BuiltinDoc {
 static DOC_WLOCK: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "wlock(rw) -> undefined",
-    summary: "获取写锁（排他，阻塞直到无其他读者/写者）。",
+    summary: "获取写锁（排他；有读者或写者时等待，等待期间新读者排队防写者饥饿）。",
     params: &[("rw", "rwmutex 对象")],
     returns: "undefined",
     examples: &["wlock(rw); ... wunlock(rw)"],
@@ -155,7 +188,7 @@ static DOC_WLOCK: BuiltinDoc = BuiltinDoc {
 static DOC_WUNLOCK: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "wunlock(rw) -> undefined",
-    summary: "释放写锁。",
+    summary: "释放写锁并放行等待者（按队列顺序：连续读者或单个写者）。",
     params: &[("rw", "rwmutex 对象")],
     returns: "undefined",
     examples: &["wunlock(rw)"],
@@ -192,17 +225,17 @@ static DOC_WG_ADD: BuiltinDoc = BuiltinDoc {
 static DOC_WG_DONE: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "wgDone(wg) -> undefined",
-    summary: "标记一个任务完成（计数减 1）。",
+    summary: "标记一个任务完成（计数减 1）。计数归零时唤醒全部等待者（唤醒后重查计数）。",
     params: &[("wg", "waitGroup 对象")],
     returns: "undefined",
     examples: &["wgDone(wg)"],
-    errors: &["计数减为负数会 panic"],
+    errors: &["计数减为负数报错（Done 次数超过 Add）"],
 };
 
 static DOC_WG_WAIT: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "wgWait(wg) -> undefined",
-    summary: "阻塞等待计数归零（所有任务完成）。",
+    summary: "等待计数归零（所有任务完成）。计数非零时挂起等待（任务内不占 OS 线程）；唤醒后重查计数，仍非零则继续等。",
     params: &[("wg", "waitGroup 对象")],
     returns: "undefined",
     examples: &["wgWait(wg)"],
@@ -225,7 +258,7 @@ static DOC_NEW_SEMAPHORE: BuiltinDoc = BuiltinDoc {
 static DOC_SEM_ACQUIRE: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "semAcquire(sem) -> undefined",
-    summary: "获取信号量（阻塞直到有空位）。",
+    summary: "获取信号量（无空位时挂起等待；唤醒后重查空位，仍无则继续等）。",
     params: &[("sem", "semaphore 对象")],
     returns: "undefined",
     examples: &["semAcquire(sem)"],
@@ -235,7 +268,7 @@ static DOC_SEM_ACQUIRE: BuiltinDoc = BuiltinDoc {
 static DOC_SEM_RELEASE: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "semRelease(sem) -> undefined",
-    summary: "释放信号量（空位加 1）。",
+    summary: "释放信号量（空位加 1，唤醒一个等待者；唤醒后由其重查空位）。",
     params: &[("sem", "semaphore 对象")],
     returns: "undefined",
     examples: &["semRelease(sem)"],
@@ -258,37 +291,14 @@ static DOC_NEW_ONCE: BuiltinDoc = BuiltinDoc {
 static DOC_ONCE_DO: BuiltinDoc = BuiltinDoc {
     category: "concurrency",
     signature: "onceDo(o, fn) -> value",
-    summary: "保证 fn 只在第一次调用时执行（并发安全）。返回首次执行的结果；fn 出错时该错误会返回给所有调用方（不吞掉）。",
+    summary: "保证 fn 只在第一次调用时执行（并发安全）。返回首次执行的结果；fn 出错时该错误会返回给所有调用方（不吞掉）。并发调用方挂起等待首次执行完成并直接取得其结果。",
     params: &[("o", "once 对象"), ("fn", "要执行的函数")],
     returns: "首次执行的返回值（后续调用返回同一结果）",
     examples: &["onceDo(o, initFunc)"],
     errors: &[
         "fn 执行出错时返回该错误",
         "回调内递归调用同一 once 时返回错误（而不是永久阻塞）",
-    ],
-};
-
-static DOC_POOL_RUN: BuiltinDoc = BuiltinDoc {
-    category: "concurrency",
-    signature: "poolRun(fn, workers, items) -> array",
-    summary: "有界并发执行：启动 workers 个工作线程，并发处理 items 中的每一项（对每项调用 fn(item)）。阻塞直到全部完成，返回与 items 等长的结果数组（顺序与 items 一一对应）。fn 抛异常时对应位置返回 error 值，不影响其余项。workers 大于 items 数量时按 items 数量启动（不启多余线程）。",
-    params: &[
-        ("fn", "处理函数，接收一个 item，返回结果"),
-        ("workers", "工作线程数（整数，1..=1024）"),
-        ("items", "待处理项数组"),
-    ],
-    returns: "array 结果数组，results[i] 为 fn(items[i]) 的返回值（异常时为 error 值）",
-    examples: &[
-        "var urls = [\"http://a\", \"http://b\", \"http://c\"]",
-        "var bodies = poolRun(func(u) { return getWeb(u) }, 8, urls)",
-        "for i in range(len(bodies)) { pln(urls[i], \"->\", len(bodies[i])) }",
-    ],
-    errors: &[
-        "fn 不是函数值时返回错误",
-        "workers 非整数或超出 1..=1024 范围时返回错误",
-        "items 不是数组时返回错误",
-        "items 为空数组时直接返回空数组（不启动线程）",
-        "fn 对某项抛异常时该项结果为 error 值（用 isErr 判断），整体不中断",
+        "回调内不允许再挂起当前任务（回调经 call_function_value 执行，挂起被禁用并返回明确错误）",
     ],
 };
 
@@ -346,127 +356,141 @@ fn downcast<'a, T: 'static>(v: &'a Value, what: &str, fn_name: &str) -> Result<&
     }
 }
 
-// ============ Channel ============
+// ============ Channel（值注入型） ============
 
-/// Channel Sflang 的 channel 类型，包装 std::sync::mpsc。
+/// ChanState 通道内部状态（由 inner 锁保护）。
+struct ChanState {
+    /// queue 数据队列（无界）
+    queue: VecDeque<Value>,
+    /// recv_waiters 等待数据的接收任务（挂起中；线程接收者走 cv 不在此列）
+    recv_waiters: VecDeque<Arc<Task>>,
+}
+
+/// Channel Sflang 的 channel 类型。
 ///
-/// 发送端 Arc<Mutex<Sender>> 可多份共享（mpsc 为无界 channel，send 不阻塞，
-/// 短暂持锁无碍）。接收端的处理是本类型的关键：
-///
-/// - 不能把 Receiver 包在 Mutex 里直接 `lock().recv()`：阻塞接收期间会持有
-///   互斥锁，导致同 channel 的并发接收被串行化，且与 chanTryRecv 等组合时
-///   可能死锁（这是本次修复的 bug）。
-/// - 也不能直接 `Arc<Receiver>` 共享：本工具链（rustc 1.95）的
-///   `mpsc::Receiver` 未实现 `Sync`，无法放入 Native（要求 Send + Sync）。
-///
-/// 故采用"接收权借出"方案：rx 存于 `Mutex<Option<Receiver>>`，
-/// chanRecv 先把 Receiver 借出（离开锁的作用域后再阻塞 recv，
-///   阻塞期间不持有任何锁），收到数据或关闭后归还并唤醒下一个等待者；
-/// chanTryRecv 只在锁内做非阻塞 try_recv，若接收权正被借出则直接返回
-///   undefined（不会被阻塞的接收卡住）。
-/// 多个线程并发调用 chanRecv 时仍能各取到一条数据（接收权依次交接）。
+/// 发送：有等待的接收任务时直接交接（wake_with 注入值，不入队）；否则入队
+/// 并通知线程接收者。接收：任务上下文空队列时挂起登记（持锁登记，与发送方
+/// 的"交接 or 入队"决策互斥，无丢唤醒窗口）；线程上下文 cv 阻塞。
+/// 发送端全部丢弃后 chanRecv 返回 undefined（无阻塞等待时）。
 pub struct Channel {
-    /// 发送端（mpsc 多生产者）
-    pub tx: Arc<Mutex<Sender<Value>>>,
-    /// 接收端（None 表示接收权正被某个阻塞中的 chanRecv 借出）
-    rx: Mutex<Option<Receiver<Value>>>,
-    /// 等待接收权归还的条件变量
-    rx_cv: Condvar,
+    /// inner 通道状态锁（队列 + 接收等待队列；检查与登记的原子性由它保证）
+    inner: Mutex<ChanState>,
+    /// cv 线程接收者的等待通知
+    cv: Condvar,
 }
 
 /// bi_new_channel 创建新 channel。
 fn bi_new_channel(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
-    let (tx, rx) = channel::<Value>();
     let chan = Channel {
-        tx: Arc::new(Mutex::new(tx)),
-        rx: Mutex::new(Some(rx)),
-        rx_cv: Condvar::new(),
+        inner: Mutex::new(ChanState {
+            queue: VecDeque::new(),
+            recv_waiters: VecDeque::new(),
+        }),
+        cv: Condvar::new(),
     };
-    // 注：用 Native 包装（Arc<dyn Any + Send + Sync>）
     Ok(Value::Native(Arc::new(Arc::new(chan))))
 }
 
-/// bi_chan_send 发送值到 channel（阻塞直到接收方取走，mpsc 为无界故实际不阻塞）。
+/// bi_chan_send 发送值到 channel（永不阻塞：无界通道）。
+///
+/// 有等待的接收任务 → 直接交接（wake_with 注入）；否则入队 + 通知线程接收者。
 fn bi_chan_send(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.len() < 2 {
         return Err(crate::value::error_value("chanSend() 需要 2 个参数 (channel, value)"));
     }
     let chan = downcast::<Channel>(&args[0], "channel", "chanSend")?;
-    chan.tx.lock().unwrap().send(args[1].clone())
-        .map_err(|e| crate::value::error_value(format!("chanSend 失败: {}", e)))?;
+    let mut g = chan.inner.lock().unwrap();
+    if let Some(t) = g.recv_waiters.pop_front() {
+        // 直接交接：值注入给挂起的接收任务（不经队列）
+        drop(g);
+        scheduler::wake_task_with(&t, args[1].clone());
+    } else {
+        g.queue.push_back(args[1].clone());
+        drop(g);
+        chan.cv.notify_one();
+    }
     Ok(Value::Undefined)
 }
 
-/// bi_chan_recv 从 channel 接收值（阻塞至有数据）。
+/// bi_chan_recv 从 channel 接收值。
 ///
-/// 实现要点：阻塞的 recv() 在任何互斥锁的作用域之外执行——
-/// 先"借出"接收权，阻塞期间不持锁，因此：
-///   - 其他线程的 chanTryRecv 不会被阻塞的接收卡住；
-///   - 多个线程并发调用 chanRecv 时，接收权依次交接，各取到一条数据。
-fn bi_chan_recv(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+/// 任务上下文：有数据取走返回；空队列时持锁挂起登记（注入型唤醒）。
+/// 线程上下文：cv 阻塞循环。发送端全部丢弃时（无阻塞等待）返回 undefined。
+fn bi_chan_recv(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("chanRecv() 需要 1 个参数"));
     }
     let chan = downcast::<Channel>(&args[0], "channel", "chanRecv")?;
-    // 1) 借出接收权（另一接收者借出期间在此等待其归还）
-    let mut g = chan.rx.lock().unwrap();
-    let rx = loop {
-        if let Some(rx) = g.take() {
-            break rx;
+    // 任务上下文：挂起等待（注入型：唤醒时值已替换占位符）
+    if scheduler::current_task().is_some() {
+        let task = scheduler::current_task().unwrap();
+        let mut g = chan.inner.lock().unwrap();
+        if let Some(v) = g.queue.pop_front() {
+            return Ok(v);
         }
-        g = chan.rx_cv.wait(g).unwrap();
-    };
-    drop(g); // 关键：阻塞接收前释放锁
-    // 2) 无锁阻塞接收
-    let res = rx.recv();
-    // 3) 归还接收权，唤醒下一个等待的接收者
-    let mut g = chan.rx.lock().unwrap();
-    *g = Some(rx);
-    chan.rx_cv.notify_all();
-    match res {
-        Ok(v) => Ok(v),
-        Err(_) => Ok(Value::Undefined), // 所有发送端已关闭，返回 undefined
+        // 持锁挂起登记：与发送方的"交接 or 入队"决策互斥，无丢唤醒窗口
+        scheduler::park_current_task_inject(vm)?;
+        g.recv_waiters.push_back(task);
+        drop(g);
+        return Ok(Value::Undefined); // 占位值，唤醒时被注入值替换
+    }
+    // 线程上下文：cv 阻塞循环
+    let mut g = chan.inner.lock().unwrap();
+    loop {
+        if let Some(v) = g.queue.pop_front() {
+            return Ok(v);
+        }
+        g = chan.cv.wait(g).unwrap();
     }
 }
 
 /// bi_chan_try_recv 非阻塞接收。
 ///
-/// 暂无数据、通道已关闭（发送端全部丢弃）、或接收权正被某个阻塞中的
-/// chanRecv 借出，均返回 undefined（不区分）；需要区分时应由发送方在
-/// 协议层约定（如发送结束标记）。任何情况下都不会被阻塞的接收卡住。
+/// 暂无数据、通道已关闭（发送端全部丢弃）均返回 undefined（不区分）；
+/// 不打扰挂起中的接收任务（只从数据队列取）。
 fn bi_chan_try_recv(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("chanTryRecv() 需要 1 个参数"));
     }
     let chan = downcast::<Channel>(&args[0], "channel", "chanTryRecv")?;
-    // 仅短暂持锁做非阻塞 try_recv（try_recv 本身立即返回）
-    let g = chan.rx.lock().unwrap();
-    match g.as_ref().map(|rx| rx.try_recv()) {
-        Some(Ok(v)) => Ok(v),
-        _ => Ok(Value::Undefined),
+    let mut g = chan.inner.lock().unwrap();
+    match g.queue.pop_front() {
+        Some(v) => Ok(v),
+        None => Ok(Value::Undefined),
     }
 }
 
-// ============ Mutex ============
+// ============ Mutex（交接式注入型） ============
+
+/// MuState 互斥锁内部状态（由 inner 锁保护）。
+struct MuState {
+    /// held 是否被持有。有任务等待者时，解锁把所有权随唤醒交接（held 保持 true）
+    held: bool,
+    /// waiters 等待锁的任务队列（FIFO；线程等待者走 cv）
+    waiters: VecDeque<Arc<Task>>,
+}
 
 /// MutexT Sflang 互斥锁。
 ///
-/// 实现说明：脚本层的 lock/unlock 是配对调用，无法持有 Rust 的 MutexGuard
-/// 跨调用（guard 生命周期绑定栈帧）。故采用"二值锁"实现：内部用 Mutex<bool> +
-/// Condvar，lock 阻塞至标志为 false 后置 true，unlock 置 false 并唤醒。
-/// 这样 lock() 与 unlock() 之间的脚本代码构成真正的临界区。
-/// 配合 defer unlock 可保证异常路径也释放锁。
+/// 交接语义：unlock 时若队首有等待任务，held 保持 true、直接唤醒该任务——
+/// 其 lock() 从挂起点继续（值注入型：占位 undefined 即返回值），锁所有权
+/// 随唤醒完成移交，无需重试竞争。线程等待者走 cv（经典 while 循环）。
 pub struct MutexT {
-    held: Mutex<bool>,
+    /// inner 锁状态（held + 任务等待队列）
+    inner: Mutex<MuState>,
+    /// cv 线程等待者的通知
     cv: Condvar,
 }
 
 impl MutexT {
     /// release 释放锁（供通用 close 函数复用）。已释放则无操作（幂等）。
     pub fn release(&self) {
-        let mut g = self.held.lock().unwrap();
-        if *g {
-            *g = false;
+        let mut g = self.inner.lock().unwrap();
+        if let Some(t) = g.waiters.pop_front() {
+            drop(g);
+            scheduler::wake_task_with(&t, Value::Undefined);
+        } else if g.held {
+            g.held = false;
             self.cv.notify_one();
         }
     }
@@ -474,35 +498,58 @@ impl MutexT {
 
 fn bi_new_mutex(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Native(Arc::new(Arc::new(MutexT {
-        held: Mutex::new(false),
+        inner: Mutex::new(MuState { held: false, waiters: VecDeque::new() }),
         cv: Condvar::new(),
     }))))
 }
 
 /// bi_lock 阻塞获取互斥锁（临界区起点）。
 ///
-/// 阻塞至锁可用后标记为持有，返回 undefined。后续脚本代码至 unlock 前为临界区。
-fn bi_lock(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+/// 任务上下文：锁空闲取走；被占时持锁挂起登记（注入型：解锁方交接唤醒）。
+/// 线程上下文：cv while 循环。
+fn bi_lock(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("lock() 需要 1 个参数 (mutex)"));
     }
     let m = downcast::<MutexT>(&args[0], "mutex", "lock")?;
-    let mut g = m.held.lock().unwrap();
-    while *g {
+    let mut g = m.inner.lock().unwrap();
+    if !g.held {
+        g.held = true;
+        return Ok(Value::Undefined);
+    }
+    // 任务上下文：挂起等待交接
+    if let Some(task) = scheduler::current_task() {
+        scheduler::park_current_task_inject(vm)?;
+        g.waiters.push_back(task);
+        drop(g);
+        return Ok(Value::Undefined); // 占位：唤醒即已持有锁（交接语义）
+    }
+    // 线程上下文：cv 阻塞
+    while g.held {
         g = m.cv.wait(g).unwrap();
     }
-    *g = true;
+    g.held = true;
     Ok(Value::Undefined)
 }
 
 /// bi_unlock 释放互斥锁（临界区终点）。
+///
+/// 有等待任务 → 所有权交接（held 保持 true，唤醒队首）；否则置空闲并通知
+/// 线程等待者。未持锁时幂等（无等待者且 held==false → 空操作）。
 fn bi_unlock(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("unlock() 需要 1 个参数 (mutex)"));
     }
     let m = downcast::<MutexT>(&args[0], "mutex", "unlock")?;
-    let mut g = m.held.lock().unwrap();
-    *g = false;
+    let mut g = m.inner.lock().unwrap();
+    if let Some(t) = g.waiters.pop_front() {
+        // 交接：held 保持 true，锁所有权随唤醒移交给 t
+        drop(g);
+        scheduler::wake_task_with(&t, Value::Undefined);
+        return Ok(Value::Undefined);
+    }
+    g.held = false;
+    drop(g);
     m.cv.notify_one();
     Ok(Value::Undefined)
 }
@@ -513,152 +560,230 @@ fn bi_try_lock(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         return Err(crate::value::error_value("tryLock() 需要 1 个参数 (mutex)"));
     }
     let m = downcast::<MutexT>(&args[0], "mutex", "tryLock")?;
-    let mut g = m.held.lock().unwrap();
-    if *g {
+    let mut g = m.inner.lock().unwrap();
+    if g.held {
         Ok(Value::Bool(false))
     } else {
-        *g = true;
+        g.held = true;
         Ok(Value::Bool(true))
     }
 }
 
-// ============ RWMutex ============
+// ============ RWMutex（放行时登记状态的注入型） ============
 
-/// RWState 读写锁的内部状态（由单一互斥锁保护）。
-///
-/// 把 readers/writer 合并到同一把锁内，从根本上消除 rlock 与 wlock
-/// 以相反顺序获取两把锁导致的 ABBA 死锁。
+/// RWState 读写锁的持有状态（由 inner 锁保护）。
 struct RWState {
-    /// 当前持有读锁的读者数
+    /// readers 当前持读锁数（含放行时登记给被唤醒读者的）
     readers: u32,
-    /// 是否有写者持有写锁
+    /// writer 是否有写者持有写锁（含放行时登记给被唤醒写者的）
     writer: bool,
-    /// 是否有写者正在等待（等待期间新读者排队，防止写者饥饿）
-    writer_pending: bool,
+    /// writer_waiting 排队写者数（>0 时新读者排队，防写者饥饿）
+    writer_waiting: u32,
+}
+
+/// RWWaiter 读写锁的等待任务。
+enum RWWaiter {
+    /// Reader 等待读锁的任务
+    Reader(Arc<Task>),
+    /// Writer 等待写锁的任务
+    Writer(Arc<Task>),
+}
+
+/// RWInner 读写锁内部（状态 + 等待队列）。
+struct RWInner {
+    /// state 持有状态
+    state: RWState,
+    /// waiters 等待任务队列（FIFO；线程等待者走 cv）
+    waiters: VecDeque<RWWaiter>,
 }
 
 /// RWMutexT 读写锁。
 ///
-/// 实现说明：与 MutexT 同理，无法持有 Rust 的 RwLockReadGuard/WriteGuard 跨调用。
-/// 内部用单一 Mutex<RWState> + 一个 Condvar 实现（固定锁序，无 ABBA 死锁）：
-/// - rlock：无写者且无写者等待时 readers+1；否则阻塞排队
-/// - runlock：readers-1，归零时唤醒等待的写者
-/// - wlock：先置 writer_pending（阻止新读者插队），等待无写者且读者归零后置 writer
-/// - wunlock：清除 writer 并唤醒全部等待者
-/// 写锁复用语义：用 wlock/wunlock（见下）——为避免与 mutex 的 lock/unlock 混淆，
-///   rwmutex 的写操作命名为 wlock/wunlock，读操作为 rlock/runlock。
+/// 放行（admit）语义：释放端在持有 inner 锁时按 FIFO 放行等待任务，并同步
+/// 登记其持有状态（读者 readers+1 / 写者 writer=true），被唤醒者从挂起点
+/// 继续（注入型）即已持有对应锁。写者放行条件：无读者；写者排队时新读者
+/// 排队（防写者饥饿）。线程等待者走 cv（while 循环重查状态）。
+/// 单一 inner 锁保护全部状态，无 ABBA 死锁。
 pub struct RWMutexT {
-    state: Mutex<RWState>,
+    /// inner 状态 + 等待队列
+    inner: Mutex<RWInner>,
+    /// cv 线程等待者的通知
     cv: Condvar,
 }
 
 impl RWMutexT {
-    /// release 释放锁（写锁优先，无写锁则释放一个读锁）。供通用 close 复用。幂等。
+    /// admit 放行等待任务（须持有 inner 锁；按 FIFO，同步登记持有状态）。
+    fn admit(g: &mut RWInner) {
+        loop {
+            let can_pop = match g.waiters.front() {
+                Some(RWWaiter::Reader(_)) => !g.state.writer,
+                Some(RWWaiter::Writer(_)) => !g.state.writer && g.state.readers == 0,
+                None => false,
+            };
+            if !can_pop {
+                break;
+            }
+            match g.waiters.pop_front().unwrap() {
+                RWWaiter::Reader(t) => {
+                    g.state.readers += 1;
+                    scheduler::wake_task_with(&t, Value::Undefined);
+                }
+                RWWaiter::Writer(t) => {
+                    g.state.writer_waiting -= 1;
+                    g.state.writer = true;
+                    scheduler::wake_task_with(&t, Value::Undefined);
+                    break; // 写者独占，停止放行
+                }
+            }
+        }
+    }
+
+    /// release 释放锁（供通用 close 复用）：优先写锁，其次一个读锁。幂等。
     pub fn release(&self) {
-        let mut g = self.state.lock().unwrap();
-        if g.writer {
-            // 优先释放写锁
-            g.writer = false;
-        } else if g.readers > 0 {
-            // 无写锁，释放一个读锁
-            g.readers -= 1;
+        let mut g = self.inner.lock().unwrap();
+        if g.state.writer {
+            g.state.writer = false;
+        } else if g.state.readers > 0 {
+            g.state.readers -= 1;
+        } else {
+            return; // 无锁可释放
         }
-        if g.readers == 0 && !g.writer {
-            g.writer_pending = false;
-            self.cv.notify_all();
-        }
+        Self::admit(&mut g);
+        drop(g);
+        self.cv.notify_all();
     }
 }
 
 fn bi_new_rwmutex(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Native(Arc::new(Arc::new(RWMutexT {
-        state: Mutex::new(RWState { readers: 0, writer: false, writer_pending: false }),
+        inner: Mutex::new(RWInner {
+            state: RWState { readers: 0, writer: false, writer_waiting: 0 },
+            waiters: VecDeque::new(),
+        }),
         cv: Condvar::new(),
     }))))
 }
 
-/// bi_rlock 获取读锁（共享，多读者并发）。
+/// bi_rlock 获取读锁（共享）。
 ///
-/// 有写者持有或写者正在等待时阻塞排队（写者等待期间新读者不得插队，
-/// 避免连续不断的读者造成写者饥饿）。
-fn bi_rlock(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+/// 有写者持有或有写者排队时排队（防写者饥饿）；任务挂起 / 线程 cv 等待。
+fn bi_rlock(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("rlock() 需要 1 个参数 (rwmutex)"));
     }
     let m = downcast::<RWMutexT>(&args[0], "rwmutex", "rlock")?;
-    let mut g = m.state.lock().unwrap();
-    // 等待写锁释放且无写者排队
-    while g.writer || g.writer_pending {
+    let mut g = m.inner.lock().unwrap();
+    if !g.state.writer && g.state.writer_waiting == 0 {
+        g.state.readers += 1;
+        return Ok(Value::Undefined);
+    }
+    if let Some(task) = scheduler::current_task() {
+        scheduler::park_current_task_inject(vm)?;
+        g.waiters.push_back(RWWaiter::Reader(task));
+        drop(g);
+        return Ok(Value::Undefined); // 放行时已登记 readers+1
+    }
+    while g.state.writer || g.state.writer_waiting > 0 {
         g = m.cv.wait(g).unwrap();
     }
-    g.readers += 1;
+    g.state.readers += 1;
     Ok(Value::Undefined)
 }
 
-/// bi_runlock 释放读锁。
+/// bi_runlock 释放读锁。读者归零时放行等待者（写者优先条件满足时）。
 fn bi_runlock(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("runlock() 需要 1 个参数 (rwmutex)"));
     }
     let m = downcast::<RWMutexT>(&args[0], "rwmutex", "runlock")?;
-    let mut g = m.state.lock().unwrap();
-    if g.readers > 0 {
-        g.readers -= 1;
+    let mut g = m.inner.lock().unwrap();
+    if g.state.readers > 0 {
+        g.state.readers -= 1;
     }
-    if g.readers == 0 {
-        m.cv.notify_all(); // 唤醒可能等待的写者
-    }
+    RWMutexT::admit(&mut g);
+    drop(g);
+    m.cv.notify_all();
     Ok(Value::Undefined)
 }
 
-/// bi_wlock 获取写锁（独占；有读者或写者时阻塞）。
-///
-/// 等待期间置 writer_pending，新到达的读者会排队，防止写者饥饿。
-fn bi_wlock(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+/// bi_wlock 获取写锁（独占）。等待期间置 writer_waiting，新读者排队。
+fn bi_wlock(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("wlock() 需要 1 个参数 (rwmutex)"));
     }
     let m = downcast::<RWMutexT>(&args[0], "rwmutex", "wlock")?;
-    let mut g = m.state.lock().unwrap();
-    // 标记有写者等待，阻止新读者插队
-    g.writer_pending = true;
-    // 等待所有读者退出且无其他写者
-    while g.writer || g.readers > 0 {
+    let mut g = m.inner.lock().unwrap();
+    if !g.state.writer && g.state.readers == 0 {
+        g.state.writer = true;
+        return Ok(Value::Undefined);
+    }
+    if let Some(task) = scheduler::current_task() {
+        g.state.writer_waiting += 1;
+        scheduler::park_current_task_inject(vm)?;
+        g.waiters.push_back(RWWaiter::Writer(task));
+        drop(g);
+        return Ok(Value::Undefined); // 放行时已登记 writer=true
+    }
+    g.state.writer_waiting += 1;
+    while g.state.writer || g.state.readers > 0 {
         g = m.cv.wait(g).unwrap();
     }
-    g.writer = true;
-    g.writer_pending = false;
+    g.state.writer_waiting -= 1;
+    g.state.writer = true;
     Ok(Value::Undefined)
 }
 
-/// bi_wunlock 释放写锁。
+/// bi_wunlock 释放写锁并放行等待者。
 fn bi_wunlock(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("wunlock() 需要 1 个参数 (rwmutex)"));
     }
     let m = downcast::<RWMutexT>(&args[0], "rwmutex", "wunlock")?;
-    let mut g = m.state.lock().unwrap();
-    g.writer = false;
-    m.cv.notify_all(); // 唤醒等待的读者/写者
+    let mut g = m.inner.lock().unwrap();
+    g.state.writer = false;
+    RWMutexT::admit(&mut g);
+    drop(g);
+    m.cv.notify_all();
     Ok(Value::Undefined)
 }
-// 注：rwmutex 的写锁用 wlock/wunlock（避免与 mutex 的 lock/unlock 混淆类型）。
 
-// ============ WaitGroup ============
+// ============ WaitGroup（等待-重试型） ============
 
-/// WaitGroupT 等待组，基于 Mutex + Condvar + 计数器实现（等价 Go sync.WaitGroup）。
+/// WaitGroupT 等待组。
+///
+/// wgWait 为等待-重试型挂起：wgDone 使计数归零时唤醒全部等待任务，
+/// 被唤醒者回退重查计数（仍非零——如并发 wgAdd——则继续等），语义稳健。
+/// 线程等待者走 cv。
 pub struct WaitGroupT {
+    /// counter 等待计数
     counter: AtomicI64,
+    /// waiters 计数非零时挂起的等待任务（wgWait 登记；归零时全部唤醒）
+    waiters: Mutex<VecDeque<Arc<Task>>>,
+    /// cv 线程等待者的通知
     cv: Condvar,
+    /// mu 保护计数更新的检查-写入原子性（与旧版一致）
     mu: Mutex<()>,
 }
 
 fn bi_new_waitgroup(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Native(Arc::new(Arc::new(WaitGroupT {
         counter: AtomicI64::new(0),
+        waiters: Mutex::new(VecDeque::new()),
         cv: Condvar::new(),
         mu: Mutex::new(()),
     }))))
+}
+
+/// notify_zero 计数归零时的统一唤醒：唤醒全部任务等待者（重查型）+ 通知线程。
+fn notify_zero(wg: &WaitGroupT) {
+    let waiters: VecDeque<Arc<Task>> = {
+        let mut w = wg.waiters.lock().unwrap();
+        std::mem::take(&mut *w)
+    };
+    for t in waiters {
+        scheduler::wake_task(&t); // 重查型：唤醒后重查计数
+    }
+    wg.cv.notify_all();
 }
 
 /// bi_wg_add 增加等待计数（n 可为负，对应 Done 批量）。
@@ -688,12 +813,12 @@ fn bi_wg_add(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
     wg.counter.store(new, Ordering::SeqCst);
     if new == 0 {
-        wg.cv.notify_all();
+        notify_zero(wg);
     }
     Ok(Value::Undefined)
 }
 
-/// bi_wg_done 完成一个等待（计数 -1）。
+/// bi_wg_done 完成一个等待（计数 -1）。归零时唤醒全部等待者。
 fn bi_wg_done(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("wgDone() 需要 1 个参数 (waitgroup)"));
@@ -708,17 +833,29 @@ fn bi_wg_done(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         ));
     }
     if wg.counter.load(Ordering::SeqCst) == 0 {
-        wg.cv.notify_all();
+        notify_zero(wg);
     }
     Ok(Value::Undefined)
 }
 
-/// bi_wg_wait 阻塞至计数归零。
-fn bi_wg_wait(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+/// bi_wg_wait 阻塞至计数归零（等待-重试型挂起；线程上下文 cv 循环）。
+fn bi_wg_wait(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("wgWait() 需要 1 个参数 (waitgroup)"));
     }
     let wg = downcast::<WaitGroupT>(&args[0], "waitgroup", "wgWait")?;
+    // 任务上下文：计数非零 → 挂起（重查型：唤醒后重新执行本调用）
+    if scheduler::current_task().is_some() {
+        let _g = wg.mu.lock().unwrap();
+        if wg.counter.load(Ordering::SeqCst) == 0 {
+            return Ok(Value::Undefined);
+        }
+        scheduler::park_current_task_retry(vm)?;
+        wg.waiters.lock().unwrap().push_back(scheduler::current_task().unwrap());
+        drop(_g);
+        return Ok(Value::Undefined); // 占位：唤醒后机器回退重试
+    }
+    // 线程上下文：cv 循环
     let mut g = wg.mu.lock().unwrap();
     while wg.counter.load(Ordering::SeqCst) != 0 {
         g = wg.cv.wait(g).unwrap();
@@ -726,12 +863,20 @@ fn bi_wg_wait(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Undefined)
 }
 
-// ============ Semaphore ============
+// ============ Semaphore（等待-重试型） ============
 
-/// SemaphoreT 计数信号量，基于 Mutex + Condvar + 计数。
+/// SemaphoreT 计数信号量。
+///
+/// semAcquire 为等待-重试型挂起：semRelease 空位 +1 时唤醒一个等待任务，
+/// 被唤醒者重查空位（可能被线程竞争者先取走——则重新挂起），语义稳健。
 pub struct SemaphoreT {
+    /// count 剩余空位
     count: AtomicI64,
+    /// waiters 等待空位的任务队列（FIFO；线程等待者走 cv）
+    waiters: Mutex<VecDeque<Arc<Task>>>,
+    /// cv 线程等待者的通知
     cv: Condvar,
+    /// mu 保护检查-扣减原子性
     mu: Mutex<()>,
 }
 
@@ -753,17 +898,31 @@ fn bi_new_semaphore(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
     Ok(Value::Native(Arc::new(Arc::new(SemaphoreT {
         count: AtomicI64::new(n),
+        waiters: Mutex::new(VecDeque::new()),
         cv: Condvar::new(),
         mu: Mutex::new(()),
     }))))
 }
 
-/// bi_sem_acquire 获取信号量（P 操作，计数 -1，为 0 则阻塞）。
-fn bi_sem_acquire(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+/// bi_sem_acquire 获取信号量（P 操作）。
+fn bi_sem_acquire(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("semAcquire() 需要 1 个参数 (semaphore)"));
     }
     let sem = downcast::<SemaphoreT>(&args[0], "semaphore", "semAcquire")?;
+    // 任务上下文
+    if scheduler::current_task().is_some() {
+        let _g = sem.mu.lock().unwrap();
+        if sem.count.load(Ordering::SeqCst) > 0 {
+            sem.count.fetch_sub(1, Ordering::SeqCst);
+            return Ok(Value::Undefined);
+        }
+        scheduler::park_current_task_retry(vm)?;
+        sem.waiters.lock().unwrap().push_back(scheduler::current_task().unwrap());
+        drop(_g);
+        return Ok(Value::Undefined); // 占位：唤醒后回退重试
+    }
+    // 线程上下文
     let mut g = sem.mu.lock().unwrap();
     while sem.count.load(Ordering::SeqCst) <= 0 {
         g = sem.cv.wait(g).unwrap();
@@ -772,7 +931,7 @@ fn bi_sem_acquire(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Undefined)
 }
 
-/// bi_sem_release 释放信号量（V 操作，计数 +1，唤醒一个等待者）。
+/// bi_sem_release 释放信号量（V 操作）。空位 +1，唤醒一个任务等待者 + 通知线程。
 fn bi_sem_release(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("semRelease() 需要 1 个参数 (semaphore)"));
@@ -780,36 +939,64 @@ fn bi_sem_release(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let sem = downcast::<SemaphoreT>(&args[0], "semaphore", "semRelease")?;
     let _g = sem.mu.lock().unwrap();
     sem.count.fetch_add(1, Ordering::SeqCst);
+    let t = sem.waiters.lock().unwrap().pop_front();
+    drop(_g);
+    if let Some(t) = t {
+        scheduler::wake_task(&t); // 重查型：唤醒后重查空位
+    }
     sem.cv.notify_one();
     Ok(Value::Undefined)
 }
 
-// ============ Once ============
+// ============ Once（值注入型等待者） ============
+
+/// ExecId 首次执行者的身份（递归检测用；任务与线程统一编号空间不同）。
+#[derive(Clone, Copy, PartialEq)]
+enum ExecId {
+    /// Thread 线程上下文的执行者
+    Thread(std::thread::ThreadId),
+    /// Task 任务上下文的执行者
+    Task(u64),
+}
+
+/// current_exec_id 当前执行者身份。
+fn current_exec_id() -> ExecId {
+    match scheduler::current_task() {
+        Some(t) => ExecId::Task(t.id),
+        None => ExecId::Thread(std::thread::current().id()),
+    }
+}
 
 /// OnceState once 的内部状态（由单一互斥锁保护）。
 struct OnceState {
-    /// 执行阶段：0 = 未开始，1 = 执行中，2 = 已完成
+    /// phase 执行阶段：0 = 未开始，1 = 执行中，2 = 已完成
     phase: u8,
-    /// 正在执行回调的线程 id（用于检测同线程递归调用，避免永久死锁）
-    executor: Option<std::thread::ThreadId>,
-    /// 首次回调的执行结果（phase == 2 后有效，供后续调用克隆返回）
+    /// executor 正在执行回调者的身份（检测同执行者递归调用）
+    executor: Option<ExecId>,
+    /// result 首次回调的执行结果（phase == 2 后有效，供后续调用克隆返回）
     result: Option<Result<Value, Value>>,
 }
 
-/// OnceT 单次执行原语，onceDo(once, func) 保证 func 只执行一次（线程安全）。
+/// OnceT 单次执行原语，onceDo(once, func) 保证 func 只执行一次（并发安全）。
 ///
-/// 不直接使用 std::sync::Once 的原因：
+/// 并发调用方（任务）挂起等待首次执行完成，完成时以结果注入唤醒（直接取得
+/// 结果，无需重试）；线程调用方走 cv。不直接使用 std::sync::Once 的原因：
 ///   - Once 的闭包无法把 Result 传出，回调的错误会被吞掉；
 ///   - 同一线程在回调内递归调用同一 once 时会永久阻塞。
-/// 此处用 Mutex + Condvar 自行实现，支持错误传播与递归检测。
+/// 此处用 Mutex + Condvar + 任务等待队列自行实现，支持错误传播与递归检测。
 pub struct OnceT {
+    /// state 状态（phase/executor/result）
     state: Mutex<OnceState>,
+    /// waiters 等待首次执行完成的任务（完成时以结果注入唤醒）
+    waiters: Mutex<VecDeque<Arc<Task>>>,
+    /// cv 线程等待者的通知
     cv: Condvar,
 }
 
 fn bi_new_once(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Native(Arc::new(Arc::new(OnceT {
         state: Mutex::new(OnceState { phase: 0, executor: None, result: None }),
+        waiters: Mutex::new(VecDeque::new()),
         cv: Condvar::new(),
     }))))
 }
@@ -833,31 +1020,58 @@ impl Drop for OncePanicGuard<'_> {
                 g.phase = 0;
                 g.executor = None;
             }
+            drop(g);
+            // 假性完成通知：等待者拿到 undefined 结果（panic 场景属异常路径）
+            let waiters: VecDeque<Arc<Task>> =
+                std::mem::take(&mut *self.once.waiters.lock().unwrap());
+            for t in waiters {
+                scheduler::wake_task_with(&t, Value::Undefined);
+            }
             self.once.cv.notify_all();
         }
     }
 }
 
-/// bi_once_do 保证传入的函数只执行一次（线程安全）。
+/// finish_once 首次执行完成：记录结果并唤醒全部等待者（结果注入）。
+fn finish_once(once: &OnceT, res: &Result<Value, Value>) {
+    let mut g = once.state.lock().unwrap();
+    g.phase = 2;
+    g.executor = None;
+    g.result = Some(res.clone());
+    drop(g);
+    let waiters: VecDeque<Arc<Task>> = std::mem::take(&mut *once.waiters.lock().unwrap());
+    for t in waiters {
+        let v = match res {
+            Ok(v) => v.clone(),
+            Err(e) => e.clone(),
+        };
+        scheduler::wake_task_with(&t, v);
+    }
+    once.cv.notify_all();
+}
+
+/// bi_once_do 保证传入的函数只执行一次（并发安全）。
 ///
 /// 语义：
 ///   - 首次调用执行 fn，其结果（含错误）被记录，并原样返回给调用方；
 ///   - 并发调用阻塞等待，后续调用直接返回首次执行的结果（错误同样返回，不吞掉）；
-///   - 回调内同线程递归调用同一 once 时返回错误（提示递归），而不是永久阻塞；
-///   - 回调 panic（unwind）时自动复位状态，后续调用可重试。
+///   - 回调内同执行者递归调用同一 once 时返回错误（而不是永久阻塞）；
+///   - 回调 panic（unwind）时自动复位状态，后续调用可重试；
+///   - 回调内不允许再挂起当前任务（call_function_value 已禁用并返回明确错误）。
 fn bi_once_do(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.len() < 2 {
         return Err(crate::value::error_value("onceDo() 需要 2 个参数 (once, func)"));
     }
     let once = downcast::<OnceT>(&args[0], "once", "onceDo")?;
     let func = args[1].clone();
+    let me = current_exec_id();
     let mut g = once.state.lock().unwrap();
     loop {
         match g.phase {
             0 => {
-                // 抢到执行权：标记执行中并记录线程，然后释放锁执行回调
+                // 抢到执行权：标记执行中并记录身份，然后释放锁执行回调
                 g.phase = 1;
-                g.executor = Some(std::thread::current().id());
+                g.executor = Some(me);
                 drop(g);
                 // 回调 panic 时由守卫复位状态
                 let mut guard = OncePanicGuard { once, armed: true };
@@ -865,21 +1079,23 @@ fn bi_once_do(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
                 guard.armed = false;
                 drop(guard);
                 // 记录结果并唤醒所有等待者
-                let mut g = once.state.lock().unwrap();
-                g.phase = 2;
-                g.executor = None;
-                g.result = Some(res.clone());
-                once.cv.notify_all();
+                finish_once(once, &res);
                 return res;
             }
             1 => {
-                if g.executor == Some(std::thread::current().id()) {
-                    // 同一线程递归调用：等自己完成会永久死锁，直接返回错误
+                if g.executor == Some(me) {
+                    // 同执行者递归调用：等自己完成会永久死锁，直接返回错误
                     return Err(crate::value::error_value(
                         "onceDo() 回调内不能递归调用同一 once (可能原因：回调函数内部再次 onceDo 了同一个 once 对象)",
                     ));
                 }
-                // 其他线程正在执行：等待其完成
+                // 其他执行者正在执行：等待其完成（任务=注入型挂起；线程=cv）
+                if let Some(task) = scheduler::current_task() {
+                    scheduler::park_current_task_inject(vm)?;
+                    once.waiters.lock().unwrap().push_back(task);
+                    drop(g);
+                    return Ok(Value::Undefined); // 占位：完成时以结果注入
+                }
                 g = once.cv.wait(g).unwrap();
             }
             _ => {
@@ -902,7 +1118,7 @@ fn bi_once_do(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///     无锁分发、天然负载均衡（慢线程少拿任务）
 ///   - 结果槽按输入顺序预分配（Arc<Vec<Arc<Mutex<Option<Value>>>>>），
 ///     工作线程按下标写入，保证结果顺序与 items 一一对应
-///   - 每个工作线程独立 VM（共享 globals 与输出），与 run 子线程同模型；
+///   - 每个工作线程独立 VM（共享 globals 与输出），与 run 任务同模型；
 ///     内置函数表已全局化（阶段0a），每线程不再重复注册
 ///   - fn 对某项抛异常：该项结果槽写入 error 值（符合"返回错误对象为主"约定），
 ///     不中断其余项
@@ -966,7 +1182,7 @@ fn bi_pool_run(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         let globals = globals.clone();
         let out = out.clone();
         handles.push(std::thread::spawn(move || {
-            // 工作线程独立 VM（共享全局环境与输出），与 run 子线程同模型
+            // 工作线程独立 VM（共享全局环境与输出），与 run 任务同模型
             let mut wvm = VM::new();
             wvm.set_globals_handle(globals);
             wvm.set_output_handle(out);

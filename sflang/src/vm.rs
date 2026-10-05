@@ -162,6 +162,9 @@ enum CallErr {
     /// EnterFrame 被调方是用户函数，携带其新帧——调用方先压回自身帧（ip 已
     /// 推进过调用指令），再压入此帧，返回机器循环。
     EnterFrame(Frame),
+    /// Parked 等待-重试型内置函数挂起了任务：callee 与实参已回推到操作数栈，
+    /// 调用点须回退 ip 到本调用指令并让出切片（唤醒后重新执行）。
+    Parked,
 }
 
 /// Frame 调用帧。
@@ -284,12 +287,20 @@ fn register_all_core(vm: &mut VM) {
 }
 
 /// pause 任务切片暂停原因（切片执行中由内置函数/燃料机制置位）。
+///
+/// 两种挂起模型（start_call 与调用点按此分派唤醒后的续接方式）：
+///   - Parked（等待-重试型）：唤醒后回退到调用指令重新执行（重查条件再获取）。
+///     适用于资源类等待：lock/rlock/wlock/wgWait/semAcquire。
+///   - ParkedInject（值注入型）：唤醒后从调用指令之后继续，结果位占位
+///     undefined 被注入值替换。适用于值/完成类等待：chanRecv/onceDo 等待者/sleep。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Pause {
     /// None 未暂停（正常执行）。
     None,
-    /// Parked 任务已挂起：等待条件已登记（等待队列/定时器），唤醒前不再调度。
+    /// Parked 等待-重试型挂起（唤醒后重试调用）。
     Parked,
+    /// ParkedInject 值注入型挂起（唤醒后从调用后继续，占位值被替换）。
+    ParkedInject,
     /// YieldFuel 燃料耗尽让出（可再次调度）。
     YieldFuel,
 }
@@ -316,6 +327,10 @@ pub struct VM {
     fuel: u64,
     /// pause 切片暂停原因（None=正常执行；任务切片执行中可能被置位）。
     pause: Pause,
+    /// park_disabled 挂起禁用计数（>0 时挂起类操作返回错误而非挂起）。
+    /// call_function_value 执行回调期间递增：回调内挂起会破坏调用方内置函数
+    /// （sort/onceDo 等）的 Rust 栈上状态，故禁止并给出明确错误引导。
+    park_disabled: u32,
     /// prepared_result 任务体是内置函数时的预执行结果（prepare_task_call 用）。
     prepared_result: Option<Result<Value, Value>>,
     /// import_stack 正在加载的脚本绝对路径栈（环检测，防循环 import）。
@@ -344,8 +359,10 @@ impl VM {
     /// 仅供 core_builtins() 构建全局表时作暂存区使用，外部应使用 new()。
     fn new_raw() -> Self {
         VM {
-            stack: Vec::with_capacity(1024),
-            frames: Vec::with_capacity(16),
+            // 初始容量取小值按需增长：每 VM 预分配会直接乘到任务内存上
+            // （10 万任务 × 1024×sizeof(Value) ≈ 数 GB；64 容量 ≈ 1.5KB/任务）
+            stack: Vec::with_capacity(64),
+            frames: Vec::with_capacity(8),
             globals: Arc::new(Mutex::new(std::collections::HashMap::new())),
             extra_builtins: std::collections::HashMap::new(),
             out: Arc::new(Mutex::new(std::io::sink())),
@@ -357,6 +374,7 @@ impl VM {
             // fuel 任务切片燃料：非任务执行不受限（u64::MAX）
             fuel: u64::MAX,
             pause: Pause::None,
+            park_disabled: 0,
             prepared_result: None,
             import_stack: Vec::new(),
             imported_modules: Vec::new(),
@@ -535,12 +553,17 @@ impl VM {
                 self.frames.push(new_frame);
                 let saved_fuel = self.fuel;
                 self.fuel = u64::MAX;
+                // 回调执行期间禁止挂起：回调内挂起会把"已挂起"状态泄漏给调用方
+                // 内置函数（sort/onceDo 等无法恢复其 Rust 栈上进度），产生状态错乱。
+                // 挂起类操作在回调内返回明确错误，引导脚本把等待移出回调。
+                self.push_park_disabled();
                 let res = self.execute_frames();
+                self.pop_park_disabled();
                 self.fuel = saved_fuel;
                 self.depth -= 1;
                 match res.kind {
                     FlowKind::Throw => Err(res.value),
-                    // Yield 理论上不可达（回调燃料无限制）；防御性按正常结束处理
+                    // Yield 理论上不可达（回调燃料无限制且挂起被禁）；防御性按正常结束处理
                     _ => Ok(res.value),
                 }
             }
@@ -600,7 +623,7 @@ impl VM {
         let res = self.execute_frames();
         match res.kind {
             FlowKind::Yield => match self.pause {
-                Pause::Parked => crate::scheduler::SliceOutcome::Parked,
+                Pause::Parked | Pause::ParkedInject => crate::scheduler::SliceOutcome::Parked,
                 _ => crate::scheduler::SliceOutcome::Yielded,
             },
             FlowKind::Throw => crate::scheduler::SliceOutcome::Completed(Err(res.value)),
@@ -622,9 +645,24 @@ impl VM {
         self.stack.last_mut()
     }
 
-    /// set_pause_parked 标记当前切片为"任务挂起"（park_current_task 用）。
-    pub(crate) fn set_pause_parked(&mut self) {
-        self.pause = Pause::Parked;
+    /// set_pause 标记当前切片为"任务挂起"（scheduler 的 park 入口用）。
+    pub(crate) fn set_pause(&mut self, kind: Pause) {
+        self.pause = kind;
+    }
+
+    /// is_park_disabled 挂起是否被禁用（回调执行期间）。
+    pub(crate) fn is_park_disabled(&self) -> bool {
+        self.park_disabled > 0
+    }
+
+    /// push_park_disabled 递增挂起禁用计数（回调执行期间）。
+    pub(crate) fn push_park_disabled(&mut self) {
+        self.park_disabled += 1;
+    }
+
+    /// pop_park_disabled 递减挂起禁用计数。
+    pub(crate) fn pop_park_disabled(&mut self) {
+        self.park_disabled -= 1;
     }
 
     fn push(&mut self, v: Value) {
@@ -670,19 +708,19 @@ impl VM {
                         self.push(a.clone());
                     }
                     match self.start_call(argc) {
-                        Ok(_v) => {
-                            if self.pause != Pause::None {
-                                // defer 中的内置函数挂起了任务（如 defer 触发的函数
-                                // 内部 chanRecv 等待）：把 defer 条目放回队列，唤醒后
-                                // 重试整个 defer 调用。defer 结果本就被丢弃、占位值
-                                // 不压栈，故无需结果注入；栈在 start_call 弹出后无残留。
-                                let top = self.frames.last_mut().unwrap();
-                                let fin = top.finish.as_mut().unwrap();
-                                fin.remaining_defers.push(d);
-                                return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
-                            }
-                            // 内置函数 defer 正常完成（返回值按语义丢弃）
-                            continue 'machine;
+                        // 内置函数 defer 正常完成（返回值按语义丢弃）
+                        Ok(_v) => continue 'machine,
+                        Err(CallErr::Parked) => {
+                            // defer 中等待-重试型原语挂起（如 defer lock(mu)）：
+                            // 把 defer 条目放回队列，唤醒后重试整个 defer 调用。
+                            // start_call 的 Parked 分支回推了实参，此处清掉
+                            // （重试时重新压入）；值注入型在 defer 中被 park
+                            // 入口拒绝（见 park_current_task_inject），不会到达。
+                            let top = self.frames.last_mut().unwrap();
+                            top.finish.as_mut().unwrap().remaining_defers.push(d);
+                            let sl = self.stack.len();
+                            self.stack.truncate(sl - (argc + 1));
+                            return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
                         }
                         Err(CallErr::Thrown(e)) => {
                             // 内置 defer 抛错：记入栈顶收尾帧的 defer_err
@@ -1058,13 +1096,21 @@ impl VM {
                     match self.start_call(argc + 1) {
                         Ok(v) => {
                             self.push(v);
-                            if self.pause != Pause::None {
-                                // 内置函数挂起了任务：结果位已压占位值，让出切片
+                            if self.pause == Pause::ParkedInject {
+                                // 值注入型挂起：结果位已压占位值，让出切片
                                 self.frames.push(frame);
                                 return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
                             }
                         }
                         Err(CallErr::Thrown(e)) => { ev = Some(Event::Throw(e)); break; }
+                        Err(CallErr::Parked) => {
+                            // 挂起类操作不支持方法/展开调用语法（重试需回退 Call 指令）：
+                            // 抛出明确错误引导改用普通调用形式
+                            ev = Some(Event::Throw(error_value(
+                                "挂起类操作（lock/wgWait/semAcquire 等）暂不支持在任务中通过方法调用/展开调用语法等待 (可能原因：obj.method()/f(arr...) 形式调用了会等待的内置函数；改用普通调用形式 f(x))",
+                            )));
+                            break;
+                        }
                         Err(CallErr::EnterFrame(cf)) => {
                             // 被调帧暂存，循环外与调用方帧一起入栈（避免循环内移动 frame）
                             pending_callee = Some(cf);
@@ -1091,13 +1137,21 @@ impl VM {
                     match self.start_call(all_args.len()) {
                         Ok(v) => {
                             self.push(v);
-                            if self.pause != Pause::None {
-                                // 内置函数挂起了任务：结果位已压占位值，让出切片
+                            if self.pause == Pause::ParkedInject {
+                                // 值注入型挂起：结果位已压占位值，让出切片
                                 self.frames.push(frame);
                                 return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
                             }
                         }
                         Err(CallErr::Thrown(e)) => { ev = Some(Event::Throw(e)); break; }
+                        Err(CallErr::Parked) => {
+                            // 挂起类操作不支持方法/展开调用语法（重试需回退 Call 指令）：
+                            // 抛出明确错误引导改用普通调用形式
+                            ev = Some(Event::Throw(error_value(
+                                "挂起类操作（lock/wgWait/semAcquire 等）暂不支持在任务中通过方法调用/展开调用语法等待 (可能原因：obj.method()/f(arr...) 形式调用了会等待的内置函数；改用普通调用形式 f(x))",
+                            )));
+                            break;
+                        }
                         Err(CallErr::EnterFrame(cf)) => {
                             // 被调帧暂存，循环外与调用方帧一起入栈（避免循环内移动 frame）
                             pending_callee = Some(cf);
@@ -1132,13 +1186,21 @@ impl VM {
                     match self.start_call(all_args.len() + 1) {
                         Ok(v) => {
                             self.push(v);
-                            if self.pause != Pause::None {
-                                // 内置函数挂起了任务：结果位已压占位值，让出切片
+                            if self.pause == Pause::ParkedInject {
+                                // 值注入型挂起：结果位已压占位值，让出切片
                                 self.frames.push(frame);
                                 return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
                             }
                         }
                         Err(CallErr::Thrown(e)) => { ev = Some(Event::Throw(e)); break; }
+                        Err(CallErr::Parked) => {
+                            // 挂起类操作不支持方法/展开调用语法（重试需回退 Call 指令）：
+                            // 抛出明确错误引导改用普通调用形式
+                            ev = Some(Event::Throw(error_value(
+                                "挂起类操作（lock/wgWait/semAcquire 等）暂不支持在任务中通过方法调用/展开调用语法等待 (可能原因：obj.method()/f(arr...) 形式调用了会等待的内置函数；改用普通调用形式 f(x))",
+                            )));
+                            break;
+                        }
                         Err(CallErr::EnterFrame(cf)) => {
                             // 被调帧暂存，循环外与调用方帧一起入栈（避免循环内移动 frame）
                             pending_callee = Some(cf);
@@ -1153,16 +1215,23 @@ impl VM {
                     match self.start_call(argc) {
                         Ok(v) => {
                             self.push(v);
-                            if self.pause != Pause::None {
-                                // 内置函数挂起了任务：结果位已压占位值（undefined，
-                                // 唤醒后由调度器注入真实结果），帧 ip 已越过本指令，
-                                // 压回帧后立即让出切片
+                            if self.pause == Pause::ParkedInject {
+                                // 值注入型挂起（chanRecv/onceDo 等待者/sleep）：结果位
+                                // 已压占位值（undefined，唤醒后由调度器注入真实结果），
+                                // 帧 ip 已越过本指令，压回帧后立即让出切片
                                 self.frames.push(frame);
                                 return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
                             }
                         }
                         // Throw 事件在本帧的 try 栈中查找 catch/finally（dispatch_event 处置）
                         Err(CallErr::Thrown(e)) => { ev = Some(Event::Throw(e)); break; }
+                        Err(CallErr::Parked) => {
+                            // 等待-重试型挂起（lock/wgWait/semAcquire 等）：实参已回推，
+                            // 回退 ip 到本调用指令，唤醒后重新执行本调用（重查条件）
+                            frame.ip -= 2;
+                            self.frames.push(frame);
+                            return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
+                        }
                         Err(CallErr::EnterFrame(cf)) => {
                             // 被调帧暂存，循环外与调用方帧一起入栈（避免循环内移动 frame）
                             pending_callee = Some(cf);
@@ -1580,10 +1649,20 @@ impl VM {
         self.stack.truncate(stack_len - argc - 1);
 
         match &callee {
-            Value::Builtin(b) => match (b.func)(self, &args) {
-                Ok(v) => Ok(v),
-                Err(e) => Err(CallErr::Thrown(e)),
-            },
+            Value::Builtin(b) => {
+                let r = (b.func)(self, &args);
+                if self.pause == Pause::Parked {
+                    // 等待-重试型原语挂起（lock/rlock/wlock/wgWait/semAcquire）：
+                    // 回推 callee 与实参（恢复指令开始时的栈形态），调用点回退 ip，
+                    // 唤醒后重新执行本调用（重查条件）
+                    self.push(callee.clone());
+                    for a in &args {
+                        self.push(a.clone());
+                    }
+                    return Err(CallErr::Parked);
+                }
+                r.map_err(CallErr::Thrown)
+            }
             Value::Func(f) => {
                 if self.depth >= self.max_call_depth {
                     return Err(CallErr::Thrown(error_value(format!(
@@ -1919,38 +1998,24 @@ impl VM {
         Ok(new)
     }
 
-    /// spawn_thread 启动新 OS 线程执行函数调用（阶段三：真并发）。
+    /// spawn_thread 启动新任务执行函数调用（`run` 关键字；阶段三起为调度器任务）。
     ///
-    /// 设计：
-    ///   - 用 std::thread::spawn 真正多线程执行（Value 现为 Arc/Mutex，Send + Sync 安全）
-    ///   - 子线程构造独立 VM（独立操作数栈/帧/调用深度），不与主线程共享栈
-    ///   - 共享 self.globals（Arc<Mutex<HashMap>>）与 self.out（Arc<Mutex<dyn Write+Send>>），
-    ///     使主线程与子线程的 var/func 定义互通、输出汇聚同一处
-    ///   - callee 与 args 所有权转移到子线程（不再被主线程访问）
-    ///   - 异常在子线程内打印（Error 与非 Error 的 throw 值都打印），不传播
+    /// 设计（goroutine 式轻量并发）：
+    ///   - run 不再启动 OS 线程，而是向调度器入队一个任务（创建成本 ~百 ns 级、
+    ///     内存 ~KB 级，对比 OS 线程 ~17µs / ~50KB+8MB 栈预留）
+    ///   - 任务 VM 共享 self.globals 与 self.out：var/func 定义互通、输出汇聚
+    ///   - 阻塞类操作（chanRecv/lock/sleep 等）在任务内挂起而非阻塞 OS 线程
+    ///   - 异常在任务结束时打印（Error 与非 Error 的 throw 值都打印），不传播
     fn spawn_thread(&self, callee: Value, args: Vec<Value>) {
         let globals = self.globals.clone();
         let out = self.out.clone();
-        // 并发子线程用默认 8MB 栈（避免高并发时地址空间膨胀；run 任务通常不做深递归）。
-        let spawned = std::thread::Builder::new()
-            .stack_size(8 * 1024 * 1024)
-            .spawn(move || {
-                let mut vm = VM::new();
-                vm.set_globals_handle(globals);
-                vm.set_output_handle(out);
-                let res = vm.call_function_value(callee, args);
-                // 子线程内异常：打印提示，不传播（避免 panic）
-                if let Err(v) = res {
-                    let msg = match &v {
-                        Value::Error(e) => e.message.clone(),
-                        other => other.to_str(),
-                    };
-                    let _ = writeln!(vm.output_handle().lock().unwrap(), "[run 线程异常] {}", msg);
-                }
-            });
-        if let Err(e) = spawned {
-            // 线程创建失败（如资源耗尽）：打印提示而非静默丢弃
-            let _ = writeln!(self.out.lock().unwrap(), "[run 线程启动失败] {}", e);
+        if let Err(e) = crate::scheduler::spawn_task(callee, args, globals, out) {
+            // 任务创建失败（如目标非函数）：打印提示而非静默丢弃
+            let msg = match &e {
+                Value::Error(x) => x.message.clone(),
+                other => other.to_str(),
+            };
+            let _ = writeln!(self.out.lock().unwrap(), "[run 任务启动失败] {}", msg);
         }
     }
 

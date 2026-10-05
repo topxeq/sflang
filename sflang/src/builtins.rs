@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::function::BuiltinDoc;
+use crate::scheduler;
 use crate::value::Value;
 use crate::vm::VM;
 
@@ -1865,7 +1866,7 @@ fn bi_assert(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// bi_sleep 睡眠指定秒数（支持小数）。
 ///
 /// 用法：sleep(1.5) — 睡眠 1.5 秒
-fn bi_sleep(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+fn bi_sleep(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("sleep() 需要 1 个参数 (秒)"));
     }
@@ -1880,6 +1881,21 @@ fn bi_sleep(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         )));
     }
     let dur = std::time::Duration::from_secs_f64(secs);
+    // 任务上下文：挂起 + 定时唤醒（不占 OS 线程；值注入型——plain wake 即完成）
+    // defer/回调中 park 被禁：退化为线程 sleep（阻塞当前 worker，语义=同步等待）
+    if scheduler::current_task().is_some()
+        && !vm.is_in_defer_context()
+        && !vm.is_park_disabled()
+    {
+        if scheduler::park_current_task_inject(vm).is_ok() {
+            scheduler::schedule_timer(
+                &scheduler::current_task().unwrap(),
+                std::time::Instant::now() + dur,
+            );
+            return Ok(Value::Undefined); // 占位：唤醒后从本调用之后继续
+        }
+        // park 失败（异常路径）→ 退化为线程 sleep
+    }
     std::thread::sleep(dur);
     Ok(Value::Undefined)
 }
@@ -1887,12 +1903,26 @@ fn bi_sleep(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// bi_sleep_ms 睡眠指定毫秒数（整数）。
 ///
 /// 用法：sleepMs(500) — 睡眠 500 毫秒
-fn bi_sleep_ms(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+fn bi_sleep_ms(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(crate::value::error_value("sleepMs() 需要 1 个参数 (毫秒)"));
     }
     let ms = args[0].to_int().ok_or_else(|| crate::value::error_value("sleepMs() 参数需为整数"))?;
-    std::thread::sleep(std::time::Duration::from_millis(ms.max(0) as u64));
+    let dur = std::time::Duration::from_millis(ms.max(0) as u64);
+    // 任务上下文：挂起 + 定时唤醒（不占 OS 线程）；defer/回调中退化为线程 sleep
+    if scheduler::current_task().is_some()
+        && !vm.is_in_defer_context()
+        && !vm.is_park_disabled()
+    {
+        if scheduler::park_current_task_inject(vm).is_ok() {
+            scheduler::schedule_timer(
+                &scheduler::current_task().unwrap(),
+                std::time::Instant::now() + dur,
+            );
+            return Ok(Value::Undefined);
+        }
+    }
+    std::thread::sleep(dur);
     Ok(Value::Undefined)
 }
 

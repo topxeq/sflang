@@ -250,8 +250,22 @@ fn run_task_slice_once(task: &Arc<Task>) {
     CURRENT_TASK.with(|c| *c.borrow_mut() = None);
 
     match outcome {
+        SliceOutcome::Completed(Err(e)) => {
+            // 任务结束：状态置 Finished；VM 随任务引用释放（内存回收）。
+            // 任务内异常：打印提示，不传播（与旧 run 线程行为一致，避免 panic）
+            task.state.store(task_state::FINISHED, Ordering::SeqCst);
+            let msg = match &e {
+                Value::Error(x) => x.message.clone(),
+                other => other.to_str(),
+            };
+            let out = task.vm.lock().unwrap().output_handle();
+            let _ = std::io::Write::write_fmt(
+                &mut *out.lock().unwrap(),
+                format_args!("[run 任务异常] {}\n", msg),
+            );
+        }
         SliceOutcome::Completed(_r) => {
-            // 任务结束：状态置 Finished；VM 随任务引用释放（内存回收）
+            // 任务正常结束：状态置 Finished；VM 随任务引用释放（内存回收）
             task.state.store(task_state::FINISHED, Ordering::SeqCst);
         }
         SliceOutcome::Yielded => {
@@ -369,29 +383,46 @@ pub fn wake_task_with(task: &Arc<Task>, value: Value) {
     wake_task(task);
 }
 
-/// park_current_task 挂起当前任务（阻塞类内置函数的 park 入口，阶段四接入）。
+/// park_current_task_retry 挂起当前任务（等待-重试型：lock/wgWait/semAcquire）。
 ///
+/// 唤醒后任务回退到挂起点调用指令重新执行（重查条件）。
 /// 调用契约（内置函数内）：
-///   1. 先 `task.state = BLOCKED`（本函数做），再登记等待（register 回调）——
-///      顺序保证不丢唤醒（先登记后置状态会让注册前到达的唤醒丢失）；
-///      注册后到真正挂起之间若被唤醒，属"假性就绪"，runner 会补入队；
-///   2. 然后返回 undefined 占位值——调用点机器循环检测到 pause 后立即让出；
-///   3. 占位值的替换：wake_with 注入 / plain wake 保留 undefined。
+///   1. 本函数先置 state=BLOCKED，调用方随后把任务登记进等待队列——顺序保证
+///      不丢唤醒（唤醒方只从等待队列取任务；先登记后置状态会丢注册前到达的
+///      唤醒）；
+///   2. 调用方随后返回占位值（本模型下占位值不压栈，机器循环回退重试）；
+///   3. defer 上下文中允许（收尾状态机条目回队重试语义成立）。
+pub fn park_current_task_retry(vm: &mut VM) -> Result<(), Value> {
+    let task = current_task().ok_or_else(|| {
+        crate::value::error_value("park_current_task_retry 仅可在任务上下文中调用")
+    })?;
+    task.state.store(task_state::BLOCKED, Ordering::SeqCst);
+    vm.set_pause(crate::vm::Pause::Parked);
+    Ok(())
+}
+
+/// park_current_task_inject 挂起当前任务（值注入型：chanRecv/onceDo 等待者/sleep）。
 ///
-/// defer 上下文中挂起需要条目回队重试的复杂语义，当前不支持：
-/// 返回错误对象（调用方转为该错误返回，符合"返回错误对象为主"约定）。
-pub fn park_current_task(vm: &mut VM) -> Result<(), Value> {
+/// 唤醒后任务从挂起点调用指令之后继续，占位 undefined 被注入值替换
+/// （plain wake 不注入时占位值即结果语义，如 sleep）。
+/// defer 上下文中拒绝：注入型没有"条目回队重试"语义（重试会重复执行
+/// sleep/chanRecv），为避免状态错乱直接返回明确错误。
+pub fn park_current_task_inject(vm: &mut VM) -> Result<(), Value> {
     if vm.is_in_defer_context() {
         return Err(crate::value::error_value(
-            "挂起类操作（chanRecv/lock/wgWait/semAcquire/onceDo/sleep 等）暂不支持在 defer 中挂起当前任务 (可能原因：defer 触发的函数内部调用了会等待的操作；请把该操作移出 defer，或改用 chanTryRecv/tryLock 等非阻塞形式)",
+            "值等待类操作（chanRecv/onceDo/sleep 等）暂不支持在 defer 中挂起当前任务 (可能原因：defer 触发的函数内部调用了会等待的操作；请把该操作移出 defer，或改用 chanTryRecv 等非阻塞形式)",
+        ));
+    }
+    if vm.is_park_disabled() {
+        return Err(crate::value::error_value(
+            "回调函数内不能调用挂起类操作（chanRecv/lock/wgWait/semAcquire/onceDo/sleep 等） (可能原因：onceDo/sort 等的回调函数内部等待；请把等待移到回调外执行，或改用 chanTryRecv/tryLock 等非阻塞形式)",
         ));
     }
     let task = current_task().ok_or_else(|| {
-        // 非任务上下文不应调用本函数（内置函数应先查 current_task）
-        crate::value::error_value("park_current_task 仅可在任务上下文中调用")
+        crate::value::error_value("park_current_task_inject 仅可在任务上下文中调用")
     })?;
     task.state.store(task_state::BLOCKED, Ordering::SeqCst);
-    vm.set_pause_parked();
+    vm.set_pause(crate::vm::Pause::ParkedInject);
     Ok(())
 }
 
