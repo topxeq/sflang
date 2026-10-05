@@ -80,6 +80,19 @@ static DOC_OS_NAME: BuiltinDoc = BuiltinDoc {
     errors: &[],
 };
 
+static DOC_GET_VERSION: BuiltinDoc = BuiltinDoc {
+    category: "system",
+    signature: "getVersion() -> string",
+    summary: "返回 Sflang 解释器版本号（如 \"0.1.6\"）。",
+    params: &[],
+    returns: "string Cargo 包版本号",
+    examples: &[
+        "getVersion()  → \"0.1.6\"",
+        "pln(\"Sflang v\" + getVersion())",
+    ],
+    errors: &[],
+};
+
 static DOC_OS_ARCH: BuiltinDoc = BuiltinDoc {
     category: "system",
     signature: "osArch() -> string",
@@ -374,6 +387,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("getEnv", bi_get_env, &DOC_GET_ENV);
     vm.register_builtin_doc("setEnv", bi_set_env, &DOC_SET_ENV);
     vm.register_builtin_doc("osName", bi_os_name, &DOC_OS_NAME);
+    vm.register_builtin_doc("getVersion", bi_get_version, &DOC_GET_VERSION);
     vm.register_builtin_doc("osArch", bi_os_arch, &DOC_OS_ARCH);
     vm.register_builtin_doc("getCurDir", bi_get_cur_dir, &DOC_GET_CUR_DIR);
     vm.register_builtin_doc("getTempDir", bi_get_temp_dir, &DOC_GETTEMPDIR);
@@ -423,6 +437,11 @@ fn bi_os_name(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
         else if cfg!(target_os = "macos") { "macos" }
         else { "unknown" };
     Ok(Value::str(name))
+}
+
+/// bi_get_version 返回解释器版本号（Cargo 包版本）。
+fn bi_get_version(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
+    Ok(Value::str(env!("CARGO_PKG_VERSION")))
 }
 
 /// bi_os_arch 返回 CPU 架构名。

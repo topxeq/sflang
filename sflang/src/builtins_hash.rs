@@ -98,6 +98,23 @@ static DOC_SHA256_HEX: BuiltinDoc = BuiltinDoc {
     errors: &["等价于 bytesHex(sha256(data))"],
 };
 
+static DOC_RANDOM_HEX: BuiltinDoc = BuiltinDoc {
+    category: "hash",
+    signature: "randomHex(n) -> string",
+    summary: "生成 n 个随机字节的小写十六进制字符串（长度 2n）。",
+    params: &[("n", "字节数（int，非负），输出长度为 2n 个十六进制字符")],
+    returns: "string：2n 字符小写十六进制随机串",
+    examples: &[
+        "randomHex(16)  // 如 \"9f86d081884c7d659a2feaa0c55ad015\"（32 字符）",
+        "randomHex(4)   // 如 \"3b7a1cf0\"，适合做临时文件后缀、请求 ID 等",
+    ],
+    errors: &[
+        "randomHex() 需要至少 1 个参数",
+        "randomHex() 长度不能为负",
+        "randomHex() 长度超过上限 1000000（可能原因：误传了过大的字节数）",
+    ],
+};
+
 static DOC_HMAC_SHA256: BuiltinDoc = BuiltinDoc {
     category: "hash",
     signature: "hmacSha256(key, message) -> bytes",
@@ -247,6 +264,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("md5Hex", bi_md5_hex, &DOC_MD5_HEX);
     vm.register_builtin_doc("sha1Hex", bi_sha1_hex, &DOC_SHA1_HEX);
     vm.register_builtin_doc("sha256Hex", bi_sha256_hex, &DOC_SHA256_HEX);
+    vm.register_builtin_doc("randomHex", bi_random_hex, &DOC_RANDOM_HEX);
     vm.register_builtin_doc("sm3", bi_sm3, &DOC_SM3);
     vm.register_builtin_doc("sm3Hex", bi_sm3_hex, &DOC_SM3_HEX);
     vm.register_builtin_doc("hmacSm3", bi_hmac_sm3, &DOC_HMAC_SM3);
@@ -307,6 +325,35 @@ fn bi_sha256_hex(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let data = to_bytes(&args[0])?;
     let hex: String = crate::hash::sha256(&data).iter().map(|b| format!("{:02x}", b)).collect();
     Ok(Value::str_from(hex))
+}
+
+/// bi_random_hex 生成 n 个随机字节的小写十六进制字符串（长度 2n）。
+///
+/// 随机源与 randomStr 相同（builtins_math::next_rand），用途偏向
+/// 令牌/文件后缀/请求 ID 等场景（十六进制字符集，跨系统传输安全）。
+fn bi_random_hex(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    /// RANDOM_HEX_MAX_BYTES 字节数上限（100 万字节 = 200 万字符），防止误传超大 n 耗尽内存。
+    const RANDOM_HEX_MAX_BYTES: i64 = 1_000_000;
+    let n = bh::as_int(args, 0, "randomHex")?;
+    if n < 0 {
+        return Err(crate::value::error_value("randomHex() 长度不能为负"));
+    }
+    if n > RANDOM_HEX_MAX_BYTES {
+        return Err(crate::value::error_value(format!(
+            "randomHex() 长度 {} 超过上限 {} (可能原因：误传了过大的字节数)", n, RANDOM_HEX_MAX_BYTES,
+        )));
+    }
+    const HEX_CHARS: &[u8] = b"0123456789abcdef";
+    let mut out = String::with_capacity((n * 2) as usize);
+    for _ in 0..n {
+        // 每字节由两次独立取模拼接，保证 256 个取值均匀映射到两位十六进制
+        let hi = (crate::builtins_math::next_rand() as usize) % 16;
+        let lo = (crate::builtins_math::next_rand() as usize) % 16;
+        out.push(HEX_CHARS[hi] as char);
+        out.push(HEX_CHARS[lo] as char);
+    }
+    Ok(Value::str_from(out))
 }
 
 fn bi_sm3(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
