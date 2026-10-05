@@ -9,10 +9,10 @@
 | `concurrent.sf` | 并发计数器（mutex 保护共享状态） | `sf examples/server/concurrent.sf` |
 | `http_client.sf` | HTTP 客户端（getWeb/postWeb/downloadFile） | `sf examples/server/http_client.sf` |
 | `websocket_client.sf` | WebSocket 客户端（连接/收发/关闭） | `sf examples/server/websocket_client.sf` |
-| `scripts/index.sf` | CLI 服务器脚本（动态页面） | `sf -server --port=8080 --dir=examples/server/scripts` |
-| `scripts/api.sf` | CLI 服务器脚本（JSON API） | 同上，访问 `/api.sf` |
-| `scripts/form.sf` | CLI 服务器脚本（表单处理） | 同上，访问 `/form.sf` |
-| `scripts/demo.sfp` | CLI 服务器脚本（.sfp 动态页面模板） | 同上，访问 `/demo.sfp` |
+| `scripts/pages/index.sf` | CLI 服务器脚本（动态页面） | `sf -server --port=8080 --msDir=examples/server/scripts` |
+| `scripts/pages/api.sf` | CLI 服务器脚本（JSON API） | 同上，访问 `/api.sf` |
+| `scripts/pages/form.sf` | CLI 服务器脚本（表单处理） | 同上，访问 `/form.sf` |
+| `scripts/pages/demo.sfp` | CLI 服务器脚本（.sfp 动态页面模板） | 同上，访问 `/demo.sfp` |
 
 ## 快速开始
 
@@ -126,3 +126,77 @@ secret.dat
 - 匹配的文件以 `Content-Disposition: attachment` 强制下载方式服务
 - 不匹配的返回 404
 - 仅检查文件所在目录（不递归向上查找）
+
+## CLI 应用服务器（sf -server）
+
+把 URL 路径映射到 .sf 脚本文件，每请求一个 VM，类似 PHP/Charlang 的部署模型。
+
+```bash
+sf -server --port=8080 --msDir=<脚本根目录> --webDir=<静态根目录>
+```
+
+| 参数 | 说明 |
+|------|------|
+| `--port` | HTTP 监听端口（默认 80） |
+| `--sslPort` | HTTPS 监听端口（默认 443；配了 --certDir 才启用） |
+| `--host` | 监听地址（默认 0.0.0.0） |
+| `--msDir` | **脚本根目录**（唯一脚本来源）：URL 镜像文件路径，子目录名任意、层级任意，页面脚本与接口脚本可同目录混放，服务端不做任何分类 |
+| `--webDir` | 静态文件根目录（白名单扩展名；目录自动回落 index.html） |
+| `--certDir` | TLS 证书目录（server.crt + server.key，纯 Rust rustls 实现） |
+| `--verbose` | 打印请求日志 |
+| `--adminToken` | /admin/status、/admin/kill 管理端点令牌（仅限本机访问） |
+| `--dir` | **已废弃**：仅为兼容旧命令保留，等价于 --msDir |
+
+路由规则（对齐 Charlang 的最大灵活度）：
+
+```
+URL /foo/bar                → <msDir>/foo/bar
+  目录                       → index.sf → index.sfp →（web 目录 index.html）
+  .sf / .sfp                → 执行 / 渲染
+  无扩展名                   → 追加 .sf、.sfp 再试（/api/products → api/products.sf）
+脚本树内非脚本文件            → 一律私有（不服务、不放行）
+静态文件                     → 全部来自 --webDir（白名单 + 目录回落 index.html + .sfAllow）
+无匹配                       → 404
+```
+
+目录布局示例（组织方式完全由你定，服务端只认"路径即 URL"）：
+
+```
+msdir/
+  index.sf            # / → index.sf
+  product.sf          # /product.sf
+  api/                # 分组纯为整洁：/api/products → api/products.sf
+    products.sf
+    admin/
+      auth.sf         # /api/admin/auth
+  lib/                # 共享库（import 相对脚本自身目录解析）
+  data/               # 数据文件放树内任意处都安全（脚本树非脚本文件外部拿不到）
+```
+
+要点：
+
+- **脚本树内只有 `.sf`/`.sfp` 会被响应**，其他文件（数据、配置、笔记）外部 URL 一律
+  拿不到——数据文件可安全放在树内任意位置。
+- 静态文件（css/js/图片/下载包）统一放 `--webDir`。
+- import 相对路径基于脚本自身目录解析（如 api/admin/x.sf 里 `import "../../lib/security.sf"`）。
+
+### 脚本可用的请求上下文全局变量
+
+| 变量 | 说明 |
+|------|------|
+| `requestG` / `responseG` | 请求/响应对象（配合 getReqHeader、writeResp、setRespHeader 等） |
+| `paraMapG` | URL 查询参数 Map（键值已做百分号解码），`paraMapG["id"]` 取值 |
+| `reqMethodG` / `reqPathG` / `reqUriG` | 请求方法 / 路径 / 完整 URI |
+| `inputG` | 请求体文本（等价 getReqBody(requestG)） |
+| `basePathG` / `msRootG` | 脚本根目录（--msDir） |
+| `scriptPathG` | 当前脚本完整路径 |
+| `webRootG` | 静态 Web 根目录（--webDir） |
+| `runModeG` | 运行模式（"sfserver" / "sfp"） |
+
+### 脚本响应规则
+
+- `return "字符串"` → 作为响应体输出；未显式设置 Content-Type 时默认 `text/html; charset=utf-8`
+- `return bytes` → 二进制响应（默认 `application/octet-stream`）
+- `return undefined`（或非字符串值）→ 不追加输出，适用于已用 `writeResp` 自行写响应的场景
+- 脚本内异常 → 500 + AI 友好 JSON（含 possibleCauses）
+- import 相对路径基于脚本自身目录解析

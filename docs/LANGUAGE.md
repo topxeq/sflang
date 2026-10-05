@@ -569,6 +569,7 @@ getFileList("src/**/*.rs")    // 通配符列文件（** 递归；可选 "-minSi
 fileExists("path")
 deleteFile("path")
 getCurDir() / getTempDir() / getHomeDir()
+getVersion()             // 解释器版本号，如 "0.1.6"
 ```
 
 ---
@@ -626,6 +627,7 @@ sha256Hex("abc")               // "ba7816bf8f01cfea..."
 md5("abc")                     // bytes(16)
 sha1("abc")                    // bytes(20)
 sha256("abc")                  // bytes(32)
+randomHex(16)                  // 16 随机字节的小写 hex 串（32 字符），适合令牌/请求 ID/文件后缀
 sm3("abc")                     // bytes(32)，国密 SM3（GB/T 32905-2016）
 sm3Hex("abc")                  // 64 字符小写 hex
 hmacSm3(key, msg)              // HMAC-SM3 bytes；hmacSm3Hex 为 hex 版
@@ -870,6 +872,13 @@ import "lib.sf"               // 加载并执行，顶层定义合并到当前�
 | `eG` | 自然对数底 e |
 | `argsG` | 命令行参数数组 |
 | `scriptPathG` | 脚本路径 |
+| `paraMapG` | URL 查询参数 Map（仅 `sf -server` 脚本模式注入；键值已百分号解码） |
+| `reqMethodG` / `reqPathG` / `reqUriG` | HTTP 请求方法 / 路径 / 完整 URI（仅服务器模式注入） |
+| `requestG` / `responseG` | HTTP 请求/响应对象（仅服务器模式注入） |
+| `inputG` | 请求体文本（仅服务器模式注入） |
+| `basePathG` / `msRootG` | 脚本根目录（--msDir；URL 镜像文件路径，子目录任意、可混放；非脚本文件外部不可见）（仅服务器模式注入） |
+| `webRootG` | 静态 Web 根目录（--webDir，仅服务器模式注入） |
+| `runModeG` | 运行模式（repl / script / sfserver / sfp 等） |
 
 读取未定义的全局返回 `undefined`（不报错）。
 
