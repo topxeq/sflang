@@ -23,7 +23,7 @@
 //!   once:     newOnce / onceDo
 
 use std::collections::VecDeque;
-use std::sync::mpsc::Receiver;
+
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -1087,18 +1087,19 @@ impl Drop for OncePanicGuard<'_> {
                 g.executor = None;
             }
             drop(g);
-            // 假性完成通知：等待者拿到 undefined 结果（panic 场景属异常路径）
+            // 假性完成通知：唤醒等待者重查（phase 已复位 0 → 重新执行回调）
             let waiters: VecDeque<Arc<Task>> =
                 std::mem::take(&mut *self.once.waiters.lock().unwrap());
             for t in waiters {
-                scheduler::wake_task_with(&t, Value::Undefined);
+                scheduler::wake_task(&t);
             }
             self.once.cv.notify_all();
         }
     }
 }
 
-/// finish_once 首次执行完成：记录结果并唤醒全部等待者（结果注入）。
+/// finish_once 首次执行完成：记录结果并唤醒全部等待者（重查型：唤醒后
+/// 重新执行 onceDo，phase==2 分支返回原始 Result，错误以抛出语义传播）。
 fn finish_once(once: &OnceT, res: &Result<Value, Value>) {
     let mut g = once.state.lock().unwrap();
     g.phase = 2;
@@ -1107,11 +1108,7 @@ fn finish_once(once: &OnceT, res: &Result<Value, Value>) {
     drop(g);
     let waiters: VecDeque<Arc<Task>> = std::mem::take(&mut *once.waiters.lock().unwrap());
     for t in waiters {
-        let v = match res {
-            Ok(v) => v.clone(),
-            Err(e) => e.clone(),
-        };
-        scheduler::wake_task_with(&t, v);
+        scheduler::wake_task(&t);
     }
     once.cv.notify_all();
 }
@@ -1155,12 +1152,15 @@ fn bi_once_do(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
                         "onceDo() 回调内不能递归调用同一 once (可能原因：回调函数内部再次 onceDo 了同一个 once 对象)",
                     ));
                 }
-                // 其他执行者正在执行：等待其完成（任务=注入型挂起；线程=cv）
+                // 其他执行者正在执行：等待其完成。
+                // 任务=等待-重试型挂起（唤醒后重新执行本调用，phase==2 分支取原始
+                // Result——错误以"抛出"语义传播，与直接执行者及旧版一致；
+                // 若用值注入会把错误当返回值传入，语义不一致）
                 if let Some(task) = scheduler::current_task() {
-                    scheduler::park_current_task_inject(vm)?;
+                    scheduler::park_current_task_retry(vm)?;
                     once.waiters.lock().unwrap().push_back(task);
                     drop(g);
-                    return Ok(Value::Undefined); // 占位：完成时以结果注入
+                    return Ok(Value::Undefined); // 占位：唤醒后机器回退重试
                 }
                 g = once.cv.wait(g).unwrap();
             }

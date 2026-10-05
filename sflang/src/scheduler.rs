@@ -107,8 +107,6 @@ struct SchedInner {
     ready: VecDeque<Arc<Task>>,
     /// timers 定时器堆：（到期时刻, 任务）——sleep 类挂起的唤醒源。
     timers: BinaryHeap<Reverse<(Instant, Arc<Task>)>>,
-    /// next_task_id 任务 ID 分配器。
-    next_task_id: u64,
 }
 
 /// SCHED 全局调度器单例。
@@ -151,7 +149,6 @@ fn sched() -> &'static Scheduler {
             inner: Mutex::new(SchedInner {
                 ready: VecDeque::new(),
                 timers: BinaryHeap::new(),
-                next_task_id: 1,
             }),
             cv: Condvar::new(),
             worker_count: workers,
@@ -229,7 +226,15 @@ fn worker_loop() {
             continue;
         }
 
-        run_task_slice_once(&task);
+        // panic 防护：任务中的 Rust panic（如解释器内部 expect 失败）不得杀死
+        // worker（否则并发容量静默缩水）。捕获后任务标记完成、worker 继续循环。
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_task_slice_once(&task);
+        }));
+        if result.is_err() {
+            task.state.store(task_state::FINISHED, Ordering::SeqCst);
+            eprintln!("[run 任务异常] 任务执行发生内部 panic，已终止该任务");
+        }
     }
 }
 
