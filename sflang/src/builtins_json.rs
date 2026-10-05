@@ -468,17 +468,25 @@ impl<'a> Decoder<'a> {
                     self.pos += 1;
                 }
                 Some(_) => {
-                    // 普通字符：需按 UTF-8 边界消费（一个 char 可能多字节）
-                    let rest = &self.bytes[self.pos..];
-                    let ch = std::str::from_utf8(rest)
-                        .ok()
-                        .and_then(|t| t.chars().next());
-                    match ch {
-                        Some(c) => {
-                            s.push(c);
-                            self.pos += c.len_utf8();
+                    // 普通字符段：批量拷贝到下一个特殊字符（'"'、'\' 或控制字符）。
+                    // 之前实现为每字符对【整个剩余输入】做 from_utf8 验证，复杂度 O(n²)，
+                    // 长 JSON 字符串（如 3MB）会退化到分钟级；改为整段一次验证，总体 O(n)。
+                    let start = self.pos;
+                    while self.pos < self.bytes.len() {
+                        let b = self.bytes[self.pos];
+                        if b == b'"' || b == b'\\' || b < 0x20 {
+                            break;
                         }
-                        None => return Err(self.err("非 UTF-8 字符")),
+                        self.pos += 1;
+                    }
+                    if self.pos > start {
+                        let seg = std::str::from_utf8(&self.bytes[start..self.pos])
+                            .map_err(|_| self.err("非 UTF-8 字符"))?;
+                        s.push_str(seg);
+                    } else {
+                        // 首字节即特殊/控制字符（进入此分支说明 peek 非 '"'/'\'），
+                        // 只能是控制字符（0x00-0x1F），JSON 字符串中非法
+                        return Err(self.err("JSON 字符串中不允许出现未转义的控制字符"));
                     }
                 }
             }
