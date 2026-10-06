@@ -523,3 +523,53 @@ return mark
         m
     );
 }
+
+/// test_async_cpu_zip_offload CPU 密集型（zip 压缩）同样卸载：
+/// 任务压缩大缓冲不占调度 worker，结果（Bytes）经注入送达。
+#[test]
+fn test_async_cpu_zip_offload() {
+    let src = r#"
+var ch = newChannel()
+func compressor() {
+    // 4MB 随机数据压缩（CPU 密集；重复文本压缩更快，用重复数据保持测试快速）
+    var data = strRepeat("sflang-async-io-test-data;", 160000)
+    var packed = compressBytes(data)
+    chanSend(ch, len(packed))
+}
+run compressor()
+var n = chanRecv(ch)
+if n <= 0 { throw "compress failed" }
+return 1
+"#;
+    let r = run_with_timeout(src.to_string(), Duration::from_secs(60));
+    assert_eq!(r, Value::Int(1), "任务内 zip 压缩经卸载完成并返回有效结果");
+}
+
+/// test_async_io_multi_args_pass 多参数卸载调用链：实参完整传递、句柄跨卸载有效。
+#[test]
+fn test_async_io_multi_args_pass() {
+    // zip 写入器句柄在多次卸载调用间保持有效（Native 句柄 Send+Sync），
+    // zipAddBytes 三参形态覆盖多参数传递
+    let dir = std::env::temp_dir();
+    let zpath = dir.join("sflang_async_io_test.zip");
+    let zstr = zpath.to_str().unwrap().replace('\\', "/");
+    let src = format!(
+        r#"
+var ch = newChannel()
+func worker() {{
+    var zw = zipCreate("{}")
+    zipAddBytes(zw, "aaa", "a.txt")
+    zipAddBytes(zw, "bbb", "b.txt")
+    zipClose(zw)
+    var files = zipList("{}")
+    chanSend(ch, len(files))
+}}
+run worker()
+return chanRecv(ch)
+"#,
+        zstr, zstr
+    );
+    let r = run_with_timeout(src, Duration::from_secs(30));
+    let _ = std::fs::remove_file(&zpath);
+    assert_eq!(r, Value::Int(2), "多参数卸载调用链的实参与句柄应完整有效");
+}

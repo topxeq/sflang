@@ -91,9 +91,9 @@ static DOC_PORT_FORWARD_STOP: BuiltinDoc = BuiltinDoc {
 /// register 注册所有代理相关内置函数。
 pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("proxyListen", bi_proxy_listen, &DOC_PROXY_LISTEN);
-    vm.register_builtin_doc("proxyStop", bi_proxy_stop, &DOC_PROXY_STOP);
+    vm.register_builtin_doc_blocking("proxyStop", bi_proxy_stop, &DOC_PROXY_STOP);
     vm.register_builtin_doc("portForward", bi_port_forward, &DOC_PORT_FORWARD);
-    vm.register_builtin_doc("portForwardStop", bi_port_forward_stop, &DOC_PORT_FORWARD_STOP);
+    vm.register_builtin_doc_blocking("portForwardStop", bi_port_forward_stop, &DOC_PORT_FORWARD_STOP);
 }
 
 // ============ 类型定义 ============

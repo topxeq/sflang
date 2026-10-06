@@ -226,17 +226,17 @@ static DOC_TCP_PIPE: BuiltinDoc = BuiltinDoc {
 /// register 注册所有 TCP 内置函数。
 pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("tcpListen", bi_tcp_listen, &DOC_TCP_LISTEN);
-    vm.register_builtin_doc("tcpConnect", bi_tcp_connect, &DOC_TCP_CONNECT);
-    vm.register_builtin_doc("tcpRead", bi_tcp_read, &DOC_TCP_READ);
-    vm.register_builtin_doc("tcpReadLine", bi_tcp_read_line, &DOC_TCP_READ_LINE);
-    vm.register_builtin_doc("tcpWrite", bi_tcp_write, &DOC_TCP_WRITE);
-    vm.register_builtin_doc("tcpWriteLine", bi_tcp_write_line, &DOC_TCP_WRITE_LINE);
-    vm.register_builtin_doc("tcpClose", bi_tcp_close, &DOC_TCP_CLOSE);
-    vm.register_builtin_doc("tcpSetTimeout", bi_tcp_set_timeout, &DOC_TCP_SET_TIMEOUT);
-    vm.register_builtin_doc("tcpRemoteAddr", bi_tcp_remote_addr, &DOC_TCP_REMOTE_ADDR);
-    vm.register_builtin_doc("tcpLocalAddr", bi_tcp_local_addr, &DOC_TCP_LOCAL_ADDR);
-    vm.register_builtin_doc("tcpStopServer", bi_tcp_stop_server, &DOC_TCP_STOP_SERVER);
-    vm.register_builtin_doc("tcpPipe", bi_tcp_pipe, &DOC_TCP_PIPE);
+    vm.register_builtin_doc_blocking("tcpConnect", bi_tcp_connect, &DOC_TCP_CONNECT);
+    vm.register_builtin_doc_blocking("tcpRead", bi_tcp_read, &DOC_TCP_READ);
+    vm.register_builtin_doc_blocking("tcpReadLine", bi_tcp_read_line, &DOC_TCP_READ_LINE);
+    vm.register_builtin_doc_blocking("tcpWrite", bi_tcp_write, &DOC_TCP_WRITE);
+    vm.register_builtin_doc_blocking("tcpWriteLine", bi_tcp_write_line, &DOC_TCP_WRITE_LINE);
+    vm.register_builtin_doc_blocking("tcpClose", bi_tcp_close, &DOC_TCP_CLOSE);
+    vm.register_builtin_doc_blocking("tcpSetTimeout", bi_tcp_set_timeout, &DOC_TCP_SET_TIMEOUT);
+    vm.register_builtin_doc_blocking("tcpRemoteAddr", bi_tcp_remote_addr, &DOC_TCP_REMOTE_ADDR);
+    vm.register_builtin_doc_blocking("tcpLocalAddr", bi_tcp_local_addr, &DOC_TCP_LOCAL_ADDR);
+    vm.register_builtin_doc_blocking("tcpStopServer", bi_tcp_stop_server, &DOC_TCP_STOP_SERVER);
+    vm.register_builtin_doc_blocking("tcpPipe", bi_tcp_pipe, &DOC_TCP_PIPE);
 }
 
 // ============ 类型定义 ============

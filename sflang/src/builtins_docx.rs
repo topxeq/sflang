@@ -83,9 +83,9 @@ static DOC_DOCX_GET_PLACEHOLDERS: BuiltinDoc = BuiltinDoc {
 
 /// register 注册所有 docx 内置函数。
 pub fn register(vm: &mut crate::vm::VM) {
-    vm.register_builtin_doc("docxToStrs", bi_docx_to_strs, &DOC_DOCX_TO_STRS);
-    vm.register_builtin_doc("docxReplace", bi_docx_replace, &DOC_DOCX_REPLACE);
-    vm.register_builtin_doc("docxGetPlaceholders", bi_docx_get_placeholders, &DOC_DOCX_GET_PLACEHOLDERS);
+    vm.register_builtin_doc_blocking("docxToStrs", bi_docx_to_strs, &DOC_DOCX_TO_STRS);
+    vm.register_builtin_doc_blocking("docxReplace", bi_docx_replace, &DOC_DOCX_REPLACE);
+    vm.register_builtin_doc_blocking("docxGetPlaceholders", bi_docx_get_placeholders, &DOC_DOCX_GET_PLACEHOLDERS);
 }
 
 // ---- 辅助函数 ----

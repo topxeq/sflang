@@ -366,18 +366,18 @@ static DOC_FORMAT_SQL_VALUE: BuiltinDoc = BuiltinDoc {
 
 /// register 注册所有数据库内置函数。
 pub fn register(vm: &mut crate::vm::VM) {
-    vm.register_builtin_doc("dbConnect", bi_db_connect, &DOC_DB_CONNECT);
-    vm.register_builtin_doc("dbExec", bi_db_exec, &DOC_DB_EXEC);
-    vm.register_builtin_doc("dbQuery", bi_db_query, &DOC_DB_QUERY);
-    vm.register_builtin_doc("dbQueryRecs", bi_db_query_recs, &DOC_DB_QUERY_RECS);
-    vm.register_builtin_doc("dbQueryCount", bi_db_query_count, &DOC_DB_QUERY_COUNT);
-    vm.register_builtin_doc("dbQueryFloat", bi_db_query_float, &DOC_DB_QUERY_FLOAT);
-    vm.register_builtin_doc("dbQueryString", bi_db_query_string, &DOC_DB_QUERY_STRING);
-    vm.register_builtin_doc("dbQueryStr", bi_db_query_string, &DOC_DB_QUERY_STRING);  // Charlang 兼容别名
-    vm.register_builtin_doc("dbQueryMap", bi_db_query_map, &DOC_DB_QUERY_MAP);
-    vm.register_builtin_doc("dbQueryMapArray", bi_db_query_map_array, &DOC_DB_QUERY_MAP_ARRAY);
-    vm.register_builtin_doc("dbQueryOrdered", bi_db_query_ordered, &DOC_DB_QUERY_ORDERED);
-    vm.register_builtin_doc("dbClose", bi_db_close, &DOC_DB_CLOSE);
+    vm.register_builtin_doc_blocking("dbConnect", bi_db_connect, &DOC_DB_CONNECT);
+    vm.register_builtin_doc_blocking("dbExec", bi_db_exec, &DOC_DB_EXEC);
+    vm.register_builtin_doc_blocking("dbQuery", bi_db_query, &DOC_DB_QUERY);
+    vm.register_builtin_doc_blocking("dbQueryRecs", bi_db_query_recs, &DOC_DB_QUERY_RECS);
+    vm.register_builtin_doc_blocking("dbQueryCount", bi_db_query_count, &DOC_DB_QUERY_COUNT);
+    vm.register_builtin_doc_blocking("dbQueryFloat", bi_db_query_float, &DOC_DB_QUERY_FLOAT);
+    vm.register_builtin_doc_blocking("dbQueryString", bi_db_query_string, &DOC_DB_QUERY_STRING);
+    vm.register_builtin_doc_blocking("dbQueryStr", bi_db_query_string, &DOC_DB_QUERY_STRING);  // Charlang 兼容别名
+    vm.register_builtin_doc_blocking("dbQueryMap", bi_db_query_map, &DOC_DB_QUERY_MAP);
+    vm.register_builtin_doc_blocking("dbQueryMapArray", bi_db_query_map_array, &DOC_DB_QUERY_MAP_ARRAY);
+    vm.register_builtin_doc_blocking("dbQueryOrdered", bi_db_query_ordered, &DOC_DB_QUERY_ORDERED);
+    vm.register_builtin_doc_blocking("dbClose", bi_db_close, &DOC_DB_CLOSE);
     vm.register_builtin_doc("formatSqlValue", bi_format_sql_value, &DOC_FORMAT_SQL_VALUE);
 }
 

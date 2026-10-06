@@ -354,29 +354,29 @@ static DOC_SSH_LIST_DETAIL: BuiltinDoc = BuiltinDoc {
 };
 
 pub fn register(vm: &mut VM) {
-    vm.register_builtin_doc("sshRun", bi_ssh_run, &DOC_SSH_RUN);
-    vm.register_builtin_doc("sshList", bi_ssh_list, &DOC_SSH_LIST);
-    vm.register_builtin_doc("sshUpload", ssh_upload_impl, &DOC_SSH_UPLOAD);
-    vm.register_builtin_doc("sshDownload", ssh_download_impl, &DOC_SSH_DOWNLOAD);
-    vm.register_builtin_doc("sshMkdir", bi_ssh_mkdir, &DOC_SSH_MKDIR);
-    vm.register_builtin_doc("sshRemove", bi_ssh_remove, &DOC_SSH_REMOVE);
-    vm.register_builtin_doc("sshMove", bi_ssh_move, &DOC_SSH_MOVE);
-    vm.register_builtin_doc("sshSync", bi_ssh_sync, &DOC_SSH_SYNC);
-    vm.register_builtin_doc("sshCreateFile", bi_ssh_create_file, &DOC_SSH_CREATE_FILE);
-    vm.register_builtin_doc("sshUploadBytes", bi_ssh_upload_bytes, &DOC_SSH_UPLOAD_BYTES);
-    vm.register_builtin_doc("sshDownloadBytes", bi_ssh_download_bytes, &DOC_SSH_DOWNLOAD_BYTES);
-    vm.register_builtin_doc("sshIfFileExists", bi_ssh_if_file_exists, &DOC_SSH_IF_FILE_EXISTS);
-    vm.register_builtin_doc("sshGetFileInfo", bi_ssh_get_file_info, &DOC_SSH_GET_FILE_INFO);
-    vm.register_builtin_doc("sshEnsureMakeDirs", bi_ssh_ensure_make_dirs, &DOC_SSH_ENSURE_MAKE_DIRS);
-    vm.register_builtin_doc("sshJoinPath", bi_ssh_join_path, &DOC_SSH_JOIN_PATH);
-    vm.register_builtin_doc("sshListDetail", bi_ssh_list_detail, &DOC_SSH_LIST_DETAIL);
+    vm.register_builtin_doc_blocking("sshRun", bi_ssh_run, &DOC_SSH_RUN);
+    vm.register_builtin_doc_blocking("sshList", bi_ssh_list, &DOC_SSH_LIST);
+    vm.register_builtin_doc_blocking("sshUpload", ssh_upload_impl, &DOC_SSH_UPLOAD);
+    vm.register_builtin_doc_blocking("sshDownload", ssh_download_impl, &DOC_SSH_DOWNLOAD);
+    vm.register_builtin_doc_blocking("sshMkdir", bi_ssh_mkdir, &DOC_SSH_MKDIR);
+    vm.register_builtin_doc_blocking("sshRemove", bi_ssh_remove, &DOC_SSH_REMOVE);
+    vm.register_builtin_doc_blocking("sshMove", bi_ssh_move, &DOC_SSH_MOVE);
+    vm.register_builtin_doc_blocking("sshSync", bi_ssh_sync, &DOC_SSH_SYNC);
+    vm.register_builtin_doc_blocking("sshCreateFile", bi_ssh_create_file, &DOC_SSH_CREATE_FILE);
+    vm.register_builtin_doc_blocking("sshUploadBytes", bi_ssh_upload_bytes, &DOC_SSH_UPLOAD_BYTES);
+    vm.register_builtin_doc_blocking("sshDownloadBytes", bi_ssh_download_bytes, &DOC_SSH_DOWNLOAD_BYTES);
+    vm.register_builtin_doc_blocking("sshIfFileExists", bi_ssh_if_file_exists, &DOC_SSH_IF_FILE_EXISTS);
+    vm.register_builtin_doc_blocking("sshGetFileInfo", bi_ssh_get_file_info, &DOC_SSH_GET_FILE_INFO);
+    vm.register_builtin_doc_blocking("sshEnsureMakeDirs", bi_ssh_ensure_make_dirs, &DOC_SSH_ENSURE_MAKE_DIRS);
+    vm.register_builtin_doc_blocking("sshJoinPath", bi_ssh_join_path, &DOC_SSH_JOIN_PATH);
+    vm.register_builtin_doc_blocking("sshListDetail", bi_ssh_list_detail, &DOC_SSH_LIST_DETAIL);
     // PTY 交互式终端
-    vm.register_builtin_doc("sshShellOpen", bi_ssh_shell_open, &DOC_SSH_SHELL_OPEN);
-    vm.register_builtin_doc("sshShellWrite", bi_ssh_shell_write, &DOC_SSH_SHELL_WRITE);
-    vm.register_builtin_doc("sshShellResize", bi_ssh_shell_resize, &DOC_SSH_SHELL_RESIZE);
-    vm.register_builtin_doc("sshShellClose", bi_ssh_shell_close, &DOC_SSH_SHELL_CLOSE);
-    vm.register_builtin_doc("sshShellKeepalive", bi_ssh_shell_keepalive, &DOC_SSH_SHELL_KEEPALIVE);
-    vm.register_builtin_doc("sshShellStreamId", bi_ssh_shell_stream_id, &DOC_SSH_SHELL_STREAM_ID);
+    vm.register_builtin_doc_blocking("sshShellOpen", bi_ssh_shell_open, &DOC_SSH_SHELL_OPEN);
+    vm.register_builtin_doc_blocking("sshShellWrite", bi_ssh_shell_write, &DOC_SSH_SHELL_WRITE);
+    vm.register_builtin_doc_blocking("sshShellResize", bi_ssh_shell_resize, &DOC_SSH_SHELL_RESIZE);
+    vm.register_builtin_doc_blocking("sshShellClose", bi_ssh_shell_close, &DOC_SSH_SHELL_CLOSE);
+    vm.register_builtin_doc_blocking("sshShellKeepalive", bi_ssh_shell_keepalive, &DOC_SSH_SHELL_KEEPALIVE);
+    vm.register_builtin_doc_blocking("sshShellStreamId", bi_ssh_shell_stream_id, &DOC_SSH_SHELL_STREAM_ID);
 }
 
 fn get_switch(args: &[Value], key: &str, default: &str) -> String {

@@ -427,7 +427,7 @@ type BlockingJob = Box<dyn FnOnce() + Send + 'static>;
 /// 阻塞型内置函数（文件/网络 IO）在任务内调用时卸载到此池：任务挂起等待，
 /// 不占调度 worker。池大小默认 256（SF_BLOCKING_WORKERS 可配 1..=4096）——
 /// 超出并发数的卸载请求排队（任务保持挂起，无额外开销）。
-static BLOCKING_POOL: OnceLock<BlockingPool> = OnceLock::new();
+static BLOCKING_POOL: OnceLock<Arc<BlockingPool>> = OnceLock::new();
 
 struct BlockingPool {
     jobs: Mutex<VecDeque<BlockingJob>>,
@@ -442,14 +442,17 @@ pub fn submit_blocking_job(job: BlockingJob) {
             .and_then(|s| s.parse::<usize>().ok())
             .filter(|&n| n >= 1 && n <= 4096)
             .unwrap_or(256);
-        let p = BlockingPool {
+        // Arc 包装：池线程在 get_or_init 完成前即可能取任务，
+        // 直接持有引用（经 BLOCKING_POOL.get() 取会得到 None——初始化未完成）
+        let p = Arc::new(BlockingPool {
             jobs: Mutex::new(VecDeque::new()),
             cv: Condvar::new(),
-        };
+        });
         for i in 0..workers {
+            let pc = p.clone();
             std::thread::Builder::new()
                 .name(format!("sf-blockio-{}", i))
-                .spawn(blocking_worker_loop)
+                .spawn(move || blocking_worker_loop(pc))
                 .expect("blocking pool: 线程启动失败");
         }
         p
@@ -459,10 +462,9 @@ pub fn submit_blocking_job(job: BlockingJob) {
 }
 
 /// blocking_worker_loop 阻塞池工作线程：取任务执行（IO 完成后回调唤醒原任务）。
-fn blocking_worker_loop() {
+fn blocking_worker_loop(pool: Arc<BlockingPool>) {
     loop {
         let job = {
-            let pool = BLOCKING_POOL.get().expect("blocking pool");
             let mut g = pool.jobs.lock().unwrap();
             loop {
                 if let Some(j) = g.pop_front() {

@@ -497,29 +497,29 @@ static DOC_S3_UPLOAD_BIG_FILE: BuiltinDoc = BuiltinDoc {
 
 /// register 注册所有 S3 内置函数。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin_doc("s3Connect", bi_s3_connect, &DOC_S3_CONNECT);
-    vm.register_builtin_doc("s3Close", bi_s3_close, &DOC_S3_CLOSE);
-    vm.register_builtin_doc("s3ListBuckets", bi_s3_list_buckets, &DOC_S3_LIST_BUCKETS);
-    vm.register_builtin_doc("s3CreateBucket", bi_s3_create_bucket, &DOC_S3_CREATE_BUCKET);
-    vm.register_builtin_doc("s3DeleteBucket", bi_s3_delete_bucket, &DOC_S3_DELETE_BUCKET);
-    vm.register_builtin_doc("s3BucketExists", bi_s3_bucket_exists, &DOC_S3_BUCKET_EXISTS);
-    vm.register_builtin_doc("s3ListObjects", bi_s3_list_objects, &DOC_S3_LIST_OBJECTS);
-    vm.register_builtin_doc("s3PutObject", bi_s3_put_object, &DOC_S3_PUT_OBJECT);
-    vm.register_builtin_doc("s3GetObject", bi_s3_get_object, &DOC_S3_GET_OBJECT);
-    vm.register_builtin_doc("s3GetObjectBytes", bi_s3_get_object_bytes, &DOC_S3_GET_OBJECT_BYTES);
-    vm.register_builtin_doc("s3UploadFile", bi_s3_upload_file, &DOC_S3_UPLOAD_FILE);
-    vm.register_builtin_doc("s3DownloadFile", bi_s3_download_file, &DOC_S3_DOWNLOAD_FILE);
-    vm.register_builtin_doc("s3DeleteObject", bi_s3_delete_object, &DOC_S3_DELETE_OBJECT);
-    vm.register_builtin_doc("s3DeleteObjects", bi_s3_delete_objects, &DOC_S3_DELETE_OBJECTS);
-    vm.register_builtin_doc("s3ObjectExists", bi_s3_object_exists, &DOC_S3_OBJECT_EXISTS);
-    vm.register_builtin_doc("s3ObjectSize", bi_s3_object_size, &DOC_S3_OBJECT_SIZE);
-    vm.register_builtin_doc("s3CopyObject", bi_s3_copy_object, &DOC_S3_COPY_OBJECT);
+    vm.register_builtin_doc_blocking("s3Connect", bi_s3_connect, &DOC_S3_CONNECT);
+    vm.register_builtin_doc_blocking("s3Close", bi_s3_close, &DOC_S3_CLOSE);
+    vm.register_builtin_doc_blocking("s3ListBuckets", bi_s3_list_buckets, &DOC_S3_LIST_BUCKETS);
+    vm.register_builtin_doc_blocking("s3CreateBucket", bi_s3_create_bucket, &DOC_S3_CREATE_BUCKET);
+    vm.register_builtin_doc_blocking("s3DeleteBucket", bi_s3_delete_bucket, &DOC_S3_DELETE_BUCKET);
+    vm.register_builtin_doc_blocking("s3BucketExists", bi_s3_bucket_exists, &DOC_S3_BUCKET_EXISTS);
+    vm.register_builtin_doc_blocking("s3ListObjects", bi_s3_list_objects, &DOC_S3_LIST_OBJECTS);
+    vm.register_builtin_doc_blocking("s3PutObject", bi_s3_put_object, &DOC_S3_PUT_OBJECT);
+    vm.register_builtin_doc_blocking("s3GetObject", bi_s3_get_object, &DOC_S3_GET_OBJECT);
+    vm.register_builtin_doc_blocking("s3GetObjectBytes", bi_s3_get_object_bytes, &DOC_S3_GET_OBJECT_BYTES);
+    vm.register_builtin_doc_blocking("s3UploadFile", bi_s3_upload_file, &DOC_S3_UPLOAD_FILE);
+    vm.register_builtin_doc_blocking("s3DownloadFile", bi_s3_download_file, &DOC_S3_DOWNLOAD_FILE);
+    vm.register_builtin_doc_blocking("s3DeleteObject", bi_s3_delete_object, &DOC_S3_DELETE_OBJECT);
+    vm.register_builtin_doc_blocking("s3DeleteObjects", bi_s3_delete_objects, &DOC_S3_DELETE_OBJECTS);
+    vm.register_builtin_doc_blocking("s3ObjectExists", bi_s3_object_exists, &DOC_S3_OBJECT_EXISTS);
+    vm.register_builtin_doc_blocking("s3ObjectSize", bi_s3_object_size, &DOC_S3_OBJECT_SIZE);
+    vm.register_builtin_doc_blocking("s3CopyObject", bi_s3_copy_object, &DOC_S3_COPY_OBJECT);
     // Multipart Upload（大文件分片上传）
-    vm.register_builtin_doc("s3MultipartCreate", bi_s3_multipart_create, &DOC_S3_MULTIPART_CREATE);
-    vm.register_builtin_doc("s3MultipartUploadPart", bi_s3_multipart_upload_part, &DOC_S3_MULTIPART_UPLOAD_PART);
-    vm.register_builtin_doc("s3MultipartComplete", bi_s3_multipart_complete, &DOC_S3_MULTIPART_COMPLETE);
-    vm.register_builtin_doc("s3MultipartAbort", bi_s3_multipart_abort, &DOC_S3_MULTIPART_ABORT);
-    vm.register_builtin_doc("s3UploadBigFile", bi_s3_upload_big_file, &DOC_S3_UPLOAD_BIG_FILE);
+    vm.register_builtin_doc_blocking("s3MultipartCreate", bi_s3_multipart_create, &DOC_S3_MULTIPART_CREATE);
+    vm.register_builtin_doc_blocking("s3MultipartUploadPart", bi_s3_multipart_upload_part, &DOC_S3_MULTIPART_UPLOAD_PART);
+    vm.register_builtin_doc_blocking("s3MultipartComplete", bi_s3_multipart_complete, &DOC_S3_MULTIPART_COMPLETE);
+    vm.register_builtin_doc_blocking("s3MultipartAbort", bi_s3_multipart_abort, &DOC_S3_MULTIPART_ABORT);
+    vm.register_builtin_doc_blocking("s3UploadBigFile", bi_s3_upload_big_file, &DOC_S3_UPLOAD_BIG_FILE);
 }
 
 // ============ S3Client 结构 ============

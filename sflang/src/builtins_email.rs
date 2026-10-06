@@ -48,7 +48,7 @@ static DOC_SENDMAIL: BuiltinDoc = BuiltinDoc {
 };
 
 pub fn register(vm: &mut VM) {
-    vm.register_builtin_doc("sendMail", bi_send_mail, &DOC_SENDMAIL);
+    vm.register_builtin_doc_blocking("sendMail", bi_send_mail, &DOC_SENDMAIL);
 }
 
 fn get_switch(args: &[Value], key: &str, default: &str) -> String {

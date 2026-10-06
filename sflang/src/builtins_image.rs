@@ -968,10 +968,10 @@ static DOC_LOAD_FONT: BuiltinDoc = BuiltinDoc {
 /// register 注册所有图像处理内置函数。
 pub fn register(vm: &mut VM) {
     // 图片加载/保存
-    vm.register_builtin_doc("imageLoad", bi_image_load, &DOC_IMAGE_LOAD);
-    vm.register_builtin_doc("imageLoadFromBytes", bi_image_load_from_bytes, &DOC_IMAGE_LOAD_FROM_BYTES);
-    vm.register_builtin_doc("imageSave", bi_image_save, &DOC_IMAGE_SAVE);
-    vm.register_builtin_doc("imageSaveToBytes", bi_image_save_to_bytes, &DOC_IMAGE_SAVE_TO_BYTES);
+    vm.register_builtin_doc_blocking("imageLoad", bi_image_load, &DOC_IMAGE_LOAD);
+    vm.register_builtin_doc_blocking("imageLoadFromBytes", bi_image_load_from_bytes, &DOC_IMAGE_LOAD_FROM_BYTES);
+    vm.register_builtin_doc_blocking("imageSave", bi_image_save, &DOC_IMAGE_SAVE);
+    vm.register_builtin_doc_blocking("imageSaveToBytes", bi_image_save_to_bytes, &DOC_IMAGE_SAVE_TO_BYTES);
 
     // 图片基本操作
     vm.register_builtin_doc("imageNew", bi_image_new, &DOC_IMAGE_NEW);
@@ -983,36 +983,36 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("imageClone", bi_image_clone, &DOC_IMAGE_CLONE);
 
     // 图片变换
-    vm.register_builtin_doc("imageResize", bi_image_resize, &DOC_IMAGE_RESIZE);
-    vm.register_builtin_doc("imageCrop", bi_image_crop, &DOC_IMAGE_CROP);
-    vm.register_builtin_doc("imageRotate", bi_image_rotate, &DOC_IMAGE_ROTATE);
-    vm.register_builtin_doc("imageRotateFree", bi_image_rotate_free, &DOC_IMAGE_ROTATE_FREE);
-    vm.register_builtin_doc("imageFlipH", bi_image_flip_h, &DOC_IMAGE_FLIP_H);
-    vm.register_builtin_doc("imageFlipV", bi_image_flip_v, &DOC_IMAGE_FLIP_V);
-    vm.register_builtin_doc("imageBlend", bi_image_blend, &DOC_IMAGE_BLEND);
+    vm.register_builtin_doc_blocking("imageResize", bi_image_resize, &DOC_IMAGE_RESIZE);
+    vm.register_builtin_doc_blocking("imageCrop", bi_image_crop, &DOC_IMAGE_CROP);
+    vm.register_builtin_doc_blocking("imageRotate", bi_image_rotate, &DOC_IMAGE_ROTATE);
+    vm.register_builtin_doc_blocking("imageRotateFree", bi_image_rotate_free, &DOC_IMAGE_ROTATE_FREE);
+    vm.register_builtin_doc_blocking("imageFlipH", bi_image_flip_h, &DOC_IMAGE_FLIP_H);
+    vm.register_builtin_doc_blocking("imageFlipV", bi_image_flip_v, &DOC_IMAGE_FLIP_V);
+    vm.register_builtin_doc_blocking("imageBlend", bi_image_blend, &DOC_IMAGE_BLEND);
 
     // 颜色滤镜
-    vm.register_builtin_doc("imageGray", bi_image_gray, &DOC_IMAGE_GRAY);
-    vm.register_builtin_doc("imageInvert", bi_image_invert, &DOC_IMAGE_INVERT);
-    vm.register_builtin_doc("imageBrightness", bi_image_brightness, &DOC_IMAGE_BRIGHTNESS);
-    vm.register_builtin_doc("imageContrast", bi_image_contrast, &DOC_IMAGE_CONTRAST);
-    vm.register_builtin_doc("imageBlur", bi_image_blur, &DOC_IMAGE_BLUR);
-    vm.register_builtin_doc("imageSharpen", bi_image_sharpen, &DOC_IMAGE_SHARPEN);
-    vm.register_builtin_doc("imageGamma", bi_image_gamma, &DOC_IMAGE_GAMMA);
-    vm.register_builtin_doc("imageSepia", bi_image_sepia, &DOC_IMAGE_SEPIA);
-    vm.register_builtin_doc("imageThreshold", bi_image_threshold, &DOC_IMAGE_THRESHOLD);
-    vm.register_builtin_doc("imageTint", bi_image_tint, &DOC_IMAGE_TINT);
-    vm.register_builtin_doc("imageOpacity", bi_image_opacity, &DOC_IMAGE_OPACITY);
-    vm.register_builtin_doc("imageEdgeDetect", bi_image_edge_detect, &DOC_IMAGE_EDGE_DETECT);
-    vm.register_builtin_doc("imageConvolve3x3", bi_image_convolve3x3, &DOC_IMAGE_CONVOLVE3X3);
+    vm.register_builtin_doc_blocking("imageGray", bi_image_gray, &DOC_IMAGE_GRAY);
+    vm.register_builtin_doc_blocking("imageInvert", bi_image_invert, &DOC_IMAGE_INVERT);
+    vm.register_builtin_doc_blocking("imageBrightness", bi_image_brightness, &DOC_IMAGE_BRIGHTNESS);
+    vm.register_builtin_doc_blocking("imageContrast", bi_image_contrast, &DOC_IMAGE_CONTRAST);
+    vm.register_builtin_doc_blocking("imageBlur", bi_image_blur, &DOC_IMAGE_BLUR);
+    vm.register_builtin_doc_blocking("imageSharpen", bi_image_sharpen, &DOC_IMAGE_SHARPEN);
+    vm.register_builtin_doc_blocking("imageGamma", bi_image_gamma, &DOC_IMAGE_GAMMA);
+    vm.register_builtin_doc_blocking("imageSepia", bi_image_sepia, &DOC_IMAGE_SEPIA);
+    vm.register_builtin_doc_blocking("imageThreshold", bi_image_threshold, &DOC_IMAGE_THRESHOLD);
+    vm.register_builtin_doc_blocking("imageTint", bi_image_tint, &DOC_IMAGE_TINT);
+    vm.register_builtin_doc_blocking("imageOpacity", bi_image_opacity, &DOC_IMAGE_OPACITY);
+    vm.register_builtin_doc_blocking("imageEdgeDetect", bi_image_edge_detect, &DOC_IMAGE_EDGE_DETECT);
+    vm.register_builtin_doc_blocking("imageConvolve3x3", bi_image_convolve3x3, &DOC_IMAGE_CONVOLVE3X3);
 
     // 图片信息
-    vm.register_builtin_doc("imageHistogram", bi_image_histogram, &DOC_IMAGE_HISTOGRAM);
+    vm.register_builtin_doc_blocking("imageHistogram", bi_image_histogram, &DOC_IMAGE_HISTOGRAM);
 
     // Canvas 画布
     vm.register_builtin_doc("canvasNew", bi_canvas_new, &DOC_CANVAS_NEW);
     vm.register_builtin_doc("canvasFromImage", bi_canvas_from_image, &DOC_CANVAS_FROM_IMAGE);
-    vm.register_builtin_doc("canvasToImage", bi_canvas_to_image, &DOC_CANVAS_TO_IMAGE);
+    vm.register_builtin_doc_blocking("canvasToImage", bi_canvas_to_image, &DOC_CANVAS_TO_IMAGE);
     vm.register_builtin_doc("canvasGetWidth", bi_canvas_get_width, &DOC_CANVAS_GET_WIDTH);
     vm.register_builtin_doc("canvasGetHeight", bi_canvas_get_height, &DOC_CANVAS_GET_HEIGHT);
     vm.register_builtin_doc("canvasGetPixel", bi_canvas_get_pixel, &DOC_CANVAS_GET_PIXEL);
@@ -1033,9 +1033,9 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("canvasFillEllipse", bi_canvas_fill_ellipse, &DOC_CANVAS_FILL_ELLIPSE);
     vm.register_builtin_doc("canvasDrawTriangle", bi_canvas_draw_triangle, &DOC_CANVAS_DRAW_TRIANGLE);
     vm.register_builtin_doc("canvasFillTriangle", bi_canvas_fill_triangle, &DOC_CANVAS_FILL_TRIANGLE);
-    vm.register_builtin_doc("canvasDrawText", bi_canvas_draw_text, &DOC_CANVAS_DRAW_TEXT);
-    vm.register_builtin_doc("canvasDrawImage", bi_canvas_draw_image, &DOC_CANVAS_DRAW_IMAGE);
-    vm.register_builtin_doc("canvasDrawGradient", bi_canvas_draw_gradient, &DOC_CANVAS_DRAW_GRADIENT);
+    vm.register_builtin_doc_blocking("canvasDrawText", bi_canvas_draw_text, &DOC_CANVAS_DRAW_TEXT);
+    vm.register_builtin_doc_blocking("canvasDrawImage", bi_canvas_draw_image, &DOC_CANVAS_DRAW_IMAGE);
+    vm.register_builtin_doc_blocking("canvasDrawGradient", bi_canvas_draw_gradient, &DOC_CANVAS_DRAW_GRADIENT);
     vm.register_builtin_doc("canvasMeasureText", bi_canvas_measure_text, &DOC_CANVAS_MEASURE_TEXT);
 
     // 颜色与字体

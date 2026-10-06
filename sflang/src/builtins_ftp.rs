@@ -198,15 +198,15 @@ static DOC_FTP_UPLOAD_BYTES: BuiltinDoc = BuiltinDoc {
 };
 
 pub fn register(vm: &mut VM) {
-    vm.register_builtin_doc("ftpList", bi_ftp_list, &DOC_FTP_LIST);
-    vm.register_builtin_doc("ftpUpload", bi_ftp_upload, &DOC_FTP_UPLOAD);
-    vm.register_builtin_doc("ftpDownload", bi_ftp_download, &DOC_FTP_DOWNLOAD);
-    vm.register_builtin_doc("ftpDownloadBytes", bi_ftp_download_bytes, &DOC_FTP_DOWNLOAD_BYTES);
-    vm.register_builtin_doc("ftpCreateDir", bi_ftp_create_dir, &DOC_FTP_CREATE_DIR);
-    vm.register_builtin_doc("ftpRemoveFile", bi_ftp_remove_file, &DOC_FTP_REMOVE_FILE);
-    vm.register_builtin_doc("ftpSize", bi_ftp_size, &DOC_FTP_SIZE);
-    vm.register_builtin_doc("ftpCreateFile", bi_ftp_create_file, &DOC_FTP_CREATE_FILE);
-    vm.register_builtin_doc("ftpUploadBytes", bi_ftp_upload_bytes, &DOC_FTP_UPLOAD_BYTES);
+    vm.register_builtin_doc_blocking("ftpList", bi_ftp_list, &DOC_FTP_LIST);
+    vm.register_builtin_doc_blocking("ftpUpload", bi_ftp_upload, &DOC_FTP_UPLOAD);
+    vm.register_builtin_doc_blocking("ftpDownload", bi_ftp_download, &DOC_FTP_DOWNLOAD);
+    vm.register_builtin_doc_blocking("ftpDownloadBytes", bi_ftp_download_bytes, &DOC_FTP_DOWNLOAD_BYTES);
+    vm.register_builtin_doc_blocking("ftpCreateDir", bi_ftp_create_dir, &DOC_FTP_CREATE_DIR);
+    vm.register_builtin_doc_blocking("ftpRemoveFile", bi_ftp_remove_file, &DOC_FTP_REMOVE_FILE);
+    vm.register_builtin_doc_blocking("ftpSize", bi_ftp_size, &DOC_FTP_SIZE);
+    vm.register_builtin_doc_blocking("ftpCreateFile", bi_ftp_create_file, &DOC_FTP_CREATE_FILE);
+    vm.register_builtin_doc_blocking("ftpUploadBytes", bi_ftp_upload_bytes, &DOC_FTP_UPLOAD_BYTES);
 }
 
 fn get_switch(args: &[Value], key: &str, default: &str) -> String {

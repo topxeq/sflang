@@ -306,21 +306,21 @@ static DOC_ZIP_READ_FILE: BuiltinDoc = BuiltinDoc {
 /// register 注册所有压缩与 ZIP 相关内置函数。
 pub fn register(vm: &mut VM) {
     // 数据压缩
-    vm.register_builtin_doc("compressBytes", bi_compress_bytes, &DOC_COMPRESS_BYTES);
-    vm.register_builtin_doc("decompressBytes", bi_decompress_bytes, &DOC_DECOMPRESS_BYTES);
-    vm.register_builtin_doc("gzipBytes", bi_gzip_bytes, &DOC_GZIP_BYTES);
-    vm.register_builtin_doc("gunzipBytes", bi_gunzip_bytes, &DOC_GUNZIP_BYTES);
+    vm.register_builtin_doc_blocking("compressBytes", bi_compress_bytes, &DOC_COMPRESS_BYTES);
+    vm.register_builtin_doc_blocking("decompressBytes", bi_decompress_bytes, &DOC_DECOMPRESS_BYTES);
+    vm.register_builtin_doc_blocking("gzipBytes", bi_gzip_bytes, &DOC_GZIP_BYTES);
+    vm.register_builtin_doc_blocking("gunzipBytes", bi_gunzip_bytes, &DOC_GUNZIP_BYTES);
 
     // ZIP 文件处理
-    vm.register_builtin_doc("zipCreate", bi_zip_create, &DOC_ZIP_CREATE);
-    vm.register_builtin_doc("zipAddFile", bi_zip_add_file, &DOC_ZIP_ADD_FILE);
-    vm.register_builtin_doc("zipAddBytes", bi_zip_add_bytes, &DOC_ZIP_ADD_BYTES);
-    vm.register_builtin_doc("zipAddDir", bi_zip_add_dir, &DOC_ZIP_ADD_DIR);
-    vm.register_builtin_doc("zipClose", bi_zip_close, &DOC_ZIP_CLOSE);
-    vm.register_builtin_doc("zipList", bi_zip_list, &DOC_ZIP_LIST);
-    vm.register_builtin_doc("zipExtract", bi_zip_extract, &DOC_ZIP_EXTRACT);
-    vm.register_builtin_doc("zipExtractFile", bi_zip_extract_file, &DOC_ZIP_EXTRACT_FILE);
-    vm.register_builtin_doc("zipReadFile", bi_zip_read_file, &DOC_ZIP_READ_FILE);
+    vm.register_builtin_doc_blocking("zipCreate", bi_zip_create, &DOC_ZIP_CREATE);
+    vm.register_builtin_doc_blocking("zipAddFile", bi_zip_add_file, &DOC_ZIP_ADD_FILE);
+    vm.register_builtin_doc_blocking("zipAddBytes", bi_zip_add_bytes, &DOC_ZIP_ADD_BYTES);
+    vm.register_builtin_doc_blocking("zipAddDir", bi_zip_add_dir, &DOC_ZIP_ADD_DIR);
+    vm.register_builtin_doc_blocking("zipClose", bi_zip_close, &DOC_ZIP_CLOSE);
+    vm.register_builtin_doc_blocking("zipList", bi_zip_list, &DOC_ZIP_LIST);
+    vm.register_builtin_doc_blocking("zipExtract", bi_zip_extract, &DOC_ZIP_EXTRACT);
+    vm.register_builtin_doc_blocking("zipExtractFile", bi_zip_extract_file, &DOC_ZIP_EXTRACT_FILE);
+    vm.register_builtin_doc_blocking("zipReadFile", bi_zip_read_file, &DOC_ZIP_READ_FILE);
 }
 
 // ===========================================================================

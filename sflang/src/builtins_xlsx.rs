@@ -318,20 +318,20 @@ static DOC_EXCEL_GET_COLUMN_NAME_BY_INDEX: BuiltinDoc = BuiltinDoc {
 
 /// register 注册所有 Excel 内置函数。
 pub fn register(vm: &mut crate::vm::VM) {
-    vm.register_builtin_doc("excelNew", bi_excel_new, &DOC_EXCEL_NEW);
-    vm.register_builtin_doc("excelOpen", bi_excel_open, &DOC_EXCEL_OPEN);
-    vm.register_builtin_doc("excelSaveAs", bi_excel_save_as, &DOC_EXCEL_SAVE_AS);
-    vm.register_builtin_doc("excelReadSheet", bi_excel_read_sheet, &DOC_EXCEL_READ_SHEET);
-    vm.register_builtin_doc("excelReadAll", bi_excel_read_all, &DOC_EXCEL_READ_ALL);
-    vm.register_builtin_doc("excelWriteSheet", bi_excel_write_sheet, &DOC_EXCEL_WRITE_SHEET);
-    vm.register_builtin_doc("excelNewSheet", bi_excel_new_sheet, &DOC_EXCEL_NEW_SHEET);
-    vm.register_builtin_doc("excelOpenFromBytes", bi_excel_open_from_bytes, &DOC_EXCEL_OPEN_FROM_BYTES);
-    vm.register_builtin_doc("excelWriteToBytes", bi_excel_write_to_bytes, &DOC_EXCEL_WRITE_TO_BYTES);
-    vm.register_builtin_doc("excelClose", bi_excel_close, &DOC_EXCEL_CLOSE);
-    vm.register_builtin_doc("excelGetSheetList", bi_excel_get_sheet_list, &DOC_EXCEL_GET_SHEET_LIST);
-    vm.register_builtin_doc("excelReadCell", bi_excel_read_cell, &DOC_EXCEL_READ_CELL);
-    vm.register_builtin_doc("excelWriteCell", bi_excel_write_cell, &DOC_EXCEL_WRITE_CELL);
-    vm.register_builtin_doc("excelGetColumnNameByIndex", bi_excel_get_column_name_by_index, &DOC_EXCEL_GET_COLUMN_NAME_BY_INDEX);
+    vm.register_builtin_doc_blocking("excelNew", bi_excel_new, &DOC_EXCEL_NEW);
+    vm.register_builtin_doc_blocking("excelOpen", bi_excel_open, &DOC_EXCEL_OPEN);
+    vm.register_builtin_doc_blocking("excelSaveAs", bi_excel_save_as, &DOC_EXCEL_SAVE_AS);
+    vm.register_builtin_doc_blocking("excelReadSheet", bi_excel_read_sheet, &DOC_EXCEL_READ_SHEET);
+    vm.register_builtin_doc_blocking("excelReadAll", bi_excel_read_all, &DOC_EXCEL_READ_ALL);
+    vm.register_builtin_doc_blocking("excelWriteSheet", bi_excel_write_sheet, &DOC_EXCEL_WRITE_SHEET);
+    vm.register_builtin_doc_blocking("excelNewSheet", bi_excel_new_sheet, &DOC_EXCEL_NEW_SHEET);
+    vm.register_builtin_doc_blocking("excelOpenFromBytes", bi_excel_open_from_bytes, &DOC_EXCEL_OPEN_FROM_BYTES);
+    vm.register_builtin_doc_blocking("excelWriteToBytes", bi_excel_write_to_bytes, &DOC_EXCEL_WRITE_TO_BYTES);
+    vm.register_builtin_doc_blocking("excelClose", bi_excel_close, &DOC_EXCEL_CLOSE);
+    vm.register_builtin_doc_blocking("excelGetSheetList", bi_excel_get_sheet_list, &DOC_EXCEL_GET_SHEET_LIST);
+    vm.register_builtin_doc_blocking("excelReadCell", bi_excel_read_cell, &DOC_EXCEL_READ_CELL);
+    vm.register_builtin_doc_blocking("excelWriteCell", bi_excel_write_cell, &DOC_EXCEL_WRITE_CELL);
+    vm.register_builtin_doc_blocking("excelGetColumnNameByIndex", bi_excel_get_column_name_by_index, &DOC_EXCEL_GET_COLUMN_NAME_BY_INDEX);
 }
 
 // ---- 辅助函数 ----
