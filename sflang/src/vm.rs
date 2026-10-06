@@ -1590,11 +1590,21 @@ impl VM {
     ///
     /// frame 已弹出帧栈。返回 Some 表示整个 execute_frames 结束。
     fn deliver_frame_result(&mut self, frame: Frame, result: FlowResult) -> Option<FlowResult> {
+        // 就地帧模型：调用方帧始终留在帧栈上（不需要弹出/压回）。
+        // 热路径（正常返回）完全不触碰调用方帧——只压回结果值。
         match frame.resume {
             Resume::TopLevel => Some(result),
             Resume::PushResult => {
+                if result.kind == FlowKind::Return
+                    && self.frames.last().map_or(false, |f| f.finish.is_none())
+                {
+                    // 正常返回 + 调用方非收尾状态：值压回操作数栈即完成
+                    // （调用方 ip 已在调用指令之后，下一轮就地继续执行）
+                    self.push(result.value);
+                    return None;
+                }
+                // 以下为低频路径：调用方在收尾状态（defer 结果），或异常传播
                 let mut caller = self.frames.pop().expect("deliver_frame_result: 调用方帧缺失");
-                // 调用方处于收尾状态：本结果是它的某个 defer 调用的结果
                 if caller.finish.is_some() {
                     if result.kind == FlowKind::Throw {
                         // defer 调用抛错：记录（后执行的覆盖先前的）
@@ -1605,7 +1615,8 @@ impl VM {
                     return None;
                 }
                 if result.kind == FlowKind::Throw {
-                    // 异常向调用方传播（可能被 catch/finally 接住，或调用方也结束）
+                    // 异常向调用方传播（可能被 catch/finally 接住，或调用方也结束）；
+                    // Continue 时调用方帧已就地（无需压回）
                     match Self::dispatch_event_parts(&mut self.stack, &mut caller, Event::Throw(result.value)) {
                         DispatchOutcome::Continue => {
                             self.frames.push(caller);
@@ -1620,7 +1631,7 @@ impl VM {
                         }
                     }
                 } else {
-                    // 正常返回：值压回操作数栈，调用方继续执行（ip 已在调用指令之后）
+                    // 正常返回（落到此处说明调用方在收尾状态）：值压回，调用方继续
                     self.push(result.value);
                     self.frames.push(caller);
                     None
