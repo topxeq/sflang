@@ -201,8 +201,11 @@ impl std::fmt::Display for HttpError {
     }
 }
 
-/// 默认最大请求体大小（10 MB）。
-const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+/// 默认最大请求体大小（128 MB）。
+///
+/// 需容纳服务器模式下管理后台的安装包上传（upload 校验上限 100 MB）
+/// 加上头部与编码余量；超限返回 TooLarge，由上层转 413/断开。
+const MAX_BODY_SIZE: usize = 128 * 1024 * 1024;
 
 /// parse_request 从 BufReader 解析一个 HTTP 请求。
 ///
