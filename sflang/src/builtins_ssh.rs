@@ -35,7 +35,7 @@ static DOC_SSH_RUN: BuiltinDoc = BuiltinDoc {
         ("--keyPassphrase", "私钥口令（可选，私钥加密时）"),
         ("--port", "SSH 端口，默认 22"),
         ("--cmdTimeout", "命令超时秒数，默认 0（无超时）"),
-        ("command", "要执行的 shell 命令（非 -- 开头的字符串参数）"),
+        ("command", "要执行的 shell 命令（位置参数；也兼容 Charlang 迁移写法 -cmd=<命令>）"),
     ],
     returns: "string：命令的标准输出（含合并的 stderr）；失败返回 error",
     examples: &[
@@ -393,10 +393,29 @@ fn get_switch(args: &[Value], key: &str, default: &str) -> String {
 }
 
 fn get_command(args: &[Value]) -> String {
+    const OPT_PREFIXES: &[&str] = &[
+        "--", "-host", "-h=", "-port", "-p=", "-user", "-u=",
+        "-password", "-pass", "-key", "-keyPass", "-cmdTimeout", "-timeout",
+    ];
+    // 1. 位置参数优先
     for arg in args {
         if let Value::Str(s) = arg {
-            if !s.starts_with("--") && !s.starts_with("-h=") && !s.starts_with("-p=") && !s.starts_with("-u=") && !s.starts_with("-pass=") {
+            if !s.starts_with('-') {
                 return s.to_string();
+            }
+            let is_known_opt = OPT_PREFIXES.iter().any(|pref| s.starts_with(pref));
+            if !is_known_opt && !s.starts_with("-cmd=") && !s.starts_with("--cmd=") {
+                return s.to_string();
+            }
+        }
+    }
+    // 2. Charlang 兼容：-cmd=<命令>
+    for arg in args {
+        if let Value::Str(s) = arg {
+            if let Some(rest) = s.strip_prefix("-cmd=").or_else(|| s.strip_prefix("--cmd=")) {
+                if !rest.is_empty() {
+                    return rest.to_string();
+                }
             }
         }
     }
