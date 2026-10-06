@@ -544,6 +544,23 @@ defer unlock(mu)
 - 任务为 fire-and-forget：返回值经 channel/WaitGroup 获取；异常打印
   `[run 任务异常] ...` 不传播。任务与派生方共享全局变量。
 
+### 进程级共享变量
+
+进程内所有 VM（服务器模式的所有请求、`run` 任务、REPL）共享同一份键值存储，
+进程存活期内有效。服务器模式下常用于跨请求内存缓存、计数器、异步结果聚合。
+
+```sflang
+setProcessVar("visitCount", 0)
+setProcessVar("n", getProcessVar("n", 0) + 1)     // 计数器模式
+getProcessVar("lang", "zh-CN")                    // 未设置返回默认值
+getProcessVar("nope")                             // 未设置返回 undefined
+deleteProcessVar("visitCount")
+```
+
+- `set` 存入值的克隆；对象/数组为共享引用——一个 VM 里的修改在其他 VM 可见
+- 快速内存操作，非阻塞型；`run` 任务里设置的结果主路径（或另一个请求）可读
+- 服务器模式典型用法：任务里聚合数据 `setProcessVar`，主路径或另一请求 `getProcessVar` 读取
+
 ### 同步原语
 
 | 原语 | 函数 |

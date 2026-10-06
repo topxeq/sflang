@@ -144,6 +144,103 @@ static DOC_VALUES: BuiltinDoc = BuiltinDoc {
     errors: &["对非 object/map/array 类型会返回错误"],
 };
 
+// ===========================================================================
+// 进程级共享变量（对齐 Charlang setProcessVar/getProcessVar/deleteProcessVar）
+//
+// 底层为进程级 OnceLock + 互斥保护的 KV 存储：
+//   - 生命周期 = 整个进程（服务器模式下跨请求常驻）
+//   - 所有 VM（请求、run 任务、REPL）共享同一份
+//   - set 存入值的克隆；对象/数组为 Arc 共享引用，跨 VM 可变可见
+//   - 快速内存操作，非阻塞型（不卸载、不进调度器等待）
+// ===========================================================================
+
+static DOC_SET_PROCESS_VAR: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "setProcessVar(key, value) -> value",
+    summary: "设置进程级共享变量（整个进程内所有 VM/请求/任务共享，进程存活期内有效）。",
+    params: &[
+        ("key", "变量名（string）"),
+        ("value", "任意值"),
+    ],
+    returns: "value 返回设置的值（便于链式使用）",
+    examples: &[
+        "setProcessVar(\"visitCount\", 0)",
+        "setProcessVar(\"cache:\" + id, data)   // 服务器模式下跨请求共享的内存缓存",
+    ],
+    errors: &["setProcessVar() 需要至少 2 个参数", "setProcessVar() 第 1 个参数应为 string"],
+};
+
+static DOC_GET_PROCESS_VAR: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "getProcessVar(key[, defaultValue]) -> value",
+    summary: "读取进程级共享变量；未设置时返回 defaultValue（未提供则返回 undefined）。",
+    params: &[
+        ("key", "变量名（string）"),
+        ("defaultValue", "可选，变量不存在时的返回值"),
+    ],
+    returns: "value 变量值（对象/数组为共享引用，跨 VM 修改互相可见）",
+    examples: &[
+        "getProcessVar(\"visitCount\")            // 未设置返回 undefined",
+        "getProcessVar(\"lang\", \"zh-CN\")        // 未设置返回 \"zh-CN\"",
+        "var c = getProcessVar(\"n\", 0) + 1       // 常见计数器模式",
+        "setProcessVar(\"n\", c)",
+    ],
+    errors: &["getProcessVar() 需要至少 1 个参数", "getProcessVar() 第 1 个参数应为 string"],
+};
+
+static DOC_DELETE_PROCESS_VAR: BuiltinDoc = BuiltinDoc {
+    category: "concurrency",
+    signature: "deleteProcessVar(key) -> undefined",
+    summary: "删除进程级共享变量。",
+    params: &[("key", "变量名（string）")],
+    returns: "undefined（删除不存在的变量不报错）",
+    examples: &["deleteProcessVar(\"cache:123\")"],
+    errors: &["deleteProcessVar() 需要至少 1 个参数", "deleteProcessVar() 第 1 个参数应为 string"],
+};
+
+/// process_vars 进程级共享变量存储（所有 VM 共享；OnceLock 懒初始化）。
+fn process_vars() -> &'static std::sync::Mutex<std::collections::HashMap<String, Value>> {
+    static PROCESS_VARS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Value>>> =
+        std::sync::OnceLock::new();
+    PROCESS_VARS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// bi_set_process_var 设置进程级共享变量，返回所设置的值。
+fn bi_set_process_var(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 1, "setProcessVar")?;
+    let key = bh::as_str(args, 0, "setProcessVar")?;
+    let value = args[1].clone();
+    process_vars().lock().unwrap().insert(key.to_string(), value.clone());
+    Ok(value)
+}
+
+/// bi_get_process_var 读取进程级共享变量；未设置返回 defaultValue（缺省 undefined）。
+///
+/// 返回存储值的克隆；对象/数组为 Arc 共享引用——跨 VM 修改互相可见（对齐共享语义）。
+fn bi_get_process_var(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "getProcessVar")?;
+    let key = bh::as_str(args, 0, "getProcessVar")?;
+    let guard = process_vars().lock().unwrap();
+    match guard.get(key) {
+        Some(v) => Ok(v.clone()),
+        None => {
+            drop(guard);
+            Ok(args.get(1).cloned().unwrap_or(Value::Undefined))
+        }
+    }
+}
+
+/// bi_delete_process_var 删除进程级共享变量（不存在不报错）。
+fn bi_delete_process_var(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    use crate::builtins_helpers as bh;
+    bh::require_arg(args, 0, "deleteProcessVar")?;
+    let key = bh::as_str(args, 0, "deleteProcessVar")?;
+    process_vars().lock().unwrap().remove(key);
+    Ok(Value::Undefined)
+}
+
 static DOC_PUSH: BuiltinDoc = BuiltinDoc {
     category: "core",
     signature: "push(arr, val) -> array",
@@ -1305,6 +1402,9 @@ pub fn register(vm: &mut VM) {
     // ---- 实用函数（对标 charlang 常见编程任务）----
     vm.register_builtin_doc("uuid", bi_uuid, &DOC_UUID);
     vm.register_builtin_doc("randomStr", bi_random_str, &DOC_RANDOM_STR);
+    vm.register_builtin_doc("setProcessVar", bi_set_process_var, &DOC_SET_PROCESS_VAR);
+    vm.register_builtin_doc("getProcessVar", bi_get_process_var, &DOC_GET_PROCESS_VAR);
+    vm.register_builtin_doc("deleteProcessVar", bi_delete_process_var, &DOC_DELETE_PROCESS_VAR);
     vm.register_builtin_doc("values", bi_values, &DOC_VALUES);
     vm.register_builtin_doc("hasKey", bi_has_key, &DOC_HAS_KEY);
     vm.register_builtin_doc("deepClone", bi_deep_clone, &DOC_DEEP_CLONE);
