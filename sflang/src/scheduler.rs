@@ -68,6 +68,9 @@ pub struct Task {
     /// 注入时机选在切片开始（runner 持有 vm 锁、栈稳定：栈顶必为挂起点的
     /// undefined 占位值），避免与切片执行中的栈操作竞争。
     pending_injection: Mutex<Option<Value>>,
+    /// pending_error 待投递的异常值（阻塞卸载的内置函数失败时写入；
+    /// 切片开始时转存到 vm.pending_throw，在恢复执行的栈顶帧上抛出）。
+    pending_error: Mutex<Option<Value>>,
 }
 
 impl Task {
@@ -245,13 +248,20 @@ fn run_task_slice_once(task: &Arc<Task>) {
     // thread-local 当前任务：阻塞类内置函数据此选择 park（任务）或阻塞（线程）
     CURRENT_TASK.with(|c| *c.borrow_mut() = Some(task.clone()));
 
-    // 应用挂起期间到达的结果注入（替换挂起点的 undefined 占位值）
+    // 应用挂起期间到达的投递：错误 → vm.pending_throw（切片内于调用点抛出）；
+    // 结果值 → 替换挂起点的 undefined 占位值
     {
+        let err = task.pending_error.lock().unwrap().take();
         let inj = task.pending_injection.lock().unwrap().take();
-        if let Some(v) = inj {
+        if err.is_some() || inj.is_some() {
             let mut vm = task.vm.lock().unwrap();
-            if let Some(slot) = vm_stack_last_mut(&mut vm) {
-                *slot = v;
+            if let Some(e) = err {
+                vm.set_pending_throw(e);
+            }
+            if let Some(v) = inj {
+                if let Some(slot) = vm_stack_last_mut(&mut vm) {
+                    *slot = v;
+                }
             }
         }
     }
@@ -361,6 +371,7 @@ pub fn spawn_task(
         vm: Mutex::new(vm),
         state: AtomicU8::new(task_state::READY),
         pending_injection: Mutex::new(None),
+        pending_error: Mutex::new(None),
     });
     s.inner.lock().unwrap().ready.push_back(task.clone());
     s.cv.notify_one();
@@ -385,6 +396,89 @@ pub fn wake_task(task: &Arc<Task>) {
         let s = sched();
         s.inner.lock().unwrap().ready.push_back(task.clone());
         s.cv.notify_one();
+    }
+}
+
+/// wake_task_with_result 唤醒挂起的任务并投递内置函数执行结果。
+///
+/// Ok → 值注入（替换挂起点占位值）；Err → pending_error（恢复时于调用点抛出）。
+pub fn wake_task_with_result(task: &Arc<Task>, result: Result<Value, Value>) {
+    match result {
+        Ok(v) => *task.pending_injection.lock().unwrap() = Some(v),
+        Err(e) => *task.pending_error.lock().unwrap() = Some(e),
+    }
+    wake_task(task);
+}
+
+/// can_offload_blocking 当前是否可把阻塞型内置函数卸载到阻塞池。
+///
+/// 条件：任务上下文 + 未在 defer/回调中（park 被禁的上下文原地执行退化为旧行为）。
+pub fn can_offload_blocking(vm: &VM) -> bool {
+    current_task().is_some()
+        && !vm.is_in_defer_context()
+        && !vm.is_park_disabled()
+}
+
+/// BlockingJob 阻塞池任务。
+type BlockingJob = Box<dyn FnOnce() + Send + 'static>;
+
+/// BLOCKING_POOL 阻塞线程池（懒启动）。
+///
+/// 阻塞型内置函数（文件/网络 IO）在任务内调用时卸载到此池：任务挂起等待，
+/// 不占调度 worker。池大小默认 256（SF_BLOCKING_WORKERS 可配 1..=4096）——
+/// 超出并发数的卸载请求排队（任务保持挂起，无额外开销）。
+static BLOCKING_POOL: OnceLock<BlockingPool> = OnceLock::new();
+
+struct BlockingPool {
+    jobs: Mutex<VecDeque<BlockingJob>>,
+    cv: Condvar,
+}
+
+/// submit_blocking_job 提交阻塞任务到池（池线程执行，完成后自行唤醒原任务）。
+pub fn submit_blocking_job(job: BlockingJob) {
+    let pool = BLOCKING_POOL.get_or_init(|| {
+        let workers = std::env::var("SF_BLOCKING_WORKERS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&n| n >= 1 && n <= 4096)
+            .unwrap_or(256);
+        let p = BlockingPool {
+            jobs: Mutex::new(VecDeque::new()),
+            cv: Condvar::new(),
+        };
+        for i in 0..workers {
+            std::thread::Builder::new()
+                .name(format!("sf-blockio-{}", i))
+                .spawn(blocking_worker_loop)
+                .expect("blocking pool: 线程启动失败");
+        }
+        p
+    });
+    pool.jobs.lock().unwrap().push_back(job);
+    pool.cv.notify_one();
+}
+
+/// blocking_worker_loop 阻塞池工作线程：取任务执行（IO 完成后回调唤醒原任务）。
+fn blocking_worker_loop() {
+    loop {
+        let job = {
+            let pool = BLOCKING_POOL.get().expect("blocking pool");
+            let mut g = pool.jobs.lock().unwrap();
+            loop {
+                if let Some(j) = g.pop_front() {
+                    break j;
+                }
+                g = pool.cv.wait(g).unwrap();
+            }
+        };
+        // panic 防护：内置函数内部 panic（如解析畸形数据）不得杀死池线程
+        //（否则阻塞池并发容量静默缩水）。捕获后继续服务；挂起的原任务由
+        // 调度器超时语义兜底（pool job 自身负责唤醒，panic 时任务无法被
+        // 唤醒——与旧模型中"卡死的线程"一致，属内置函数 bug，告警定位）。
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+        if result.is_err() {
+            eprintln!("[阻塞池] IO 任务执行发生内部 panic，已丢弃该任务");
+        }
     }
 }
 

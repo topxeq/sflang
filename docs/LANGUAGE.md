@@ -531,8 +531,12 @@ defer unlock(mu)
 - `run fn(args)` 把函数调用入队为**调度器任务**：常驻 worker 线程数 = CPU 核数
   （环境变量 `SF_TASK_WORKERS` 可覆盖），任务在用户态分时调度（每 10 万条指令
   让出一次），阻塞等待（channel/锁/sleep）时挂起任务而非占用线程。
-- 任务内调用阻塞 IO（getWeb/sshRun/readFile 等）会占用一个 worker 直到完成——
-  大量并发 IO 用 `poolRun(fn, workers, items)`（有界线程池）或 `runAsync`（后台任务）。
+- 文件/网络 IO 内置函数（readFile/writeFile/getWeb/postWeb/downloadFile 等约 25 个）
+  已标记为**阻塞型**：任务内调用时自动卸载到阻塞线程池（默认 256 线程，
+  环境变量 `SF_BLOCKING_WORKERS` 可配），任务挂起等待结果、不占调度 worker——
+  可以直接写 `run` + IO 的海量并发。错误以抛出语义在调用点出现（try/catch 可捕获）。
+- 未标记的阻塞操作（sshRun/db 查询等）在任务内仍占用一个 worker 直到完成——
+  大量此类并发用 `poolRun(fn, workers, items)`（有界线程池）或 `runAsync`（后台任务）。
 - CPU 密集的长计算若想独占一核，用 `threadRun(fn, args...)`（真线程逃生门）。
 - 任务为 fire-and-forget：返回值经 channel/WaitGroup 获取；异常打印
   `[run 任务异常] ...` 不传播。任务与派生方共享全局变量。

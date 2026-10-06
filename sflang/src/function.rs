@@ -100,16 +100,28 @@ pub struct Builtin {
     pub func: BuiltinFn,
     /// doc 文档元数据（可选；未补全的函数为 None）。
     pub doc: Option<&'static BuiltinDoc>,
+    /// blocking 是否为阻塞型内置函数（网络/文件 IO 等）。
+    ///
+    /// 任务上下文调用时卸载到阻塞线程池执行：任务挂起等待结果（值注入唤醒），
+    /// 不占调度 worker。标记前提：函数只使用 vm 的共享部分（globals/out 句柄）
+    /// 或完全不使用 vm——回调类（call_function_value）与状态类内置函数不可标记。
+    /// 非任务上下文（主线程/poolRun 工作线程）行为不变（原地执行）。
+    pub blocking: bool,
 }
 
 impl Builtin {
     /// new 创建内置函数（无文档）。
     pub fn new(name: &'static str, func: BuiltinFn) -> Self {
-        Builtin { name, func, doc: None }
+        Builtin { name, func, doc: None, blocking: false }
     }
 
     /// new_with_doc 创建带文档的内置函数。
     pub fn new_with_doc(name: &'static str, func: BuiltinFn, doc: &'static BuiltinDoc) -> Self {
-        Builtin { name, func, doc: Some(doc) }
+        Builtin { name, func, doc: Some(doc), blocking: false }
+    }
+
+    /// new_blocking_with_doc 创建带文档的阻塞型内置函数（任务内卸载到阻塞池）。
+    pub fn new_blocking_with_doc(name: &'static str, func: BuiltinFn, doc: &'static BuiltinDoc) -> Self {
+        Builtin { name, func, doc: Some(doc), blocking: true }
     }
 }

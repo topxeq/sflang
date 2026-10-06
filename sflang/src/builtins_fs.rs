@@ -470,22 +470,22 @@ static DOC_LOADBYTESFROMFILELIMIT: BuiltinDoc = BuiltinDoc {
 
 /// register 注册所有文件 IO 内置函数到 VM。
 pub fn register(vm: &mut VM) {
-    vm.register_builtin_doc("readFile", bi_read_file, &DOC_READ_FILE);
-    vm.register_builtin_doc("writeFile", bi_write_file, &DOC_WRITE_FILE);
-    vm.register_builtin_doc("appendFile", bi_append_file, &DOC_APPEND_FILE);
-    vm.register_builtin_doc("fileExists", bi_file_exists, &DOC_FILE_EXISTS);
-    vm.register_builtin_doc("isFile", bi_is_file, &DOC_IS_FILE);
-    vm.register_builtin_doc("isDir", bi_is_dir, &DOC_IS_DIR);
-    vm.register_builtin_doc("getFileInfo", bi_get_file_info, &DOC_GET_FILE_INFO);
-    vm.register_builtin_doc("getFileSize", bi_get_file_size, &DOC_GET_FILE_SIZE);
-    vm.register_builtin_doc("copyFile", bi_copy_file, &DOC_COPY_FILE);
-    vm.register_builtin_doc("createTempFile", bi_create_temp_file, &DOC_CREATETEMPFILE);
-    vm.register_builtin_doc("createTempDir", bi_create_temp_dir, &DOC_CREATETEMPDIR);
-    vm.register_builtin_doc("deleteFile", bi_delete_file, &DOC_DELETE_FILE);
-    vm.register_builtin_doc("readLines", bi_read_lines, &DOC_READ_LINES);
+    vm.register_builtin_doc_blocking("readFile", bi_read_file, &DOC_READ_FILE);
+    vm.register_builtin_doc_blocking("writeFile", bi_write_file, &DOC_WRITE_FILE);
+    vm.register_builtin_doc_blocking("appendFile", bi_append_file, &DOC_APPEND_FILE);
+    vm.register_builtin_doc_blocking("fileExists", bi_file_exists, &DOC_FILE_EXISTS);
+    vm.register_builtin_doc_blocking("isFile", bi_is_file, &DOC_IS_FILE);
+    vm.register_builtin_doc_blocking("isDir", bi_is_dir, &DOC_IS_DIR);
+    vm.register_builtin_doc_blocking("getFileInfo", bi_get_file_info, &DOC_GET_FILE_INFO);
+    vm.register_builtin_doc_blocking("getFileSize", bi_get_file_size, &DOC_GET_FILE_SIZE);
+    vm.register_builtin_doc_blocking("copyFile", bi_copy_file, &DOC_COPY_FILE);
+    vm.register_builtin_doc_blocking("createTempFile", bi_create_temp_file, &DOC_CREATETEMPFILE);
+    vm.register_builtin_doc_blocking("createTempDir", bi_create_temp_dir, &DOC_CREATETEMPDIR);
+    vm.register_builtin_doc_blocking("deleteFile", bi_delete_file, &DOC_DELETE_FILE);
+    vm.register_builtin_doc_blocking("readLines", bi_read_lines, &DOC_READ_LINES);
     // 二进制IO（读取/写入原始字节，不经过 UTF-8 解码）
-    vm.register_builtin_doc("readFileBytes", bi_read_file_bytes, &DOC_READ_FILE_BYTES);
-    vm.register_builtin_doc("writeFileBytes", bi_write_file_bytes, &DOC_WRITEFILEBYTES);
+    vm.register_builtin_doc_blocking("readFileBytes", bi_read_file_bytes, &DOC_READ_FILE_BYTES);
+    vm.register_builtin_doc_blocking("writeFileBytes", bi_write_file_bytes, &DOC_WRITEFILEBYTES);
     // file 句柄（流式/随机访问）
     vm.register_builtin_doc("openFile", bi_open_file, &DOC_OPEN_FILE);
     vm.register_builtin_doc("closeFile", bi_close_file, &DOC_CLOSE_FILE);
@@ -502,9 +502,9 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("readStr", bi_read_str, &DOC_READSTR);
     vm.register_builtin_doc("readBytes", bi_read_bytes, &DOC_READBYTES);
     vm.register_builtin_doc("readChars", bi_read_chars, &DOC_READCHARS);
-    vm.register_builtin_doc("getFileList", bi_get_file_list, &DOC_GETFILELIST);
-    vm.register_builtin_doc("getFileRel", bi_get_file_rel, &DOC_GETFILEREL);
-    vm.register_builtin_doc("loadBytesFromFileLimit", bi_load_bytes_from_file_limit, &DOC_LOADBYTESFROMFILELIMIT);
+    vm.register_builtin_doc_blocking("getFileList", bi_get_file_list, &DOC_GETFILELIST);
+    vm.register_builtin_doc_blocking("getFileRel", bi_get_file_rel, &DOC_GETFILEREL);
+    vm.register_builtin_doc_blocking("loadBytesFromFileLimit", bi_load_bytes_from_file_limit, &DOC_LOADBYTESFROMFILELIMIT);
 }
 
 /// io_err 将 std::io::Error 转为 AI 友好错误值，附加常见原因提示。

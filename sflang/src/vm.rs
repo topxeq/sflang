@@ -18,6 +18,7 @@ use crate::function::{Builtin, Function};
 use crate::lexer::tokenize;
 use crate::opcode::{Code, Opcode};
 use crate::parser::parse_program;
+use crate::scheduler;
 use crate::value::{error_value, Value, SfError};
 
 /// TASK_SLICE_FUEL 单个任务切片的指令预算。
@@ -333,6 +334,9 @@ pub struct VM {
     park_disabled: u32,
     /// prepared_result 任务体是内置函数时的预执行结果（prepare_task_call 用）。
     prepared_result: Option<Result<Value, Value>>,
+    /// pending_throw 待投递的异常（阻塞池卸载的内置函数失败时经调度器写入，
+    /// 任务恢复执行的切片开始时在栈顶帧上抛出——调用点的 try/catch 可捕获）。
+    pending_throw: Option<Value>,
     /// import_stack 正在加载的脚本绝对路径栈（环检测，防循环 import）。
     import_stack: Vec<String>,
     /// imported_modules 已成功加载的模块规范化路径（模块缓存，保证幂等）。
@@ -376,6 +380,7 @@ impl VM {
             pause: Pause::None,
             park_disabled: 0,
             prepared_result: None,
+            pending_throw: None,
             import_stack: Vec::new(),
             imported_modules: Vec::new(),
         }
@@ -426,11 +431,27 @@ impl VM {
             .insert(name.to_string(), Builtin::new_with_doc(name, func, doc));
     }
 
-    /// lookup_builtin 按名查找内置函数，返回克隆（Builtin 为 3 个字，克隆廉价）。
+    /// register_builtin_doc_blocking 注册阻塞型内置函数（核心模块专用，进全局表）。
+    ///
+    /// 阻塞型 = 网络/文件 IO 等慢操作：任务上下文调用时卸载到阻塞线程池执行，
+    /// 任务挂起等待结果（不占调度 worker）。标记前提见 Builtin.blocking 文档。
+    /// 注册目标为全局核心表（构建期使用），与 core_builtins() 的暂存 VM 配合。
+    pub fn register_builtin_doc_blocking(
+        &mut self,
+        name: &'static str,
+        func: crate::function::BuiltinFn,
+        doc: &'static crate::function::BuiltinDoc,
+    ) {
+        self.extra_builtins
+            .insert(name.to_string(), Builtin::new_blocking_with_doc(name, func, doc));
+    }
+
+    /// lookup_builtin_in 按名查找内置函数，返回克隆（Builtin 为 3 个字，克隆廉价）。
     ///
     /// 查找顺序：本 VM 自定义表（可覆盖）→ 全局核心表。
-    fn lookup_builtin(&self, name: &str) -> Option<Builtin> {
-        if let Some(b) = self.extra_builtins.get(name) {
+    /// 参数化为 extra 表引用：指令循环内以字段级借用调用（与帧借用不相交）。
+    fn lookup_builtin_in(extra: &std::collections::HashMap<String, Builtin>, name: &str) -> Option<Builtin> {
+        if let Some(b) = extra.get(name) {
             return Some(b.clone());
         }
         core_builtins().get(name).cloned()
@@ -655,6 +676,11 @@ impl VM {
         self.park_disabled > 0
     }
 
+    /// set_pending_throw 写入待投递异常（调度器在恢复阻塞卸载任务时调用）。
+    pub(crate) fn set_pending_throw(&mut self, e: Value) {
+        self.pending_throw = Some(e);
+    }
+
     /// push_park_disabled 递增挂起禁用计数（回调执行期间）。
     pub(crate) fn push_park_disabled(&mut self) {
         self.park_disabled += 1;
@@ -692,13 +718,29 @@ impl VM {
     ///   4. 帧逻辑结束后有 defer 则进入收尾状态；否则按 resume 协议交付结果。
     fn execute_frames(&mut self) -> FlowResult {
         'machine: loop {
-            let mut frame = match self.frames.pop() {
-                Some(f) => f,
-                None => unreachable!("execute_frames: 帧栈为空"),
-            };
+            // ---- 阻塞卸载的错误投递：恢复执行时在栈顶帧抛出（调用点可捕获） ----
+            // 阻塞卸载的任务恢复正常执行时，栈顶帧 ip 在卸载调用之后；
+            // 抛出走本帧 try 栈（catch/finally/向上传播），语义等同内联抛出。
+            if let Some(e) = self.pending_throw.take() {
+                match Self::dispatch_event_parts(&mut self.stack, self.frames.last_mut().expect("execute_frames: 帧栈为空"), Event::Throw(e)) {
+                    DispatchOutcome::Continue => continue 'machine,
+                    DispatchOutcome::Done(r) => {
+                        if self.frames.last().map_or(false, |f| f.resume == Resume::PushResult) {
+                            self.depth -= 1;
+                        }
+                        let frame = self.frames.pop().expect("execute_frames: 帧栈为空");
+                        match self.conclude_frame(frame, r) {
+                            Some(final_res) => return final_res,
+                            None => continue 'machine,
+                        }
+                    }
+                }
+            }
 
-            // ---- 收尾状态机：该帧正在逆序执行 defers（经帧栈迭代，不递归） ----
-            if let Some(fin) = frame.finish.as_mut() {
+            // ---- 收尾状态机：栈顶帧正在逆序执行 defers（非热点路径，整帧取出处理） ----
+            if self.frames.last().map_or(false, |f| f.finish.is_some()) {
+                let mut frame = self.frames.pop().unwrap();
+                if let Some(fin) = frame.finish.as_mut() {
                 if let Some(d) = fin.remaining_defers.pop() {
                     let argc = d.args.len();
                     // 本帧以收尾状态压回，defer 调用作为普通调用发起
@@ -746,28 +788,31 @@ impl VM {
                     Some(final_res) => return final_res,
                     None => continue 'machine,
                 }
-            }
-
-            // ---- 正常指令执行 ----
-            let code: Arc<Code> = frame.code.clone();
-            let insts = &code.insts;
-            // ev 待处置的控制流事件。None 时执行指令循环。
-            let mut ev: Option<Event> = None;
-            // 发起了用户函数调用（被调帧暂存于此，循环外统一入栈）
-            let mut entered_frame = false;
-            let mut pending_callee: Option<Frame> = None;
-            // 指令循环：任何错误/return/throw 都置 ev 后 break，交由事件处置
-            while frame.ip < insts.len() {
-                // 切片燃料预算：每条指令扣 1，耗尽则帧压回原位、让出切片
-                // （仅任务切片有燃料限制；下个切片从同一 ip 继续，语义无损）。
-                // 注意：内置函数挂起任务（pause=Parked）不在此处检查——
-                // 各调用点在 Ok 返回后立即检查并让出（结果位已压占位值）。
-                if self.fuel == 0 {
-                    self.pause = Pause::YieldFuel;
-                    self.frames.push(frame);
-                    return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
                 }
-                self.fuel -= 1;
+            } // 收尾状态机结束（正常路径不进入此块）
+
+            // ---- 正常指令执行（字段级借用：帧就地于帧栈——免 Frame 移动、
+            //      免 Arc 克隆、免队列往返；借用内只允许直接字段访问 self.stack /
+            //      self.globals / self.extra_builtins / self.fuel 等，与 self.frames
+            //      不相交）----
+            let mut ev: Option<Event> = None;
+            // 需要完整 &mut self 的操作，记入 pending_*，借用结束后执行：
+            let mut pending_call: Option<(usize, usize)> = None; // (argc, 指令长度——Parked 回退用)
+            let mut pending_import: Option<(String, String)> = None; // (path, cur_file)
+            let mut pending_run: Option<(Value, Vec<Value>)> = None;
+            let mut yield_out = false;
+            {
+                let frame = self.frames.last_mut().expect("execute_frames: 帧栈为空");
+                let insts = &frame.code.insts;
+                // 指令循环：任何错误/return/throw 都置 ev 后 break，交由事件处置
+                while frame.ip < insts.len() {
+                    // 切片燃料预算：每条指令扣 1，耗尽让出切片（帧已就地，直接返回）
+                    if self.fuel == 0 {
+                        self.pause = Pause::YieldFuel;
+                        yield_out = true;
+                        break;
+                    }
+                    self.fuel -= 1;
                 let op_byte = insts[frame.ip];
                 let op = match Opcode::from_u8(op_byte) {
                     Some(o) => o,
@@ -778,18 +823,18 @@ impl VM {
                     }
                 };
                 match op {
-                    Opcode::Null => { self.push(Value::Undefined); frame.ip += 1; }
+                    Opcode::Null => { self.stack.push(Value::Undefined); frame.ip += 1; }
                     Opcode::Const => {
                         let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                         frame.ip += 3;
-                        self.push(code.constants[idx].clone());
+                        self.stack.push(frame.code.constants[idx].clone());
                     }
-                    Opcode::Pop => { self.pop(); frame.ip += 1; }
-                    Opcode::Dup => { let v = self.peek().clone(); self.push(v); frame.ip += 1; }
+                    Opcode::Pop => { self.stack.pop().expect("stack underflow"); frame.ip += 1; }
+                    Opcode::Dup => { let v = self.stack.last().expect("stack empty").clone(); self.stack.push(v); frame.ip += 1; }
                     Opcode::LoadName => {
                         let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                         frame.ip += 3;
-                        let name = &code.names[idx];
+                        let name = &frame.code.names[idx];
                         // 名字解析：globals → builtins → undefined（宽容策略，对齐 Charlang）。
                         // 读取未定义变量不再抛错，而是返回 undefined；AI/用户可用
                         // explainUndef(name) 主动诊断为何得到 undefined。
@@ -797,67 +842,67 @@ impl VM {
                             let globals = self.globals.lock().unwrap();
                             if let Some(v) = globals.get(name) {
                                 v.clone()
-                            } else if let Some(b) = self.lookup_builtin(name) {
+                            } else if let Some(b) = Self::lookup_builtin_in(&self.extra_builtins, name) {
                                 Value::Builtin(b)
                             } else {
                                 // 未定义：返回 undefined（不抛错）
                                 Value::Undefined
                             }
                         };
-                        self.push(resolved);
+                        self.stack.push(resolved);
                     }
                     Opcode::StoreName => {
                         let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                         frame.ip += 3;
-                        let name = code.names[idx].clone();
-                        let v = self.pop();
+                        let name = frame.code.names[idx].clone();
+                        let v = self.stack.pop().expect("stack underflow");
                         self.globals.lock().unwrap().insert(name, v);
                     }
                     Opcode::AssignName => {
                         let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                         frame.ip += 3;
-                        let name = code.names[idx].clone();
-                        let v = self.pop();
+                        let name = frame.code.names[idx].clone();
+                        let v = self.stack.pop().expect("stack underflow");
                         // 简化：直接写全局（无论是否存在）
                         self.globals.lock().unwrap().insert(name, v);
                     }
                     Opcode::LoadGlobal => {
                         let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                         frame.ip += 3;
-                        let name = &code.names[idx];
+                        let name = &frame.code.names[idx];
                         // 同 LoadName：未定义的全局返回 undefined（宽容策略）。
                         let resolved: Value = {
                             let globals = self.globals.lock().unwrap();
                             if let Some(v) = globals.get(name) {
                                 v.clone()
-                            } else if let Some(b) = self.lookup_builtin(name) {
+                            } else if let Some(b) = Self::lookup_builtin_in(&self.extra_builtins, name) {
                                 Value::Builtin(b)
                             } else {
                                 Value::Undefined
                             }
                         };
-                        self.push(resolved);
+                        self.stack.push(resolved);
                     }
                     Opcode::StoreGlobal => {
                         let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                         frame.ip += 3;
-                        let name = code.names[idx].clone();
-                        let v = self.pop();
+                        let name = frame.code.names[idx].clone();
+                        let v = self.stack.pop().expect("stack underflow");
                         self.globals.lock().unwrap().insert(name, v);
                     }
                     Opcode::LoadLocal => {
                         let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                         frame.ip += 3;
                         if let Some(b) = frame.boxes.get(&idx) {
-                            self.push(b.lock().unwrap().clone());
+                            self.stack.push(b.lock().unwrap().clone());
                         } else {
-                            self.push(frame.locals[idx].clone());
+                            self.stack.push(frame.locals[idx].clone());
                         }
                     }
                     Opcode::StoreLocal => {
                         let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                         frame.ip += 3;
-                        let v = self.pop();
+                        let v = self.stack.pop().expect("stack underflow");
                         if let Some(b) = frame.boxes.get(&idx) {
                             *b.lock().unwrap() = v;
                         } else {
@@ -867,19 +912,19 @@ impl VM {
                     Opcode::LoadFree => {
                         let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                         frame.ip += 3;
-                        self.push(frame.free_vars[idx].lock().unwrap().clone());
+                        self.stack.push(frame.free_vars[idx].lock().unwrap().clone());
                     }
                     Opcode::StoreFree => {
                         let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                         frame.ip += 3;
-                        *frame.free_vars[idx].lock().unwrap() = self.pop();
+                        *frame.free_vars[idx].lock().unwrap() = self.stack.pop().expect("stack underflow");
                     }
                     Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Mod
                     | Opcode::BitAnd | Opcode::BitOr | Opcode::BitXor | Opcode::BitShl | Opcode::BitShr => {
-                        let b = self.pop();
-                        let a = self.pop();
+                        let b = self.stack.pop().expect("stack underflow");
+                        let a = self.stack.pop().expect("stack underflow");
                         match arith_op(op, a.clone(), b.clone()) {
-                            Ok(r) => self.push(r),
+                            Ok(r) => self.stack.push(r),
                             Err(e) => {
                                 let line = frame.code.get_line(frame.ip);
                                 let detail = format!("{} (行 {}: {} {:?} {} [{}] 和 {} [{}])",
@@ -891,11 +936,11 @@ impl VM {
                         frame.ip += 1;
                     }
                     Opcode::Neg => {
-                        let a = self.pop();
+                        let a = self.stack.pop().expect("stack underflow");
                         match a {
                             // wrapping_neg：i64::MIN 取负仍为 MIN（溢出不 panic）
-                            Value::Int(i) => self.push(Value::Int(i.wrapping_neg())),
-                            Value::Float(f) => self.push(Value::Float(-f)),
+                            Value::Int(i) => self.stack.push(Value::Int(i.wrapping_neg())),
+                            Value::Float(f) => self.stack.push(Value::Float(-f)),
                             _ => {
                                 ev = Some(Event::Throw(error_value(format!(
                                     "cannot negate {} (可能原因：- 仅支持数值类型；bigInt 可用 bigInt(0) - x)", a.type_name(),
@@ -907,10 +952,10 @@ impl VM {
                     }
                     Opcode::BitNot => {
                         // 按位取反 ~（整数或字节）
-                        let a = self.pop();
+                        let a = self.stack.pop().expect("stack underflow");
                         match a {
-                            Value::Int(i) => self.push(Value::Int(!i)),
-                            Value::Byte(b) => self.push(Value::Byte(!b)),
+                            Value::Int(i) => self.stack.push(Value::Int(!i)),
+                            Value::Byte(b) => self.stack.push(Value::Byte(!b)),
                             _ => {
                                 ev = Some(Event::Throw(error_value(format!(
                                     "cannot bitwise-not {} (可能原因：~ 仅支持整数/字节)", a.type_name(),
@@ -921,22 +966,22 @@ impl VM {
                         frame.ip += 1;
                     }
                     Opcode::Eq => {
-                        let b = self.pop();
-                        let a = self.pop();
-                        self.push(Value::Bool(a.equals(&b)));
+                        let b = self.stack.pop().expect("stack underflow");
+                        let a = self.stack.pop().expect("stack underflow");
+                        self.stack.push(Value::Bool(a.equals(&b)));
                         frame.ip += 1;
                     }
                     Opcode::Neq => {
-                        let b = self.pop();
-                        let a = self.pop();
-                        self.push(Value::Bool(!a.equals(&b)));
+                        let b = self.stack.pop().expect("stack underflow");
+                        let a = self.stack.pop().expect("stack underflow");
+                        self.stack.push(Value::Bool(!a.equals(&b)));
                         frame.ip += 1;
                     }
                     Opcode::LT | Opcode::LE | Opcode::GT | Opcode::GE => {
-                        let b = self.pop();
-                        let a = self.pop();
+                        let b = self.stack.pop().expect("stack underflow");
+                        let a = self.stack.pop().expect("stack underflow");
                         match cmp_op(op, a, b) {
-                            Ok(r) => self.push(r),
+                            Ok(r) => self.stack.push(r),
                             Err(e) => {
                                 ev = Some(Event::Throw(error_value(e)));
                                 break;
@@ -945,8 +990,8 @@ impl VM {
                         frame.ip += 1;
                     }
                     Opcode::Not => {
-                        let a = self.pop();
-                        self.push(Value::Bool(!a.is_truthy()));
+                        let a = self.stack.pop().expect("stack underflow");
+                        self.stack.push(Value::Bool(!a.is_truthy()));
                         frame.ip += 1;
                     }
                     Opcode::Jump => {
@@ -954,7 +999,7 @@ impl VM {
                         frame.ip = target;
                     }
                     Opcode::JumpIfFalse => {
-                        let cond = self.pop();
+                        let cond = self.stack.pop().expect("stack underflow");
                         let target = Code::read_u16(&insts, frame.ip + 1) as usize;
                         frame.ip += 3;
                         if !cond.is_truthy() {
@@ -962,7 +1007,7 @@ impl VM {
                         }
                     }
                     Opcode::JumpIfTrue => {
-                        let cond = self.pop();
+                        let cond = self.stack.pop().expect("stack underflow");
                         let target = Code::read_u16(&insts, frame.ip + 1) as usize;
                         frame.ip += 3;
                         if cond.is_truthy() {
@@ -971,7 +1016,7 @@ impl VM {
                     }
                     Opcode::JumpIfNotUndefined => {
                         // 弹出栈顶，仅当该值不是 undefined 时跳转（用于 ?? 短路）
-                        let v = self.pop();
+                        let v = self.stack.pop().expect("stack underflow");
                         let target = Code::read_u16(&insts, frame.ip + 1) as usize;
                         frame.ip += 3;
                         if !matches!(v, Value::Undefined) {
@@ -982,11 +1027,11 @@ impl VM {
                     // a[i] op= v：栈 [v, obj, idx] → [new]，地址只求值一次
                     let flag = insts[frame.ip + 1];
                     frame.ip += 2;
-                    let idx = self.pop();
-                    let obj = self.pop();
-                    let v = self.pop();
-                    match self.compound_index(&obj, &idx, v, flag) {
-                        Ok(r) => self.push(r),
+                    let idx = self.stack.pop().expect("stack underflow");
+                    let obj = self.stack.pop().expect("stack underflow");
+                    let v = self.stack.pop().expect("stack underflow");
+                    match Self::compound_index(&obj, &idx, v, flag) {
+                        Ok(r) => self.stack.push(r),
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
                     }
                 }
@@ -995,11 +1040,11 @@ impl VM {
                     let name_idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                     let flag = insts[frame.ip + 3];
                     frame.ip += 4;
-                    let name = code.names[name_idx].clone();
-                    let obj = self.pop();
-                    let v = self.pop();
-                    match self.compound_member(&obj, &name, v, flag) {
-                        Ok(r) => self.push(r),
+                    let name = frame.code.names[name_idx].clone();
+                    let obj = self.stack.pop().expect("stack underflow");
+                    let v = self.stack.pop().expect("stack underflow");
+                    match Self::compound_member(&obj, &name, v, flag) {
+                        Ok(r) => self.stack.push(r),
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
                     }
                 }
@@ -1008,13 +1053,13 @@ impl VM {
                     // 前缀返回新值，后缀返回旧值（Float/BigInt 也正确）
                     let flag = insts[frame.ip + 1];
                     frame.ip += 2;
-                    let idx = self.pop();
-                    let obj = self.pop();
+                    let idx = self.stack.pop().expect("stack underflow");
+                    let obj = self.stack.pop().expect("stack underflow");
                     let inc = flag & 0x01 == 0; // 0=Inc, 1=Dec
-                    match self.incdec_index(&obj, &idx, inc) {
+                    match Self::incdec_index(&obj, &idx, inc) {
                         Ok((old, new)) => {
                             let result = if flag & 0x80 != 0 { old } else { new };
-                            self.push(result);
+                            self.stack.push(result);
                         }
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
                     }
@@ -1024,13 +1069,13 @@ impl VM {
                     let name_idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                     let flag = insts[frame.ip + 3];
                     frame.ip += 4;
-                    let name = code.names[name_idx].clone();
-                    let obj = self.pop();
+                    let name = frame.code.names[name_idx].clone();
+                    let obj = self.stack.pop().expect("stack underflow");
                     let inc = flag & 0x01 == 0;
-                    match self.incdec_member(&obj, &name, inc) {
+                    match Self::incdec_member(&obj, &name, inc) {
                         Ok((old, new)) => {
                             let result = if flag & 0x80 != 0 { old } else { new };
-                            self.push(result);
+                            self.stack.push(result);
                         }
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
                     }
@@ -1039,9 +1084,9 @@ impl VM {
                     // 切片 a[low:high]：栈 [obj, low, high] → [result]
                     // low/high 缺省为 undefined（表示到边界）
                     frame.ip += 1;
-                    let high = self.pop();
-                    let low = self.pop();
-                    let obj = self.pop();
+                    let high = self.stack.pop().expect("stack underflow");
+                    let low = self.stack.pop().expect("stack underflow");
+                    let obj = self.stack.pop().expect("stack underflow");
                     let lo: Option<i64> = match low {
                         Value::Undefined => None,
                         Value::Int(i) => Some(i),
@@ -1063,7 +1108,7 @@ impl VM {
                         }
                     };
                     match slice_value(&obj, lo, hi) {
-                        Ok(v) => self.push(v),
+                        Ok(v) => self.stack.push(v),
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
                     }
                 }
@@ -1073,51 +1118,28 @@ impl VM {
                     let name_idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                     let argc = insts[frame.ip + 3] as usize;
                     frame.ip += 4;
-                    let name = code.names[name_idx].clone();
+                    let name = frame.code.names[name_idx].clone();
                     // 弹出 N 个参数 + obj（参数在上，obj 在底）
                     let mut args = Vec::with_capacity(argc);
                     for _ in 0..argc {
-                        args.push(self.pop());
+                        args.push(self.stack.pop().expect("stack underflow"));
                     }
                     args.reverse(); // 恢复 arg1..argN 顺序
-                    let obj = self.pop();
+                    let obj = self.stack.pop().expect("stack underflow");
                     // 从 obj 读取方法（沿原型链）
                     let method = match member_get(&obj, &name) {
                         Ok(v) => v,
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
                     };
                     // 重排栈为 do_call 期望的 [callee=method, self=obj, arg1, ..., argN]
-                    self.push(method);
-                    self.push(obj); // 隐式 self
+                    self.stack.push(method);
+                    self.stack.push(obj); // 隐式 self
                     for a in args {
-                        self.push(a);
+                        self.stack.push(a);
                     }
-                    // 调用：argc = N + 1（含隐式 self）
-                    match self.start_call(argc + 1) {
-                        Ok(v) => {
-                            self.push(v);
-                            if self.pause == Pause::ParkedInject {
-                                // 值注入型挂起：结果位已压占位值，让出切片
-                                self.frames.push(frame);
-                                return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
-                            }
-                        }
-                        Err(CallErr::Thrown(e)) => { ev = Some(Event::Throw(e)); break; }
-                        Err(CallErr::Parked) => {
-                            // 挂起类操作不支持方法/展开调用语法（重试需回退 Call 指令）：
-                            // 抛出明确错误引导改用普通调用形式
-                            ev = Some(Event::Throw(error_value(
-                                "挂起类操作（lock/wgWait/semAcquire 等）暂不支持在任务中通过方法调用/展开调用语法等待 (可能原因：obj.method()/f(arr...) 形式调用了会等待的内置函数；改用普通调用形式 f(x))",
-                            )));
-                            break;
-                        }
-                        Err(CallErr::EnterFrame(cf)) => {
-                            // 被调帧暂存，循环外与调用方帧一起入栈（避免循环内移动 frame）
-                            pending_callee = Some(cf);
-                            entered_frame = true;
-                            break;
-                        }
-                    }
+                    // 调用：argc = N + 1（含隐式 self）；借用外发起
+                    pending_call = Some((argc + 1, 4));
+                    break;
                 }
                 Opcode::SpreadCall => {
                     // 带展开的调用：u8 argc, u64 spread_mask
@@ -1125,40 +1147,18 @@ impl VM {
                     let argc = insts[frame.ip + 1] as usize;
                     let spread_mask = Code::read_u64(&insts, frame.ip + 2);
                     frame.ip += 10;
-                    let all_args = match self.expand_spread_args(argc, spread_mask) {
+                    let all_args = match Self::expand_spread_args(&mut self.stack, argc, spread_mask) {
                         Ok(a) => a,
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
                     };
-                    let callee = self.pop();
-                    self.push(callee);
+                    let callee = self.stack.pop().expect("stack underflow");
+                    self.stack.push(callee);
                     for a in &all_args {
-                        self.push(a.clone());
+                        self.stack.push(a.clone());
                     }
-                    match self.start_call(all_args.len()) {
-                        Ok(v) => {
-                            self.push(v);
-                            if self.pause == Pause::ParkedInject {
-                                // 值注入型挂起：结果位已压占位值，让出切片
-                                self.frames.push(frame);
-                                return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
-                            }
-                        }
-                        Err(CallErr::Thrown(e)) => { ev = Some(Event::Throw(e)); break; }
-                        Err(CallErr::Parked) => {
-                            // 挂起类操作不支持方法/展开调用语法（重试需回退 Call 指令）：
-                            // 抛出明确错误引导改用普通调用形式
-                            ev = Some(Event::Throw(error_value(
-                                "挂起类操作（lock/wgWait/semAcquire 等）暂不支持在任务中通过方法调用/展开调用语法等待 (可能原因：obj.method()/f(arr...) 形式调用了会等待的内置函数；改用普通调用形式 f(x))",
-                            )));
-                            break;
-                        }
-                        Err(CallErr::EnterFrame(cf)) => {
-                            // 被调帧暂存，循环外与调用方帧一起入栈（避免循环内移动 frame）
-                            pending_callee = Some(cf);
-                            entered_frame = true;
-                            break;
-                        }
-                    }
+                    // 借用外发起（展开后的实参已在栈上）
+                    pending_call = Some((all_args.len(), 10));
+                    break;
                 }
                 Opcode::MethodSpreadCall => {
                     // 带展开的方法调用：u16 name_idx, u8 argc, u64 spread_mask
@@ -1167,81 +1167,35 @@ impl VM {
                     let argc = insts[frame.ip + 3] as usize;
                     let spread_mask = Code::read_u64(&insts, frame.ip + 4);
                     frame.ip += 12;
-                    let name = code.names[name_idx].clone();
-                    let all_args = match self.expand_spread_args(argc, spread_mask) {
+                    let name = frame.code.names[name_idx].clone();
+                    let all_args = match Self::expand_spread_args(&mut self.stack, argc, spread_mask) {
                         Ok(a) => a,
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
                     };
-                    let obj = self.pop();
+                    let obj = self.stack.pop().expect("stack underflow");
                     let method = match member_get(&obj, &name) {
                         Ok(v) => v,
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
                     };
                     // 重排为 [callee=method, self=obj, 展开后的 args]
-                    self.push(method);
-                    self.push(obj);
+                    self.stack.push(method);
+                    self.stack.push(obj);
                     for a in &all_args {
-                        self.push(a.clone());
+                        self.stack.push(a.clone());
                     }
-                    match self.start_call(all_args.len() + 1) {
-                        Ok(v) => {
-                            self.push(v);
-                            if self.pause == Pause::ParkedInject {
-                                // 值注入型挂起：结果位已压占位值，让出切片
-                                self.frames.push(frame);
-                                return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
-                            }
-                        }
-                        Err(CallErr::Thrown(e)) => { ev = Some(Event::Throw(e)); break; }
-                        Err(CallErr::Parked) => {
-                            // 挂起类操作不支持方法/展开调用语法（重试需回退 Call 指令）：
-                            // 抛出明确错误引导改用普通调用形式
-                            ev = Some(Event::Throw(error_value(
-                                "挂起类操作（lock/wgWait/semAcquire 等）暂不支持在任务中通过方法调用/展开调用语法等待 (可能原因：obj.method()/f(arr...) 形式调用了会等待的内置函数；改用普通调用形式 f(x))",
-                            )));
-                            break;
-                        }
-                        Err(CallErr::EnterFrame(cf)) => {
-                            // 被调帧暂存，循环外与调用方帧一起入栈（避免循环内移动 frame）
-                            pending_callee = Some(cf);
-                            entered_frame = true;
-                            break;
-                        }
-                    }
+                    // 借用外发起（argc 含隐式 self；展开后的实参已在栈上）
+                    pending_call = Some((all_args.len() + 1, 12));
+                    break;
                 }
                 Opcode::Call => {
                     let argc = insts[frame.ip + 1] as usize;
                     frame.ip += 2;
-                    match self.start_call(argc) {
-                        Ok(v) => {
-                            self.push(v);
-                            if self.pause == Pause::ParkedInject {
-                                // 值注入型挂起（chanRecv/onceDo 等待者/sleep）：结果位
-                                // 已压占位值（undefined，唤醒后由调度器注入真实结果），
-                                // 帧 ip 已越过本指令，压回帧后立即让出切片
-                                self.frames.push(frame);
-                                return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
-                            }
-                        }
-                        // Throw 事件在本帧的 try 栈中查找 catch/finally（dispatch_event 处置）
-                        Err(CallErr::Thrown(e)) => { ev = Some(Event::Throw(e)); break; }
-                        Err(CallErr::Parked) => {
-                            // 等待-重试型挂起（lock/wgWait/semAcquire 等）：实参已回推，
-                            // 回退 ip 到本调用指令，唤醒后重新执行本调用（重查条件）
-                            frame.ip -= 2;
-                            self.frames.push(frame);
-                            return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
-                        }
-                        Err(CallErr::EnterFrame(cf)) => {
-                            // 被调帧暂存，循环外与调用方帧一起入栈（避免循环内移动 frame）
-                            pending_callee = Some(cf);
-                            entered_frame = true;
-                            break;
-                        }
-                    }
+                    // start_call 需要完整 &mut self（执行内置函数），借用外发起
+                    pending_call = Some((argc, 2));
+                    break;
                 }
                 Opcode::Return => {
-                    let v = self.pop();
+                    let v = self.stack.pop().expect("stack underflow");
                     ev = Some(Event::Return(v));
                     break;
                 }
@@ -1252,7 +1206,7 @@ impl VM {
                 Opcode::Closure => {
                     let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                     frame.ip += 3;
-                    let tmpl = match &code.constants[idx] {
+                    let tmpl = match &frame.code.constants[idx] {
                         Value::Func(f) => f.clone(),
                         _ => {
                             ev = Some(Event::Throw(error_value("closure: constant is not a function")));
@@ -1279,7 +1233,7 @@ impl VM {
                         free_vars,
                         tmpl.variadic,
                     );
-                    self.push(Value::Func(Arc::new(func)));
+                    self.stack.push(Value::Func(Arc::new(func)));
                 }
                 Opcode::BuildArray => {
                     let n = Code::read_u16(&insts, frame.ip + 1) as usize;
@@ -1287,15 +1241,15 @@ impl VM {
                     let stack_len = self.stack.len();
                     let elems: Vec<Value> = self.stack[stack_len - n..].to_vec();
                     self.stack.truncate(stack_len - n);
-                    self.push(Value::Array(Arc::new(Mutex::new(elems))));
+                    self.stack.push(Value::Array(Arc::new(Mutex::new(elems))));
                 }
                 Opcode::BuildMap => {
                     let n = Code::read_u16(&insts, frame.ip + 1) as usize;
                     frame.ip += 3;
                     let mut map = crate::object_map::Map::new();
                     for _ in 0..n {
-                        let v = self.pop();
-                        let k = self.pop();
+                        let v = self.stack.pop().expect("stack underflow");
+                        let k = self.stack.pop().expect("stack underflow");
                         match k {
                             Value::Str(s) => map.set((*s).to_string(), v),
                             _ => {
@@ -1305,7 +1259,7 @@ impl VM {
                         }
                     }
                     if ev.is_some() { break; }
-                    self.push(Value::Object(Arc::new(Mutex::new(map))));
+                    self.stack.push(Value::Object(Arc::new(Mutex::new(map))));
                 }
                 Opcode::BuildOrdMap => {
                     let n = Code::read_u16(&insts, frame.ip + 1) as usize;
@@ -1313,8 +1267,8 @@ impl VM {
                     // 栈顶为最后一对，弹出后逆序存放，再反转保持插入顺序
                     let mut temp: Vec<(String, Value)> = Vec::with_capacity(n);
                     for _ in 0..n {
-                        let v = self.pop();
-                        let k = self.pop();
+                        let v = self.stack.pop().expect("stack underflow");
+                        let k = self.stack.pop().expect("stack underflow");
                         match k {
                             Value::Str(s) => temp.push(((*s).to_string(), v)),
                             _ => {
@@ -1329,14 +1283,14 @@ impl VM {
                     for (k, v) in temp {
                         map.set(k, v);
                     }
-                    self.push(Value::Map(Arc::new(Mutex::new(map))));
+                    self.stack.push(Value::Map(Arc::new(Mutex::new(map))));
                 }
                 Opcode::IndexGet => {
                     frame.ip += 1;
-                    let idx = self.pop();
-                    let obj = self.pop();
+                    let idx = self.stack.pop().expect("stack underflow");
+                    let obj = self.stack.pop().expect("stack underflow");
                     match index_get(&obj, &idx) {
-                        Ok(v) => self.push(v),
+                        Ok(v) => self.stack.push(v),
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
                     }
                 }
@@ -1345,9 +1299,9 @@ impl VM {
                     // 栈形如：[..., v, a, i]（由 compiler 的 Assign Index 路径产生）
                     // IndexSet 语义：弹 i, a, v（v 在底），执行 a[i] = v，不压回
                     // （赋值表达式的结果值 v 已由编译器预先留在栈底）
-                    let i = self.pop();
-                    let a = self.pop();
-                    let v = self.pop();
+                    let i = self.stack.pop().expect("stack underflow");
+                    let a = self.stack.pop().expect("stack underflow");
+                    let v = self.stack.pop().expect("stack underflow");
                     match index_set(&a, &i, v) {
                         Ok(_) => {}
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
@@ -1356,20 +1310,20 @@ impl VM {
                 Opcode::GetMember => {
                     let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                     frame.ip += 3;
-                    let name = code.names[idx].clone();
-                    let obj = self.pop();
+                    let name = frame.code.names[idx].clone();
+                    let obj = self.stack.pop().expect("stack underflow");
                     match member_get(&obj, &name) {
-                        Ok(v) => self.push(v),
+                        Ok(v) => self.stack.push(v),
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
                     }
                 }
                 Opcode::SetMember => {
                     let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                     frame.ip += 3;
-                    let name = code.names[idx].clone();
+                    let name = frame.code.names[idx].clone();
                     // 栈：[..., v, a]（v 在下，a 在上）
-                    let a = self.pop();
-                    let v = self.pop();
+                    let a = self.stack.pop().expect("stack underflow");
+                    let v = self.stack.pop().expect("stack underflow");
                     match member_set(&a, &name, v) {
                         Ok(_) => {}
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
@@ -1472,7 +1426,7 @@ impl VM {
                 }
                 Opcode::Throw => {
                     frame.ip += 1;
-                    let v = self.pop();
+                    let v = self.stack.pop().expect("stack underflow");
                     ev = Some(Event::Throw(v));
                     break;
                 }
@@ -1489,23 +1443,23 @@ impl VM {
                 Opcode::Run => {
                     let argc = insts[frame.ip + 1] as usize;
                     frame.ip += 2;
-                    // 启动新线程执行调用
+                    // 启动任务执行调用（spawn_thread 需要完整 &mut self，借用外执行）
                     let stack_len = self.stack.len();
                     let callee = self.stack[stack_len - argc - 1].clone();
                     let args: Vec<Value> = self.stack[stack_len - argc..].to_vec();
                     self.stack.truncate(stack_len - argc - 1);
-                    self.spawn_thread(callee, args);
+                    pending_run = Some((callee, args));
+                    break;
                 }
                 Opcode::Import => {
                     let idx = Code::read_u16(&insts, frame.ip + 1) as usize;
                     frame.ip += 3;
-                    let path = code.names[idx].clone();
-                    let cur_file = code.file.clone();
-                    // import 是语句，成功不产生值（保持操作数栈平衡）
-                    if let Err(err_val) = self.do_import(&path, &cur_file) {
-                        ev = Some(Event::Throw(err_val));
-                        break;
-                    }
+                    let path = frame.code.names[idx].clone();
+                    let cur_file = frame.code.file.clone();
+                    // import 是语句，成功不产生值（保持操作数栈平衡）；
+                    // do_import 需要完整 &mut self，借用外执行
+                    pending_import = Some((path, cur_file));
+                    break;
                 }
                 Opcode::Ref => {
                     // &expr：创建引用包装
@@ -1513,23 +1467,23 @@ impl VM {
                     // 对引用类型（Array/Object/Map）：已经是 Arc<Mutex>，直接包装 Value
                     // 无论哪种，*p = v 都能修改引用内的值
                     frame.ip += 1;
-                    let v = self.pop();
-                    self.push(Value::Native(std::sync::Arc::new(std::sync::Arc::new(std::sync::Mutex::new(v)))));
+                    let v = self.stack.pop().expect("stack underflow");
+                    self.stack.push(Value::Native(std::sync::Arc::new(std::sync::Arc::new(std::sync::Mutex::new(v)))));
                 }
                 Opcode::Deref => {
                     // *expr：弹出引用包装，读取内部值
                     frame.ip += 1;
-                    let v = self.pop();
+                    let v = self.stack.pop().expect("stack underflow");
                     match deref_value(&v) {
-                        Ok(inner) => self.push(inner),
+                        Ok(inner) => self.stack.push(inner),
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
                     }
                 }
                 Opcode::SetDeref => {
                     // *p = v：栈 [v, ref]，弹 ref 和 v，写入
                     frame.ip += 1;
-                    let ref_val = self.pop();
-                    let new_val = self.pop();
+                    let ref_val = self.stack.pop().expect("stack underflow");
+                    let new_val = self.stack.pop().expect("stack underflow");
                     match set_deref_value(&ref_val, new_val) {
                         Ok(()) => {
                             // 编译器在 SetDeref 前留了一份 v 在栈底作为赋值表达式的结果
@@ -1537,15 +1491,55 @@ impl VM {
                         Err(e) => { ev = Some(Event::Throw(error_value(e))); break; }
                     }
                 }
-            }
+                }
             } // while 指令循环
+            } // 借用作用域结束（帧就地留在帧栈）
 
-            // 发起了用户函数调用：调用方帧（ip 已推进）与被调帧依次入栈，
-            // 交回机器循环执行被调帧
-            if entered_frame {
-                self.frames.push(frame);
-                self.frames.push(pending_callee.take().unwrap());
+            // 燃料耗尽：让出切片（帧已就地，下个切片从同一 ip 继续）
+            if yield_out {
+                return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
+            }
+
+            // Run/Import：借用结束后执行（需要完整 &mut self）；均为语句，
+            // 完成后回到指令循环继续
+            if let Some((callee, args)) = pending_run.take() {
+                self.spawn_thread(callee, args);
                 continue 'machine;
+            }
+            if let Some((path, cur_file)) = pending_import.take() {
+                match self.do_import(&path, &cur_file) {
+                    Ok(()) => continue 'machine,
+                    Err(err_val) => { ev = Some(Event::Throw(err_val)); }
+                }
+            }
+
+            // 函数调用：借用外发起（start_call 执行内置函数需要完整 &mut self）
+            if let Some((argc, ilen)) = pending_call.take() {
+                match self.start_call(argc) {
+                    Ok(v) => {
+                        self.push(v);
+                        if self.pause == Pause::ParkedInject {
+                            // 值注入型挂起（chanRecv/onceDo 等待者/sleep）：结果位已压
+                            // 占位值（唤醒后由调度器注入真实结果），帧 ip 已越过本指令，
+                            // 帧已就地，立即让出切片
+                            return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
+                        }
+                        // 内置函数调用完成：回到指令循环继续（调用发生在帧中部）
+                        continue 'machine;
+                    }
+                    Err(CallErr::Thrown(e)) => { ev = Some(Event::Throw(e)); }
+                    Err(CallErr::Parked) => {
+                        // 等待-重试型挂起（lock/wgWait/semAcquire 等）：实参已回推，
+                        // 回退 ip 到本调用指令，唤醒后重新执行本调用（重查条件）
+                        self.frames.last_mut().unwrap().ip -= ilen;
+                        return FlowResult { value: Value::Undefined, kind: FlowKind::Yield };
+                    }
+                    Err(CallErr::EnterFrame(cf)) => {
+                        // 调用方帧已就地（ip 已推进），被调帧入栈，交回机器循环
+                        self.frames.push(cf);
+                        continue 'machine;
+                    }
+                }
             }
 
             // 指令循环结束：若无事件则自然结束（无 return）→ 返回 undefined
@@ -1553,18 +1547,19 @@ impl VM {
                 Some(e) => e,
                 None => Event::Return(Value::Undefined),
             };
-            // 事件在本帧 try 栈上处置（catch/finally/穿透/帧逻辑结束）
-            match self.dispatch_event(&mut frame, e) {
+            // 事件在本帧 try 栈上处置（catch/finally/穿透/帧逻辑结束）；
+            // stack 与 frames 是不相交字段，可同时可变借用
+            match Self::dispatch_event_parts(&mut self.stack, self.frames.last_mut().expect("execute_frames: 帧栈为空"), e) {
                 DispatchOutcome::Continue => {
-                    // 已设置新 ip：帧压回，下一轮继续执行
-                    self.frames.push(frame);
+                    // 已设置新 ip：帧就地，下一轮继续执行
                     continue 'machine;
                 }
                 DispatchOutcome::Done(r) => {
-                    // 帧逻辑结束（try 栈走完）：扣减调用深度，进入 defer 收尾或交付结果
-                    if frame.resume == Resume::PushResult {
+                    // 帧逻辑结束（try 栈走完）：扣减调用深度，弹出后收尾/交付
+                    if self.frames.last().map_or(false, |f| f.resume == Resume::PushResult) {
                         self.depth -= 1;
                     }
+                    let frame = self.frames.pop().expect("execute_frames: 帧栈为空");
                     match self.conclude_frame(frame, r) {
                         Some(final_res) => return final_res,
                         None => continue 'machine,
@@ -1611,7 +1606,7 @@ impl VM {
                 }
                 if result.kind == FlowKind::Throw {
                     // 异常向调用方传播（可能被 catch/finally 接住，或调用方也结束）
-                    match self.dispatch_event(&mut caller, Event::Throw(result.value)) {
+                    match Self::dispatch_event_parts(&mut self.stack, &mut caller, Event::Throw(result.value)) {
                         DispatchOutcome::Continue => {
                             self.frames.push(caller);
                             None
@@ -1650,6 +1645,30 @@ impl VM {
 
         match &callee {
             Value::Builtin(b) => {
+                // 阻塞型内置函数（网络/文件 IO）+ 任务上下文：卸载到阻塞线程池。
+                // 任务挂起（值注入型）等待结果，不占调度 worker——任务内慢 IO
+                // 不再挤占并发容量。defer/回调中 park 被禁 → 原地执行（旧行为）。
+                // 结果经注入送达；错误经 pending_throw 在恢复时于调用点抛出。
+                if b.blocking && scheduler::can_offload_blocking(self) {
+                    if scheduler::park_current_task_inject(self).is_ok() {
+                        let task = scheduler::current_task().expect("offload: task");
+                        let globals = self.globals.clone();
+                        let out = self.out.clone();
+                        let func = b.func;
+                        let off_args: Vec<Value> = args.to_vec();
+                        scheduler::submit_blocking_job(Box::new(move || {
+                            // 阻塞池工作 VM：内置函数只用共享句柄（globals/out），
+                            // 不触碰任务解释状态（标记前提，见 Builtin.blocking）
+                            let mut bvm = VM::new();
+                            bvm.set_globals_handle(globals);
+                            bvm.set_output_handle(out);
+                            let res = func(&mut bvm, &off_args);
+                            scheduler::wake_task_with_result(&task, res);
+                        }));
+                        return Ok(Value::Undefined); // 占位值：调用点检测挂起后让出
+                    }
+                    // park 失败（上下文限制）→ 落回原地执行
+                }
                 let r = (b.func)(self, &args);
                 if self.pause == Pause::Parked {
                     // 等待-重试型原语挂起（lock/rlock/wlock/wgWait/semAcquire）：
@@ -1706,7 +1725,10 @@ impl VM {
         }
     }
 
-    /// dispatch_event 处置帧内控制流事件（return/throw/跳转穿越）。
+    /// dispatch_event_parts 处置帧内控制流事件（return/throw/跳转穿越）。
+    ///
+    /// 参数化 stack：调用方以不相交字段借用传入（&mut self.stack + 帧借用），
+    /// 支持指令循环的就地帧执行模型。
     ///
     /// 事件沿 try 栈从内向外传播：
     ///   - Throw：body 阶段有 catch 则进 catch（异常值压栈供 catch 变量绑定）；
@@ -1717,11 +1739,11 @@ impl VM {
     ///   - Jump（break/continue 穿越）：逐层弹出穿越的入口（有 finally 的先挂起
     ///     进 finally，剩余层数记录在挂起值中），全部离开后跳到目标。
     /// try 栈为空时：执行本帧全部 defers（逆序，defer 错误覆盖帧结果）后结束帧。
-    fn dispatch_event(&mut self, frame: &mut Frame, ev: Event) -> DispatchOutcome {
+    fn dispatch_event_parts(stack: &mut Vec<Value>, frame: &mut Frame, ev: Event) -> DispatchOutcome {
         match ev {
             Event::Throw(val) => {
                 // 先增强错误信息（追加行号），再沿 try 栈传播
-                let mut val = self.enhance_error_with_line(frame, val);
+                let mut val = Self::enhance_error_with_line(frame, val);
                 loop {
                     // 判定当前最内入口对 Throw 的处置方式
                     enum TAct { EnterCatch, EnterFinally, PopOutward, NoneEntry }
@@ -1740,8 +1762,8 @@ impl VM {
                                 te.phase = TryPhase::Catch;
                                 (te.catch_ip, te.snapshot)
                             };
-                            if self.stack.len() > snap { self.stack.truncate(snap); }
-                            self.push(val);
+                            if stack.len() > snap { stack.truncate(snap); }
+                            stack.push(val);
                             frame.ip = cip;
                             return DispatchOutcome::Continue;
                         }
@@ -1752,7 +1774,7 @@ impl VM {
                                 te.pending = Some(PendingFlow::Throw(val));
                                 (te.finally_ip, te.snapshot)
                             };
-                            if self.stack.len() > snap { self.stack.truncate(snap); }
+                            if stack.len() > snap { stack.truncate(snap); }
                             frame.ip = fip;
                             return DispatchOutcome::Continue;
                         }
@@ -1761,7 +1783,7 @@ impl VM {
                             // 继续向外传播同一 Throw
                         }
                         TAct::NoneEntry => {
-                            return self.finish_frame_with_defers(
+                            return Self::finish_frame_with_defers(
                                 frame,
                                 FlowResult { value: val, kind: FlowKind::Throw },
                             );
@@ -1785,7 +1807,7 @@ impl VM {
                                 te.pending = Some(PendingFlow::Return(val.clone()));
                                 (te.finally_ip, te.snapshot)
                             };
-                            if self.stack.len() > snap { self.stack.truncate(snap); }
+                            if stack.len() > snap { stack.truncate(snap); }
                             frame.ip = fip;
                             return DispatchOutcome::Continue;
                         }
@@ -1793,7 +1815,7 @@ impl VM {
                             frame.try_stack.pop();
                         }
                         RAct::NoneEntry => {
-                            return self.finish_frame_with_defers(
+                            return Self::finish_frame_with_defers(
                                 frame,
                                 FlowResult { value: val, kind: FlowKind::Return },
                             );
@@ -1822,7 +1844,7 @@ impl VM {
                                 te.pending = Some(PendingFlow::Jump { target, leave: leave - 1 });
                                 (te.finally_ip, te.snapshot)
                             };
-                            if self.stack.len() > snap { self.stack.truncate(snap); }
+                            if stack.len() > snap { stack.truncate(snap); }
                             frame.ip = fip;
                             return DispatchOutcome::Continue;
                         }
@@ -1847,7 +1869,7 @@ impl VM {
     /// 的收尾状态机经帧栈逐个发起调用（见 FinishState）。此处仅清理 try 栈。
     /// defer 的执行语义（任何退出路径都执行、错误不中断剩余 defer、最后一个
     /// defer 错误覆盖帧原始结果）由收尾状态机保持，与原递归版一致。
-    fn finish_frame_with_defers(&mut self, frame: &mut Frame, result: FlowResult) -> DispatchOutcome {
+    fn finish_frame_with_defers(frame: &mut Frame, result: FlowResult) -> DispatchOutcome {
         // 清理本帧残留的 try 入口（defers 执行期间不再有 try 语义）
         frame.try_stack.clear();
         DispatchOutcome::Done(result)
@@ -1857,7 +1879,7 @@ impl VM {
     ///
     /// 只处理 Error 类型，跳过用户主动 throw 的非 Error 值。
     /// 如果错误消息已包含 "行 "（行号标记），不重复追加。
-    fn enhance_error_with_line(&self, frame: &Frame, val: Value) -> Value {
+    fn enhance_error_with_line(frame: &Frame, val: Value) -> Value {
         match &val {
             Value::Error(e) => {
                 if e.message.contains(" (行 ") {
@@ -1964,7 +1986,7 @@ impl VM {
 
     /// compound_index 执行 a[i] op= v，返回新值（op 由 flag 编码）。
     /// flag 低 4 位为运算类型索引，与 compound_op 解码对应。
-    fn compound_index(&self, obj: &Value, idx: &Value, v: Value, flag: u8) -> Result<Value, String> {
+    fn compound_index(obj: &Value, idx: &Value, v: Value, flag: u8) -> Result<Value, String> {
         // 读取旧值
         let old = index_get(obj, idx)?;
         // ??= 特殊：仅当 old 为 undefined 才赋值（返回新值），否则返回 old（不赋值）
@@ -1982,7 +2004,7 @@ impl VM {
     }
 
     /// compound_member 执行 obj.k op= v，返回新值。
-    fn compound_member(&self, obj: &Value, name: &str, v: Value, flag: u8) -> Result<Value, String> {
+    fn compound_member(obj: &Value, name: &str, v: Value, flag: u8) -> Result<Value, String> {
         let old = member_get(obj, name)?;
         if flag & 0x0f == 0x05 {
             // ??=
@@ -2023,11 +2045,11 @@ impl VM {
     ///
     /// 栈布局：[..., arg0, arg1, ..., argN]（argN 在顶）。bit i 为 1 表示第 i 个
     /// 参数是数组，展开为逐个元素。返回展开后的参数列表（保持顺序）。
-    fn expand_spread_args(&mut self, argc: usize, spread_mask: u64) -> Result<Vec<Value>, String> {
+    fn expand_spread_args(stack: &mut Vec<Value>, argc: usize, spread_mask: u64) -> Result<Vec<Value>, String> {
         let mut all_args: Vec<Value> = Vec::new();
         // 从后往前弹（栈顶是最后一个参数），插入到头部保持顺序
         for i in (0..argc).rev() {
-            let v = self.pop();
+            let v = stack.pop().expect("stack underflow");
             if spread_mask & (1u64 << i) != 0 {
                 match &v {
                     Value::Array(a) => {
@@ -2040,9 +2062,9 @@ impl VM {
                         // 非数组无法展开：记录类型名，把已弹出的参数压回，保持栈一致后报错
                         let tn = v.type_name();
                         for a in all_args.into_iter().rev() {
-                            self.push(a);
+                            stack.push(a);
                         }
-                        self.push(v);
+                        stack.push(v);
                         return Err(format!(
                             "无法展开非数组类型 {} (可能原因：... 只能用于数组)", tn
                         ));
@@ -2057,7 +2079,7 @@ impl VM {
 
     /// incdec_index 索引自增自减：a[i]±1，返回 (旧值, 新值)。
     /// 新值经 arith_op 计算（Int/Float/BigInt 均正确），写入后返回。
-    fn incdec_index(&self, obj: &Value, idx: &Value, inc: bool) -> Result<(Value, Value), String> {
+    fn incdec_index(obj: &Value, idx: &Value, inc: bool) -> Result<(Value, Value), String> {
         let old = index_get(obj, idx)?;
         let op = if inc { Opcode::Add } else { Opcode::Sub };
         let new = arith_op(op, old.clone(), Value::Int(1))?;
@@ -2066,7 +2088,7 @@ impl VM {
     }
 
     /// incdec_member 成员自增自减：obj.k±1，返回 (旧值, 新值)。
-    fn incdec_member(&self, obj: &Value, name: &str, inc: bool) -> Result<(Value, Value), String> {
+    fn incdec_member(obj: &Value, name: &str, inc: bool) -> Result<(Value, Value), String> {
         let old = member_get(obj, name)?;
         let op = if inc { Opcode::Add } else { Opcode::Sub };
         let new = arith_op(op, old.clone(), Value::Int(1))?;

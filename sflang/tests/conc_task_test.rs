@@ -15,11 +15,13 @@ use sflang::Sflang;
 use sflang::value::Value;
 
 /// run_with_timeout 在独立线程执行脚本，超时视为死锁并使测试失败。
-fn run_with_timeout(src: &'static str, timeout: Duration) -> Value {
+/// 接收 String（支持 format! 动态构建的脚本，如含本地服务地址的用例）。
+fn run_with_timeout(src: String, timeout: Duration) -> Value {
     let (tx, rx) = std::sync::mpsc::channel();
+    let script = src.clone(); // 闭包与超时提示各持一份
     std::thread::spawn(move || {
         let mut sf = Sflang::new();
-        let _ = tx.send(sf.run_string(src));
+        let _ = tx.send(sf.run_string(&script));
     });
     match rx.recv_timeout(timeout) {
         Ok(Ok(v)) => v,
@@ -45,7 +47,7 @@ for i in range(10000) {
 }
 return total
 "#;
-    let r = run_with_timeout(src, Duration::from_secs(120));
+    let r = run_with_timeout(src.to_string(), Duration::from_secs(120));
     assert_eq!(r, Value::Int(10000), "万级任务全部完成并各发送一次");
 }
 
@@ -68,7 +70,7 @@ chanSend(data, 7)
 var v2 = chanRecv(ready)     // 任务醒来后发送 7*10
 return v2
 "#;
-    let r = run_with_timeout(src, Duration::from_secs(30));
+    let r = run_with_timeout(src.to_string(), Duration::from_secs(30));
     assert_eq!(r, Value::Int(70), "任务挂起后收到的注入值应参与计算");
 }
 
@@ -91,7 +93,7 @@ wgWait(wg)
 return 1
 "#;
     let t0 = Instant::now();
-    let r = run_with_timeout(src, Duration::from_secs(60));
+    let r = run_with_timeout(src.to_string(), Duration::from_secs(60));
     let elapsed = t0.elapsed();
     assert_eq!(r, Value::Int(1));
     assert!(
@@ -123,7 +125,7 @@ for i in range(500) {
 wgWait(wg)
 return counter
 "#;
-    let r = run_with_timeout(src, Duration::from_secs(60));
+    let r = run_with_timeout(src.to_string(), Duration::from_secs(60));
     assert_eq!(r, Value::Int(50000), "500 任务 × 100 次并发计数应精确");
 }
 
@@ -149,7 +151,7 @@ for i in range(100) {
 wgWait(wg)
 return len(results)
 "#;
-    let r = run_with_timeout(src, Duration::from_secs(60));
+    let r = run_with_timeout(src.to_string(), Duration::from_secs(60));
     assert_eq!(r, Value::Int(100), "100 个并发 onceDo 全部返回");
 }
 
@@ -182,7 +184,7 @@ for i in range(50) {
 wgWait(wg)
 return peak
 "#;
-    let r = run_with_timeout(src, Duration::from_secs(60));
+    let r = run_with_timeout(src.to_string(), Duration::from_secs(60));
     match r {
         Value::Int(p) => assert!(p >= 1 && p <= 3, "并发峰值应在 1..=3，实际 {}", p),
         other => panic!("峰值应为 Int，得到 {:?}", other),
@@ -211,7 +213,7 @@ run runner()
 sleepMs(500)              // 给任务时间执行回调（回调立即得到错误返回）
 return ok
 "#;
-    let r = run_with_timeout(src, Duration::from_secs(30));
+    let r = run_with_timeout(src.to_string(), Duration::from_secs(30));
     assert_eq!(r, Value::Int(1), "回调内挂起应得到错误并正常返回，不挂死");
 }
 
@@ -232,7 +234,7 @@ for i in range(100) {
 }
 return seen[0] + seen[50] + seen[99]
 "#;
-    let r = run_with_timeout(src, Duration::from_secs(30));
+    let r = run_with_timeout(src.to_string(), Duration::from_secs(30));
     assert_eq!(r, Value::Int(0 + 50 + 99), "channel 应保持 FIFO 顺序");
 }
 
@@ -264,7 +266,7 @@ for i in range(20) {
 wgWait(wg)
 return data
 "#;
-    let r = run_with_timeout(src, Duration::from_secs(60));
+    let r = run_with_timeout(src.to_string(), Duration::from_secs(60));
     assert_eq!(r, Value::Int(20), "20 个写者串行累加，100 个读者并发读");
 }
 
@@ -295,7 +297,7 @@ for i in range(10000) {
 wgWait(wg)
 return 1
 "#;
-    let r = run_with_timeout(src, Duration::from_secs(180));
+    let r = run_with_timeout(src.to_string(), Duration::from_secs(180));
     assert_eq!(r, Value::Int(1), "万级阻塞任务的挂起与唤醒全部成功");
 }
 
@@ -310,7 +312,7 @@ run boom()
 sleepMs(200)
 return 1
 "#;
-    let r = run_with_timeout(src, Duration::from_secs(30));
+    let r = run_with_timeout(src.to_string(), Duration::from_secs(30));
     assert_eq!(r, Value::Int(1));
 }
 
@@ -332,7 +334,7 @@ threadRun(heavy, 1000)
 var v = chanRecv(done)
 return v
 "#;
-    let r = run_with_timeout(src, Duration::from_secs(30));
+    let r = run_with_timeout(src.to_string(), Duration::from_secs(30));
     assert_eq!(r, Value::Int(1000), "threadRun 在独立线程执行并共享 globals");
 }
 
@@ -343,5 +345,181 @@ fn test_run_named_function_required() {
     assert!(
         sf.run_string("run 42").is_err(),
         "run 后非函数调用应报编译错误"
+    );
+}
+
+// ---- 阻塞型内置函数卸载（异步 IO，任务内不占 worker） ----
+
+use std::io::{Read, Write};
+
+/// 启动本地慢速 HTTP 服务：每个请求 sleep(delay) 后返回 "ok"。
+fn spawn_slow_http_server(delay: Duration) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut s = match stream {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            std::thread::spawn(move || {
+                // 读完请求头（忽略内容），延迟后响应
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                std::thread::sleep(delay);
+                let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+                let _ = s.write_all(resp.as_bytes());
+            });
+        }
+    });
+    format!("http://{}/", addr)
+}
+
+/// test_async_io_offload_concurrency 超过 worker 数的任务并发慢 IO：
+/// 卸载模型下总耗时 ≈ 单次 IO 时长（内联模型 ≈ 任务数/核数 × 单次时长）。
+#[test]
+fn test_async_io_offload_concurrency() {
+    let base = spawn_slow_http_server(Duration::from_millis(300));
+    let n_tasks = 32;
+    // 调度 worker = 核数（本机 ≥8）：内联执行 32×300ms 至少 4 轮 ≈ 1.2s+；
+    // 卸载后并发跑满阻塞池（256），总耗时 ≈ 300ms + 调度/网络开销
+    let src = format!(
+        r#"
+var wg = newWaitGroup()
+func fetcher(i) {{
+    var body = getWeb("{base}")
+    if isErr(body) {{
+        throw "fetch failed: " + body
+    }}
+    wgDone(wg)
+}}
+wgAdd(wg, {n})
+for i in range({n}) {{
+    run fetcher(i)
+}}
+wgWait(wg)
+return 1
+"#,
+        base = base,
+        n = n_tasks
+    );
+    let t0 = Instant::now();
+    let r = run_with_timeout(src.clone(), Duration::from_secs(60));
+    let elapsed = t0.elapsed();
+    assert_eq!(r, Value::Int(1), "32 个并发 getWeb 全部成功");
+    assert!(
+        elapsed < Duration::from_millis(2500),
+        "卸载模型下 32 个 300ms IO 应远快于内联串行（实际 {:?}）",
+        elapsed
+    );
+}
+
+/// test_async_io_error_thrown_at_call_site 卸载的内置函数失败：
+/// 错误以抛出语义在调用点出现，任务内 try/catch 可捕获。
+#[test]
+fn test_async_io_error_thrown_at_call_site() {
+    let src = r#"
+var results = []
+func reader() {
+    try {
+        readFile("Z:/definitely/not/exist/file.sf")
+        push(results, "no-throw")
+    } catch (e) {
+        push(results, "caught")
+    }
+}
+run reader()
+sleepMs(500)
+return len(results)
+"#;
+    let r = run_with_timeout(src.to_string(), Duration::from_secs(30));
+    assert_eq!(r, Value::Int(1), "任务应完成");
+    match r {
+        Value::Int(1) => {}
+        _ => unreachable!(),
+    }
+    // results 内容经共享数组验证：catch 命中
+    let src2 = r#"
+var mark = ""
+func reader2() {
+    try {
+        readFile("Z:/definitely/not/exist/file.sf")
+        mark = "no-throw"
+    } catch (e) {
+        mark = "caught"
+    }
+}
+run reader2()
+sleepMs(500)
+return mark
+"#;
+    let r2 = run_with_timeout(src2.to_string(), Duration::from_secs(30));
+    assert_eq!(r2.to_str(), "caught", "卸载内置函数的错误应以抛出语义到达调用点");
+}
+
+/// test_async_io_readfile_value 任务内 readFile 卸载后取得正确结果（值注入）。
+#[test]
+fn test_async_io_readfile_value() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("sflang_async_io_test.txt");
+    std::fs::write(&path, "hello-async-io").expect("write temp");
+    let src = format!(
+        r#"
+var ch = newChannel()
+func reader() {{
+    var content = readFile("{}")
+    chanSend(ch, content)
+}}
+run reader()
+return chanRecv(ch)
+"#,
+        path.to_str().unwrap().replace('\\', "/")
+    );
+    let r = run_with_timeout(src.clone(), Duration::from_secs(30));
+    assert_eq!(r.to_str(), "hello-async-io", "卸载 readFile 的结果应经注入送达任务");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// test_blocking_offload_rejected_in_callback 回调内的阻塞型内置函数不卸载
+/// （park 被禁 → 原地执行返回错误对象，不产生状态错乱）。
+#[test]
+fn test_blocking_offload_rejected_in_callback() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("sflang_async_io_cb.sf");
+    std::fs::write(&path, "x").expect("write temp");
+    let src = format!(
+        r#"
+var once = newOnce()
+var mark = ""
+func cb() {{
+    var v = readFile("{}")
+    if isErr(v) {{
+        mark = "err"
+    }} else {{
+        mark = "ok"
+    }}
+    return v
+}}
+func runner() {{
+    try {{
+        onceDo(once, cb)
+    }} catch (e) {{
+        mark = "callback-park-blocked"
+    }}
+}}
+run runner()
+sleepMs(500)
+return mark
+"#,
+        path.to_str().unwrap().replace('\\', "/")
+    );
+    // 回调内 readFile：readFile 本身不挂起（成功路径无 park），故原地执行成功；
+    // 失败（Err）时因 park 被禁不卸载 → Err 直接传播 → onceDo 抛出 → catch
+    let r = run_with_timeout(src.clone(), Duration::from_secs(30));
+    let m = r.to_str();
+    assert!(
+        m == "ok" || m == "callback-park-blocked",
+        "回调内阻塞内置函数应原地执行成功或得到明确错误，实际: {}",
+        m
     );
 }

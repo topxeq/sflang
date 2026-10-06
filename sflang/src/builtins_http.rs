@@ -913,13 +913,13 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("wsLocalAddr", bi_ws_local_addr, &DOC_WS_LOCAL_ADDR);
 
     // HTTP 客户端
-    vm.register_builtin_doc("getWeb", bi_get_web, &DOC_GET_WEB);
-    vm.register_builtin_doc("getWebBytes", bi_get_web_bytes, &DOC_GET_WEB_BYTES);
-    vm.register_builtin_doc("getWebBytesWithHeaders", bi_get_web_bytes_with_headers, &DOC_GET_WEB_BYTES_WITH_HEADERS);
-    vm.register_builtin_doc("postWeb", bi_post_web, &DOC_POST_WEB);
-    vm.register_builtin_doc("postJson", bi_post_json, &DOC_POST_JSON);
-    vm.register_builtin_doc("downloadFile", bi_download_file, &DOC_DOWNLOAD_FILE);
-    vm.register_builtin_doc("urlExists", bi_url_exists, &DOC_URL_EXISTS);
+    vm.register_builtin_doc_blocking("getWeb", bi_get_web, &DOC_GET_WEB);
+    vm.register_builtin_doc_blocking("getWebBytes", bi_get_web_bytes, &DOC_GET_WEB_BYTES);
+    vm.register_builtin_doc_blocking("getWebBytesWithHeaders", bi_get_web_bytes_with_headers, &DOC_GET_WEB_BYTES_WITH_HEADERS);
+    vm.register_builtin_doc_blocking("postWeb", bi_post_web, &DOC_POST_WEB);
+    vm.register_builtin_doc_blocking("postJson", bi_post_json, &DOC_POST_JSON);
+    vm.register_builtin_doc_blocking("downloadFile", bi_download_file, &DOC_DOWNLOAD_FILE);
+    vm.register_builtin_doc_blocking("urlExists", bi_url_exists, &DOC_URL_EXISTS);
     vm.register_builtin_doc("httpStats", bi_http_stats, &DOC_HTTP_STATS);
     vm.register_builtin_doc("resetHttpStats", bi_reset_http_stats, &DOC_RESET_HTTP_STATS);
 
