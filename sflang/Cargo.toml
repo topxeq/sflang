@@ -48,8 +48,8 @@ tiberius = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures-util = { workspace = true }
-# Oracle 数据库（纯 Rust TNS 驱动，无 OCI 依赖）
-oracle-rs = { workspace = true }
+# Oracle 数据库（Oracle 官方纯 Rust thin 驱动，无 OCI 依赖，同步 API）
+oracledb = { workspace = true }
 # FTP 客户端（纯 Rust FTP/FTPS）
 suppaftp = { workspace = true }
 # SSH 客户端

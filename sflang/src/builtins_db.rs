@@ -44,11 +44,22 @@ pub enum DatabaseConn {
     /// MSSQL 连接（tiberius crate，异步 Client + tokio runtime 桥接同步）。
     /// Client 的泛型参数是 compat 后的 TcpStream（futures AsyncRead/Write）。
     Mssql(Mutex<tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>>, tokio::runtime::Runtime),
-    /// Oracle 连接（oracle-rs crate，异步 Connection + tokio runtime 桥接同步）。
-    Oracle(Mutex<oracle_rs::Connection>, tokio::runtime::Runtime),
+    /// Oracle 连接（oracledb crate，Oracle 官方纯 Rust thin 驱动，同步 API）。
+    /// auto_commit：true=每条 DML 执行即提交（默认，对齐 Charlang 惯例）；
+    /// false=显式事务（脚本自行 COMMIT/ROLLBACK）。
+    Oracle(Mutex<OracleBackend>),
     /// MemSql 内存表数据库（csv/excel 导入），用内置 SQL 子集引擎查询。
     /// 只读：支持 dbQuery 系列，不支持 dbExec 写操作。
     MemSql(Mutex<Vec<crate::sql_engine::MemTable>>),
+}
+
+/// OracleBackend Oracle 连接及其事务行为状态。
+///
+/// auto_commit 决定 dbExec/dbExecBatch 执行 DML 时是否在本次网络往返内提交：
+/// true（默认）每条即事务；false 显式事务（脚本 COMMIT/ROLLBACK）。
+struct OracleBackend {
+    conn: oracledb::Connection,
+    auto_commit: bool,
 }
 
 /// parse_mysql_conn_str 手动解析 MySQL 连接字符串。
@@ -104,11 +115,12 @@ fn parse_mysql_conn_str(s: &str) -> Option<mysql::OptsBuilder> {
 
 static DOC_DB_CONNECT: BuiltinDoc = BuiltinDoc {
     category: "db",
-    signature: "dbConnect(driver, connStr) -> dbConn",
-    summary: "连接数据库，返回连接对象（连接失败返回 error）。",
+    signature: "dbConnect(driver, connStr[, autoCommit]) -> dbConn",
+    summary: "连接数据库，返回连接对象（连接失败返回 error）。Oracle 默认自动提交，可选第三参数 false 关闭。",
     params: &[
         ("driver", "驱动名：\"sqlite3\"/\"sqlite\"、\"mysql\"、\"postgres\"/\"postgresql\"/\"pg\"、\"mssql\"/\"sqlserver\"、\"oracle\""),
         ("connStr", "连接字符串（格式因驱动而异，见 examples）"),
+        ("autoCommit", "可选。bool，默认 true（每条 DML 执行即提交）；false=显式事务（脚本自行 COMMIT/ROLLBACK）。当前 Oracle 后端支持"),
     ],
     returns: "dbConn 数据库连接对象；失败返回 error 对象（用 isErr 检查）",
     examples: &[
@@ -117,7 +129,8 @@ static DOC_DB_CONNECT: BuiltinDoc = BuiltinDoc {
         "dbConnect(\"mysql\", \"mysql://user:pass@host:3306/db\")         // MySQL",
         "dbConnect(\"postgres\", \"postgresql://user:pass@host:5432/db\") // PostgreSQL",
         "dbConnect(\"mssql\", \"mssql://sa:pass@host:1433/db\")           // SQL Server",
-        "dbConnect(\"oracle\", \"oracle://user:pass@host:1521/ORCL\")     // Oracle",
+        "dbConnect(\"oracle\", \"oracle://user:pass@host:1521/ORCL\")     // Oracle（默认自动提交）",
+        "dbConnect(\"oracle\", dsn, false)                                // Oracle 显式事务模式（批量导入用）",
     ],
     errors: &[
         "连接失败：网络不通 / 认证失败 / 数据库不存在（返回 error 而非抛异常）",
@@ -364,10 +377,55 @@ static DOC_FORMAT_SQL_VALUE: BuiltinDoc = BuiltinDoc {
     ],
 };
 
+static DOC_DB_EXEC_BATCH: BuiltinDoc = BuiltinDoc {
+    category: "db",
+    signature: "dbExecBatch(db, sql, rows2D) -> int",
+    summary: "批量执行同一 DML 语句（数组绑定，一批一次网络往返），返回总影响行数。提交行为随连接的 autoCommit 设置。当前仅 Oracle 后端支持。",
+    params: &[
+        ("db", "dbConnect 返回的连接对象"),
+        ("sql", "DML 语句，占位符与 dbExec 相同（? 自动转 :N）"),
+        ("rows2D", "二维数组，每个内层元素是一行的绑定参数值列表"),
+    ],
+    returns: "int 总影响行数；失败返回 error 对象",
+    examples: &[
+        "n := dbExecBatch(db, \"INSERT INTO t VALUES (?, ?)\", [[1, \"a\"], [2, \"b\"]])",
+        "dbExecBatch(db, \"UPDATE t SET note = ? WHERE id = ?\", [[\"x\", 1]])",
+    ],
+    errors: &[
+        "rows2D 不是二维数组返回 error",
+        "SQL 执行失败返回 error（含原始数据库错误信息）",
+        "当前仅 Oracle 后端支持；其他后端返回说明性 error（按需再补）",
+        "提交行为随连接的 autoCommit 字段（dbConnect 第三参数初始值，dbSetAutoCommit 可运行时切换）",
+    ],
+};
+
+static DOC_DB_SET_AUTO_COMMIT: BuiltinDoc = BuiltinDoc {
+    category: "db",
+    signature: "dbSetAutoCommit(db[, autoCommit]) -> bool",
+    summary: "读取或切换连接的自动提交标志（连接级字段，当前仅 Oracle 后端支持）。",
+    params: &[
+        ("db", "dbConnect 返回的连接对象"),
+        ("autoCommit", "可选。bool：true=后续每条 DML 执行即提交（默认）；false=显式事务（脚本自行 COMMIT/ROLLBACK）。省略则只读当前值"),
+    ],
+    returns: "bool 切换后的（或当前的）自动提交标志值",
+    examples: &[
+        "dbSetAutoCommit(db, false)   // 切到显式事务，返回 false",
+        "dbSetAutoCommit(db, true)    // 切回自动提交",
+        "dbSetAutoCommit(db)          // 只读当前值",
+    ],
+    errors: &[
+        "第二参数不是 bool 返回 error",
+        "非 Oracle 后端返回说明性 error（这些后端恒自动提交）",
+        "注意：切换只影响后续语句，不提交也不回滚切换前未提交的数据",
+    ],
+};
+
 /// register 注册所有数据库内置函数。
 pub fn register(vm: &mut crate::vm::VM) {
     vm.register_builtin_doc_blocking("dbConnect", bi_db_connect, &DOC_DB_CONNECT);
     vm.register_builtin_doc_blocking("dbExec", bi_db_exec, &DOC_DB_EXEC);
+    vm.register_builtin_doc_blocking("dbExecBatch", bi_db_exec_batch, &DOC_DB_EXEC_BATCH);
+    vm.register_builtin_doc_blocking("dbSetAutoCommit", bi_db_set_auto_commit, &DOC_DB_SET_AUTO_COMMIT);
     vm.register_builtin_doc_blocking("dbQuery", bi_db_query, &DOC_DB_QUERY);
     vm.register_builtin_doc_blocking("dbQueryRecs", bi_db_query_recs, &DOC_DB_QUERY_RECS);
     vm.register_builtin_doc_blocking("dbQueryCount", bi_db_query_count, &DOC_DB_QUERY_COUNT);
@@ -690,7 +748,282 @@ fn value_to_mssql(v: &Value) -> Box<dyn tiberius::ToSql> {
     }
 }
 
-// ---- 辅助：Oracle (oracle-rs) 值转换 ----
+// ---- 辅助：Oracle (oracledb crate) 值转换与查询 ----
+
+/// oracle_row_to_value_row 按列元数据把一行数据转为 Sflang Value 数组。
+///
+/// 按列的 DbType 分派读取类型：NUMBER→int/float（先整后浮）、字符串类→String、
+/// 日期时间类→Display 字符串、RAW/BLOB→bytes、BOOLEAN→bool、其余→Display 字符串；
+/// NULL 一律转为 Undefined。出错时该列回退为错误描述字符串，不中断整行。
+fn oracle_row_to_value_row(
+    row: &oracledb::Row,
+    out: &mut Vec<Value>,
+) {
+    for (i, col) in row.columns().iter().enumerate() {
+        // DbType 的 Display 形如 "<DbType VARCHAR2>"，提取尖括号内的类型名做比较
+        let type_str = format!("{}", col.db_type());
+        let type_name = type_str
+            .strip_prefix("<DbType ")
+            .and_then(|s| s.strip_suffix(">"))
+            .unwrap_or("");
+        // NUMBER：先按整数读，失败再按浮点读（OracleNumber 精确字符串转换）
+        let val = if type_name == "DB_TYPE_NUMBER" {
+            match row.get::<Option<i64>>(i) {
+                Ok(Some(v)) => Value::Int(v),
+                Ok(None) => Value::Undefined,
+                Err(_) => match row.get::<Option<f64>>(i) {
+                    Ok(Some(f)) => Value::Float(f),
+                    Ok(None) => Value::Undefined,
+                    Err(e) => Value::str_from(format!("#ORACLE:{e}")),
+                },
+            }
+        } else if type_name == "DB_TYPE_BOOLEAN" {
+            match row.get::<Option<bool>>(i) {
+                Ok(Some(b)) => Value::Bool(b),
+                _ => Value::Undefined,
+            }
+        } else if type_name == "DB_TYPE_RAW" || type_name == "DB_TYPE_BLOB"
+            || type_name == "DB_TYPE_LONG_RAW" || type_name == "DB_TYPE_BFILE"
+        {
+            match row.get::<Option<Vec<u8>>>(i) {
+                Ok(Some(b)) => Value::Bytes(Arc::new(b)),
+                _ => Value::Undefined,
+            }
+        } else if type_name == "DB_TYPE_DATE" || type_name == "DB_TYPE_TIMESTAMP"
+            || type_name == "DB_TYPE_TIMESTAMP_TZ" || type_name == "DB_TYPE_TIMESTAMP_LTZ"
+        {
+            match row.get::<Option<oracledb::OracleTimestamp>>(i) {
+                Ok(Some(t)) => Value::str_from(t.to_string()),
+                _ => Value::Undefined,
+            }
+        } else {
+            // CHAR/NVARCHAR/LONG/CLOB/ROWID/JSON 等一律按文本读
+            match row.get::<Option<String>>(i) {
+                Ok(Some(s)) => Value::str_from(s),
+                Ok(None) => Value::Undefined,
+                Err(e) => Value::str_from(format!("#ORACLE:{e}")),
+            }
+        };
+        out.push(val);
+        let _ = type_name;
+    }
+}
+
+/// sflang_to_oracle_param 把 Sflang Value 转为 oracledb 绑定参数（&dyn ToDbValue）。
+///
+/// Int→i64、Float→f64、Str→String、Bool→bool、Bytes→Vec<u8>、
+/// Undefined/Error→None（NULL）、其余类型按字符串绑定。
+/// 返回拥有的转换结果，调用处以 &dyn ToDbValue 引用传给 execute/query。
+fn sflang_to_oracle_param(v: &Value) -> OracleParam {
+    match v {
+        Value::Int(i) => OracleParam::Int(*i),
+        Value::Float(f) => OracleParam::Float(*f),
+        Value::Str(s) => OracleParam::Str(s.as_ref().to_string()),
+        Value::Bool(b) => OracleParam::Bool(*b),
+        Value::Bytes(b) => OracleParam::Bytes(b.as_ref().clone()),
+        Value::Undefined | Value::Error(_) => OracleParam::Null,
+        other => OracleParam::Str(other.to_str()),
+    }
+}
+
+/// OracleParam Sflang Value 转换后的 Oracle 绑定参数持有体。
+///
+/// execute/query 需要 &[&dyn ToDbValue]，此枚举持有具体值以便取引用。
+enum OracleParam {
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Bool(bool),
+    Bytes(Vec<u8>),
+    Null,
+}
+
+impl OracleParam {
+    /// as_dyn 取出供 oracledb 绑定用的 trait 对象引用。
+    fn as_dyn(&self) -> &dyn oracledb::ToDbValue {
+        match self {
+            OracleParam::Int(i) => i,
+            OracleParam::Float(f) => f,
+            OracleParam::Str(s) => s,
+            OracleParam::Bool(b) => b,
+            OracleParam::Bytes(b) => b,
+            // Option<String> 的 None 绑定为 NULL
+            OracleParam::Null => &None::<String>,
+        }
+    }
+}
+
+/// convert_oracle_placeholders 把 SQL 中的 `?` 占位符转换为 Oracle 的 `:N` 风格。
+///
+/// 字符串字面量（单引号内）与注释中的 `?` 不做替换，避免改坏文本内容。
+fn convert_oracle_placeholders(sql: &str) -> String {
+    let mut result = String::with_capacity(sql.len());
+    let mut param_num = 0usize;
+    let mut in_string = false;
+    let chars: Vec<char> = sql.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if in_string {
+            result.push(ch);
+            if ch == '\'' {
+                // '' 转义的字面引号不结束字符串
+                if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                    result.push('\'');
+                    i += 2;
+                    continue;
+                }
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if ch == '\'' {
+            in_string = true;
+            result.push(ch);
+            i += 1;
+            continue;
+        }
+        if ch == '-' && i + 1 < chars.len() && chars[i + 1] == '-' {
+            // 行注释原样拷贝到行尾
+            while i < chars.len() {
+                result.push(chars[i]);
+                if chars[i] == '\n' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if ch == '?' {
+            param_num += 1;
+            result.push_str(&format!(":{}", param_num));
+            i += 1;
+            continue;
+        }
+        result.push(ch);
+        i += 1;
+    }
+    result
+}
+
+/// is_readonly_sql 判断语句是否为只读（不产生未提交变更，自动提交模式下无须补提交）。
+///
+/// 只按首词判断 SELECT / EXPLAIN；注意 WITH 不能纳入——Oracle 的 WITH 可接
+/// INSERT/UPDATE/DELETE（CTE 写法），属于可能产生变更的语句。
+fn is_readonly_sql(sql: &str) -> bool {
+    let t = sql.trim_start().to_uppercase();
+    t.starts_with("SELECT") || t.starts_with("EXPLAIN")
+}
+
+/// oracle_exec 执行一条 SQL（DML/DDL），返回影响行数或错误描述。
+///
+/// auto_commit=true 时在执行成功后提交（驱动 beta 版未暴露 autocommit 标志，
+/// 用显式 commit() 补一次往返实现；COMMIT/ROLLBACK 语句后再 commit 为无害 no-op）；
+/// false 时由脚本自行提交。执行失败时不提交。只读语句（SELECT/EXPLAIN）跳过提交。
+fn oracle_exec(
+    conn: &oracledb::Connection,
+    sql: &str,
+    params: &[Value],
+    auto_commit: bool,
+) -> Result<u64, String> {
+    let converted = convert_oracle_placeholders(sql);
+    let ora_params: Vec<OracleParam> = params.iter().map(sflang_to_oracle_param).collect();
+    let refs: Vec<&dyn oracledb::ToDbValue> = ora_params.iter().map(|p| p.as_dyn()).collect();
+    let affected = match conn.execute(&converted, &refs) {
+        Ok(r) => r.rows_affected(),
+        Err(e) => return Err(format!("{}", e)),
+    };
+    if auto_commit && !is_readonly_sql(sql) {
+        conn.commit().map_err(|e| format!("自动提交失败: {e}"))?;
+    }
+    Ok(affected)
+}
+
+/// oracle_query 执行查询，返回 (列名数组, 行二维数组)。
+fn oracle_query(
+    conn: &oracledb::Connection,
+    sql: &str,
+    params: &[Value],
+) -> Result<(Vec<String>, Vec<Vec<Value>>), String> {
+    let converted = convert_oracle_placeholders(sql);
+    let ora_params: Vec<OracleParam> = params.iter().map(sflang_to_oracle_param).collect();
+    let refs: Vec<&dyn oracledb::ToDbValue> = ora_params.iter().map(|p| p.as_dyn()).collect();
+    let mut cursor = conn
+        .query(&converted, &refs)
+        .map_err(|e| format!("{}", e))?;
+    let col_names: Vec<String> = cursor.columns().iter().map(|c| c.name().to_string()).collect();
+    let mut rows: Vec<Vec<Value>> = Vec::new();
+    // 注意：cursor.next() 单次调用只取一行；须迭代 &mut cursor 走 Iterator 拉全结果
+    for row_result in &mut cursor {
+        match row_result {
+            Ok(row) => {
+                let mut out = Vec::with_capacity(col_names.len());
+                oracle_row_to_value_row(&row, &mut out);
+                rows.push(out);
+            }
+            Err(e) => return Err(format!("{}", e)),
+        }
+    }
+    Ok((col_names, rows))
+}
+
+/// oracle_exec_batch 批量执行同一 DML（数组绑定，一批一次网络往返）。
+///
+/// rows2D 为 Sflang 二维数组（每行是绑定值列表），转为 oracledb 的
+/// &[&[&dyn ToDbValue]] 批量绑定。返回总影响行数。
+/// auto_commit 语义同 oracle_exec：成功后补 commit()，失败不提交。
+fn oracle_exec_batch(
+    conn: &oracledb::Connection,
+    sql: &str,
+    rows2d: &Value,
+    auto_commit: bool,
+) -> Result<u64, String> {
+    // 取出外层数组
+    let outer = match rows2d {
+        Value::Array(a) => a.lock().unwrap().clone(),
+        other => {
+            return Err(format!(
+                "rows2D 应为二维数组，得到 {} (可能原因：第三个参数类型错误)",
+                other.type_name()
+            ))
+        }
+    };
+
+    // 逐行转 OracleParam，再组批量绑定（生命周期都在本函数内，满足 &'a [&'a [&'a dyn ToDbValue]]）
+    let mut batch: Vec<Vec<OracleParam>> = Vec::with_capacity(outer.len());
+    for (ri, row_val) in outer.iter().enumerate() {
+        match row_val {
+            Value::Array(row) => {
+                let rg = row.lock().unwrap();
+                batch.push(rg.iter().map(sflang_to_oracle_param).collect());
+            }
+            other => {
+                return Err(format!(
+                    "rows2D 第 {} 行应为数组，得到 {} (可能原因：数据不是二维数组)",
+                    ri,
+                    other.type_name()
+                ))
+            }
+        }
+    }
+    let refs: Vec<Vec<&dyn oracledb::ToDbValue>> = batch
+        .iter()
+        .map(|row| row.iter().map(|p| p.as_dyn()).collect())
+        .collect();
+    let borrow: Vec<&[&dyn oracledb::ToDbValue]> = refs.iter().map(|r| r.as_slice()).collect();
+
+    let converted = convert_oracle_placeholders(sql);
+    let affected = match conn.execute_batch(&converted, borrow.as_slice()) {
+        Ok(r) => r.rows_affected(),
+        Err(e) => return Err(format!("{}", e)),
+    };
+    if auto_commit {
+        conn.commit().map_err(|e| format!("自动提交失败: {e}"))?;
+    }
+    Ok(affected)
+}
 
 /// parse_oracle_conn_str 解析 Oracle 连接字符串。
 ///
@@ -736,39 +1069,6 @@ fn parse_oracle_conn_str(s: &str) -> Result<(String, u16, String, String, String
     }
 
     Ok((host.to_string(), port, service.to_string(), user.to_string(), pass.to_string()))
-}
-
-/// oracle_value_to_sflang 将 oracle-rs Value 转为 Sflang Value。
-fn oracle_to_value(v: &oracle_rs::row::Value) -> crate::value::Value {
-    use oracle_rs::row::Value as OraVal;
-    use crate::value::Value as SfVal;
-    match v {
-        OraVal::Null => SfVal::Undefined,
-        OraVal::Integer(i) => SfVal::Int(*i),
-        OraVal::Float(f) => SfVal::Float(*f),
-        OraVal::String(s) => SfVal::str(s),
-        OraVal::Boolean(b) => SfVal::Bool(*b),
-        OraVal::Bytes(b) => SfVal::Bytes(Arc::new(b.clone())),
-        OraVal::Number(n) => SfVal::str_from(format!("{:?}", n)),
-        OraVal::Date(_) => SfVal::Undefined,  // 简化处理
-        OraVal::Timestamp(_) => SfVal::Undefined,
-        _ => SfVal::Undefined,
-    }
-}
-
-/// sflang_value_to_oracle 将 Sflang Value 转为 oracle-rs Value。
-fn sflang_to_oracle(v: &crate::value::Value) -> oracle_rs::row::Value {
-    use oracle_rs::row::Value as OraVal;
-    use crate::value::Value as SfVal;
-    match v {
-        SfVal::Int(i) => OraVal::Integer(*i),
-        SfVal::Float(f) => OraVal::Float(*f),
-        SfVal::Str(s) => OraVal::String(s.as_ref().to_string()),
-        SfVal::Bool(b) => OraVal::Boolean(*b),
-        SfVal::Undefined | SfVal::Error(_) => OraVal::Null,
-        SfVal::Bytes(b) => OraVal::Bytes(b.as_ref().clone()),
-        other => OraVal::String(other.to_str()),
-    }
 }
 
 // ---- 内置函数 ----
@@ -851,24 +1151,42 @@ fn bi_db_connect(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value
             }
         }
         "oracle" => {
-            let (host, port, service, user, pass) = match parse_oracle_conn_str(conn_str) {
+            let (_host, _port, service, user, pass) = match parse_oracle_conn_str(conn_str) {
                 Ok(v) => v,
                 Err(e) => return Ok(crate::value::error_value(format!(
                     "dbConnect() Oracle 连接字符串解析失败: {} (格式: oracle://user:pass@host:port/service)", e,
                 ))),
             };
-            let runtime = match tokio::runtime::Runtime::new() {
-                Ok(rt) => rt,
+            // 可选第三参数：自动提交开关，默认 true（每条 DML 即事务，对齐 Charlang 惯例）
+            let auto_commit = if args.len() > 2 {
+                match &args[2] {
+                    Value::Bool(b) => *b,
+                    other => return Ok(crate::value::error_value(format!(
+                        "dbConnect() 第 3 个参数（自动提交开关）应为 bool，得到 {} (可能原因：传了字符串/数字；true=自动提交，false=显式事务)",
+                        other.type_name(),
+                    ))),
+                }
+            } else {
+                true
+            };
+            // oracledb 的 connect string 直接用 host:port/service（EasyConnect 格式），
+            // 从原始连接串中截取 @ 之后、最后一个 / 之前的部分（密码可能含 @，取最后一个）
+            let easy = match conn_str.rfind('@') {
+                Some(at) => &conn_str[at + 1..],
+                None => conn_str,
+            };
+            let config = match oracledb::Config::default().set_connect_string(easy) {
+                Ok(c) => c.set_credentials(&user, &pass),
                 Err(e) => return Ok(crate::value::error_value(format!(
-                    "dbConnect() 创建 tokio runtime 失败: {}", e,
+                    "dbConnect() Oracle 连接串 '{}' 无效: {} (可能原因：host:port/service 格式错误)", easy, e,
                 ))),
             };
-            let config = oracle_rs::Config::new(&host, port, &service, &user, &pass);
-            let result = runtime.block_on(async {
-                oracle_rs::Connection::connect_with_config(config).await
-            });
-            match result {
-                Ok(conn) => Ok(db_value(DatabaseConn::Oracle(Mutex::new(conn), runtime))),
+            let _ = service; // service 已包含在 easy connect string 中
+            match oracledb::connect(config) {
+                Ok(conn) => Ok(db_value(DatabaseConn::Oracle(Mutex::new(OracleBackend {
+                    conn,
+                    auto_commit,
+                })))),
                 Err(e) => Ok(crate::value::error_value(format!(
                     "dbConnect() 连接 Oracle 失败: {} (可能原因：网络不通、认证失败、服务名错误)", e,
                 ))),
@@ -1026,15 +1344,11 @@ fn bi_db_exec(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
                 ))),
             }
         }
-        DatabaseConn::Oracle(conn, runtime) => {
-            let guard = conn.lock().map_err(|e| crate::value::error_value(format!(
+        DatabaseConn::Oracle(handle) => {
+            let guard = handle.lock().map_err(|e| crate::value::error_value(format!(
                 "dbExec() 数据库锁异常: {}", e,
             )))?;
-            let ora_params: Vec<oracle_rs::row::Value> = params.iter().map(sflang_to_oracle).collect();
-            let result = runtime.block_on(async {
-                guard.execute_dml_sql(sql, &ora_params).await
-            });
-            match result {
+            match oracle_exec(&guard.conn, sql, params, guard.auto_commit) {
                 Ok(n) => Ok(Value::Int(n as i64)),
                 Err(e) => Ok(crate::value::error_value(format!(
                     "dbExec() SQL 执行失败: {} (SQL: {})", e, sql,
@@ -1047,6 +1361,97 @@ fn bi_db_exec(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
                 "dbExec() csv/excel 数据库不支持写操作（INSERT/UPDATE/DELETE），请用 writeCsv/excelWriteSheet 写文件 (可能原因：尝试对只读数据源执行写操作)".to_string(),
             ))
         }
+    }
+}
+
+/// bi_db_exec_batch 批量执行同一 DML 语句（数组绑定，一批一次网络往返）。
+///
+/// 用法：dbExecBatch(db, "INSERT INTO t VALUES (?, ?)", [[1,"a"], [2,"b"]]) → 总影响行数
+/// 当前仅 Oracle 后端支持（oracledb execute_batch）；提交行为随连接的
+/// autoCommit 字段（dbConnect 第三参数初始值，dbSetAutoCommit 可运行时切换），
+/// 与 dbExec 口径一致。
+fn bi_db_exec_batch(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "dbExecBatch")?;
+    let sql = bh::as_str(args, 1, "dbExecBatch")?;
+    bh::require_arg(args, 2, "dbExecBatch")?;
+    let db = db_downcast(&args[0], "dbExecBatch")?;
+
+    match db {
+        DatabaseConn::Oracle(handle) => {
+            let guard = handle.lock().map_err(|e| crate::value::error_value(format!(
+                "dbExecBatch() 数据库锁异常: {}", e,
+            )))?;
+            match oracle_exec_batch(&guard.conn, sql, &args[2], guard.auto_commit) {
+                Ok(n) => Ok(Value::Int(n as i64)),
+                Err(e) => Ok(crate::value::error_value(format!(
+                    "dbExecBatch() 执行失败: {} (SQL: {})", e, sql,
+                ))),
+            }
+        }
+        DatabaseConn::Sqlite(_) | DatabaseConn::Mysql(_) | DatabaseConn::Postgres(_)
+        | DatabaseConn::Mssql(_, _) => {
+            Ok(crate::value::error_value(format!(
+                "dbExecBatch() 当前仅 Oracle 后端支持，{} 后端暂未支持 (可能原因：该后端批量绑定能力待补，可先用 dbExec 循环单条执行)",
+                db_type_name(db),
+            )))
+        }
+        DatabaseConn::MemSql(_) => {
+            Ok(crate::value::error_value(
+                "dbExecBatch() csv/excel 数据库不支持写操作 (可能原因：尝试对只读数据源执行写操作)".to_string(),
+            ))
+        }
+    }
+}
+
+/// db_type_name 返回后端名（用于错误信息）。
+fn db_type_name(db: &DatabaseConn) -> &'static str {
+    match db {
+        DatabaseConn::Sqlite(_) => "sqlite3",
+        DatabaseConn::Mysql(_) => "mysql",
+        DatabaseConn::Postgres(_) => "postgres",
+        DatabaseConn::Mssql(_, _) => "mssql",
+        DatabaseConn::Oracle(_) => "oracle",
+        DatabaseConn::MemSql(_) => "csv/excel",
+    }
+}
+
+/// bi_db_set_auto_commit 读取或切换连接的自动提交标志。
+///
+/// 用法：
+///   dbSetAutoCommit(db, false)  // 切换为显式事务，返回 false
+///   dbSetAutoCommit(db, true)   // 切换回自动提交，返回 true
+///   dbSetAutoCommit(db)         // 只读当前值
+///
+/// 语义：标志是连接级字段，dbExec/dbExecBatch 按它决定是否在成功后提交；
+/// 切换只影响后续语句，不提交/不回滚切换前未提交的数据。
+fn bi_db_set_auto_commit(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "dbSetAutoCommit")?;
+    let db = db_downcast(&args[0], "dbSetAutoCommit")?;
+
+    match db {
+        DatabaseConn::Oracle(handle) => {
+            let mut guard = handle.lock().map_err(|e| crate::value::error_value(format!(
+                "dbSetAutoCommit() 数据库锁异常: {}", e,
+            )))?;
+            if args.len() > 1 {
+                match &args[1] {
+                    Value::Bool(b) => {
+                        guard.auto_commit = *b;
+                        Ok(Value::Bool(*b))
+                    }
+                    other => Ok(crate::value::error_value(format!(
+                        "dbSetAutoCommit() 第 2 个参数应为 bool，得到 {} (可能原因：true=自动提交，false=显式事务)",
+                        other.type_name(),
+                    ))),
+                }
+            } else {
+                Ok(Value::Bool(guard.auto_commit))
+            }
+        }
+        _ => Ok(crate::value::error_value(format!(
+            "dbSetAutoCommit() 当前仅 Oracle 后端支持，{} 后端恒为自动提交、无此标志 (可能原因：该后端本就每条语句即提交)",
+            db_type_name(db),
+        ))),
     }
 }
 fn bi_db_query(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> {
@@ -1188,22 +1593,17 @@ fn bi_db_query(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> 
                 ))),
             }
         }
-        DatabaseConn::Oracle(conn, runtime) => {
+        DatabaseConn::Oracle(conn) => {
             let guard = conn.lock().map_err(|e| crate::value::error_value(format!(
                 "dbQuery() 数据库锁异常: {}", e,
             )))?;
-            let ora_params: Vec<oracle_rs::row::Value> = params.iter().map(sflang_to_oracle).collect();
-            let result = runtime.block_on(async {
-                guard.query(sql, &ora_params).await
-            });
-            match result {
-                Ok(qr) => {
-                    let col_names: Vec<String> = qr.columns.iter().map(|c| c.name.clone()).collect();
+            match oracle_query(&guard.conn, sql, params) {
+                Ok((col_names, rows)) => {
                     let mut result: Vec<Value> = Vec::new();
-                    for row in &qr.rows {
+                    for row_vals in rows {
                         let mut m = crate::ord_map::OrdMap::new();
                         for (i, name) in col_names.iter().enumerate() {
-                            let val = row.get(i).map(oracle_to_value).unwrap_or(Value::Undefined);
+                            let val = row_vals.get(i).cloned().unwrap_or(Value::Undefined);
                             m.set(name.clone(), val);
                         }
                         result.push(Value::Map(Arc::new(Mutex::new(m))));
@@ -1447,31 +1847,22 @@ fn bi_db_query_recs(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Va
                 ))),
             }
         }
-        DatabaseConn::Oracle(conn, runtime) => {
+        DatabaseConn::Oracle(conn) => {
             let guard = conn.lock().map_err(|e| crate::value::error_value(format!(
                 "dbQueryRecs() 数据库锁异常: {}", e,
             )))?;
-            let ora_params: Vec<oracle_rs::row::Value> = params.iter().map(sflang_to_oracle).collect();
-            let result = runtime.block_on(async {
-                guard.query(sql, &ora_params).await
-            });
-            match result {
-                Ok(qr) => {
+            match oracle_query(&guard.conn, sql, params) {
+                Ok((col_names, rows)) => {
                     let mut result: Vec<Value> = Vec::new();
-                    if !qr.rows.is_empty() {
+                    if !rows.is_empty() || !col_names.is_empty() {
                         // 第一行：列名
-                        let col_names: Vec<Value> = qr.columns.iter()
-                            .map(|c| Value::str_from(c.name.clone()))
+                        let col_names_v: Vec<Value> = col_names.iter()
+                            .map(|n| Value::str_from(n.clone()))
                             .collect();
-                        result.push(Value::Array(Arc::new(Mutex::new(col_names))));
+                        result.push(Value::Array(Arc::new(Mutex::new(col_names_v))));
                         // 数据行
-                        for row in &qr.rows {
-                            let mut rec: Vec<Value> = Vec::new();
-                            for i in 0..qr.columns.len() {
-                                let val = row.get(i).map(oracle_to_value).unwrap_or(Value::Undefined);
-                                rec.push(val);
-                            }
-                            result.push(Value::Array(Arc::new(Mutex::new(rec))));
+                        for row_vals in rows {
+                            result.push(Value::Array(Arc::new(Mutex::new(row_vals))));
                         }
                     }
                     Ok(Value::Array(Arc::new(Mutex::new(result))))
@@ -1519,7 +1910,7 @@ fn bi_db_close(_vm: &mut crate::vm::VM, args: &[Value]) -> Result<Value, Value> 
         DatabaseConn::Mysql(_) => {}
         DatabaseConn::Postgres(_) => {}
         DatabaseConn::Mssql(_, _) => {}
-        DatabaseConn::Oracle(_, _) => {}
+        DatabaseConn::Oracle(_) => {}
         DatabaseConn::MemSql(_) => {}
     }
     Ok(Value::Undefined)

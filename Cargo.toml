@@ -53,8 +53,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 # futures-util：Stream 处理（MIT），tiberius 查询结果收集。
 futures-util = "0.3"
-# oracle-rs：纯 Rust Oracle TNS 驱动（MIT OR Apache-2.0），无 OCI 依赖。
-oracle-rs = "0.1"
+# oracledb：Oracle 官方纯 Rust thin 驱动（UPL-1.0 OR Apache-2.0，github.com/oracle/rust-oracledb），
+# 无 OCI 依赖，同步 API；替代有协议缺陷的第三方 oracle-rs 0.1.7（query/DDL 均不可用）。
+oracledb = "26.0.0-beta.4"
 # suppaftp：纯 Rust FTP/FTPS 客户端（MIT OR Apache-2.0），用于 ftp* 内置函数。
 suppaftp = "10"
 # wry：跨平台 WebView 封装（MIT/Apache-2.0），用于 GUI 编程。

@@ -2972,6 +2972,106 @@ fn test_csv_write_read_roundtrip() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[test]
+fn test_csv_encode_basic() {
+    // 基本编码：每行以 \n 结束，无 BOM
+    let r = eval("return csvEncode([[\"name\",\"age\"], [\"Alice\",30]])");
+    assert_eq!(r, Value::str("name,age\nAlice,30\n"));
+}
+
+#[test]
+fn test_csv_encode_quoting() {
+    // 含逗号/引号/换行的字段自动加引号转义
+    // 值 say ""hi""（4 个引号）→ 每个引号翻倍（8 个）+ 外层包裹（2 个）→ "say """"hi"""""
+    let r = eval("return csvEncode([[\"x,y\"], [\"say \\\"\\\"hi\\\"\\\"\"], [\"a\\nb\"]])");
+    assert_eq!(r, Value::str("\"x,y\"\n\"say \"\"\"\"hi\"\"\"\"\"\n\"a\nb\"\n"));
+}
+
+#[test]
+fn test_csv_encode_delim() {
+    // 自定义分隔符
+    let r = eval("return csvEncode([[\"a\",\"b\"], [\"1\",\"2\"]], \"|\")");
+    assert_eq!(r, Value::str("a|b\n1|2\n"));
+}
+
+#[test]
+fn test_csv_encode_tab_delim() {
+    // 制表符分隔（TSV）
+    let r = eval("return csvEncode([[\"a\",\"b\"]], \"\\t\")");
+    assert_eq!(r, Value::str("a\tb\n"));
+}
+
+#[test]
+fn test_csv_encode_invalid_delim() {
+    // 分隔符为引号/空串/多字符应报错（eval 遇错会 panic，用脚本内 try-catch 捕获）
+    let r = eval(
+        "var msg = \"\"\n\
+        try { csvEncode([[\"a\"]], \"\\\"\") } catch (e) { msg = getErrStr(e) }\n\
+        return msg",
+    );
+    assert!(r.to_str().contains("分隔符"), "应报分隔符错误，得到: {}", r.to_str());
+
+    let r = eval(
+        "var msg = \"\"\n\
+        try { csvEncode([[\"a\"]], \"\") } catch (e) { msg = getErrStr(e) }\n\
+        return msg",
+    );
+    assert!(r.to_str().contains("分隔符"), "应报分隔符错误，得到: {}", r.to_str());
+
+    let r = eval(
+        "var msg = \"\"\n\
+        try { csvEncode([[\"a\"]], \"ab\") } catch (e) { msg = getErrStr(e) }\n\
+        return msg",
+    );
+    assert!(r.to_str().contains("分隔符"), "应报分隔符错误，得到: {}", r.to_str());
+}
+
+#[test]
+fn test_csv_encode_read_roundtrip() {
+    // csvEncode → readCsvFromStr 无损回读
+    let r = eval(
+        "var rows = [[\"name\",\"age\"], [\"张三\",\"30\"], [\"a,b\",\"x\\\"y\"], [\"line1\\nline2\",\"z\"]]\n\
+        return readCsvFromStr(csvEncode(rows))",
+    );
+    assert_csv_rows(&r, &[&["name", "age"], &["张三", "30"], &["a,b", "x\"y"], &["line1\nline2", "z"]]);
+}
+
+#[test]
+fn test_csv_delim_roundtrip() {
+    // 竖线分隔的编码 → 解析回读
+    let r = eval("return readCsvFromStr(csvEncode([[\"a\",\"b\"], [\"1\",\"2\"]], \"|\"), \"|\")");
+    assert_csv_rows(&r, &[&["a", "b"], &["1", "2"]]);
+}
+
+#[test]
+fn test_csv_bom_strip_read() {
+    // 行首 UTF-8 BOM 自动剥离（模拟 Excel 导出的带 BOM 文件）
+    let r = eval("return readCsvFromStr(\"\\uFEFFa,b\\n1,2\\n\")");
+    assert_csv_rows(&r, &[&["a", "b"], &["1", "2"]]);
+}
+
+#[test]
+fn test_csv_bom_write_read_file_roundtrip() {
+    // 带 BOM 写文件 → readCsv 回读首字段不含 BOM
+    let mut path = std::env::temp_dir();
+    path.push("sflang_csv_test_bom_roundtrip.csv");
+    let path_str = path.to_str().unwrap().replace('\\', "/");
+
+    let mut sf = Sflang::new();
+    let src = format!(
+        "writeFile(\"{}\", \"\\uFEFF\" + csvEncode([[\"name\",\"age\"], [\"张三\",\"30\"]]))\n\
+        var rows = readCsv(\"{}\")\n\
+        var r0 = rows[0]",
+        path_str, path_str,
+    );
+    sf.run_string(&src).unwrap();
+
+    let r0 = sf.get_global("r0").unwrap();
+    assert_array(&r0, &[Value::str("name"), Value::str("age")]);
+
+    let _ = std::fs::remove_file(&path);
+}
+
 // ---- Excel (xlsx) ----
 
 #[test]
