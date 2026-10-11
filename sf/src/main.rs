@@ -637,9 +637,10 @@ fn print_help() {
     println!("逻辑：&& || !（无 and/or/not 关键字）");
     println!("空值：undefined（无 nil）");
     println!();
-    println!("19 种类型：int float bool byte string bytes byteArray");
+    println!("23 种类型：int float bool byte string bytes byteArray");
     println!("  array object map function builtin error native");
-    println!("  bigInt bigFloat datetime file undefined");
+    println!("  bigInt bigFloat datetime file stringBuilder undefined");
+    println!("  httpReq httpResp webSocket");
     println!();
     println!("脚本示例：");
     println!("  println(\"Hello, Sflang!\")");

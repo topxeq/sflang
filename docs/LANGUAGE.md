@@ -46,7 +46,7 @@ x = "hello"      // 赋值（动态类型，可改变类型）
 
 ---
 
-## 4. 数据类型（19 种）
+## 4. 数据类型（23 种）
 
 | 类型 | 说明 | 示例 |
 |------|------|------|
@@ -70,6 +70,9 @@ x = "hello"      // 赋值（动态类型，可改变类型）
 | `datetime` | 日期时间 | `datetime(2024, 1, 1)` |
 | `file` | 文件句柄 | `openFile("a.txt", "r")` |
 | `stringBuilder` | 高效字符串构建器 | `newStringBuilder()` |
+| `httpReq` | HTTP 请求对象（服务器模式注入 `requestG`） | 服务器脚本内 `requestG.method` |
+| `httpResp` | HTTP 响应对象（服务器模式注入 `responseG`） | 服务器脚本内 `responseG.body = "hi"` |
+| `webSocket` | WebSocket 连接对象 | 服务器/客户端 WebSocket 连接 |
 
 ### 通用类型判断
 
@@ -732,11 +735,22 @@ rsaEncrypt(pwd, moduleHex, expHex)      // PKCS#1 v1.5 填充，定宽 hex
 
 ```sflang
 rows := readCsv("data.csv")           // 文件 → 二维数组（全字符串）
+rows := readCsv("data.tsv", "\t")     // 可选分隔符（默认逗号；单个字符）
 rows := readCsvFromStr("a,b\n1,2\n")  // 字符串 → 二维数组
+rows := readCsvFromStr("a|1", "|")    // 字符串版同样支持分隔符
+text := csvEncode(rows)               // 二维数组 → CSV 文本（LF 行尾）
+text := csvEncode(rows, "\t")         // 编码同样可指定分隔符
 writeCsv(data, "out.csv")             // 二维数组 → 文件（自动转义引号/逗号）
+writeCsv(data, "out.tsv", "\t")       // 写文件时同样可指定分隔符
 ```
 
-自动处理引号包裹、`""` 转义、字段内换行/逗号。
+自动处理引号包裹、`""` 转义、字段内换行/逗号。解析时自动剥离行首
+UTF-8 BOM（兼容 Excel 导出的带 BOM 文件）；生成结果为 UTF-8 无 BOM、
+LF 行尾。需要 Excel 直接打开不乱码时，写文件加 BOM：
+
+```sflang
+writeFile("out.csv", "\uFEFF" + csvEncode(rows))
+```
 
 ### Excel（xlsx）
 
@@ -776,9 +790,10 @@ placeholders := docxGetPlaceholders(template) // → ["{name}", "{date}"]
 docx 本质是 ZIP 包，内部 `word/document.xml` 存放正文。Sflang 通过 zip crate 解压，
 用字符串操作处理 `<w:t>` 标签文本，自动解码 XML 实体（`&amp;` → `&`）。
 
-### SQLite 数据库
+### 数据库（多后端）
 
-4 个核心函数（对标 Charlang，API 设计为通用多数据库形式，当前实现 SQLite）：
+核心函数对标 Charlang，API 设计为通用多数据库形式（当前 14 个 `db*` 函数，
+支持 SQLite/MySQL/PostgreSQL/MSSQL/Oracle 五种后端）：
 
 ```sflang
 db := dbConnect("sqlite3", ":memory:")        // SQLite 内存数据库
@@ -787,7 +802,6 @@ db := dbConnect("mysql", "mysql://user:pass@localhost:3306/dbname")  // MySQL
 
 dbExec(db, "CREATE TABLE test (id INTEGER, name TEXT)")
 dbExec(db, "INSERT INTO test VALUES (?, ?)", 1, "Alice")  // 参数绑定，返回影响行数
-
 rows := dbQuery(db, "SELECT * FROM test WHERE id > ?", 0)
 // rows 是 array of map：[{"id": 1, "name": "Alice"}, ...]
 
@@ -799,10 +813,37 @@ dbClose(db)
 - **mysql**（纯 Rust，连接池）：`mysql://user:pass@host:port/db`
 - **postgres**（同步驱动）：`postgresql://user:pass@host:5432/db`
 - **mssql**（纯 Rust TDS，tokio 桥接）：`mssql://user:pass@host:port/db`
-- **oracle**（纯 Rust TNS，tokio 桥接）：`oracle://user:pass@host:port/service`
+- **oracle**（Oracle 官方纯 Rust thin 驱动 oracledb，同步 API）：`oracle://user:pass@host:port/service`
 
 类型映射：INTEGER → int，REAL/FLOAT → float，TEXT/VARCHAR → string，NULL → undefined。
-`?` 占位符参数绑定（PostgreSQL 的 `$1`、MSSQL 的 `@P1` 格式自动转换），支持 int/float/string/bool/null/bytes。
+`?` 占位符参数绑定（PostgreSQL 的 `$1`、MSSQL 的 `@P1`、Oracle 的 `:1` 格式自动转换），支持 int/float/string/bool/null/bytes。
+
+**事务口径**：与 Charlang 对齐——`dbConnect` 默认**自动提交**（每条 INSERT/UPDATE/
+DELETE 执行即提交，一次网络往返内完成）。需要显式事务时（如批量导入要求
+失败整体回滚），Oracle 可传第三参数关闭：
+
+```sflang
+db := dbConnect("oracle", dsn, false)   // 显式事务模式
+dbExec(db, "INSERT ...")                 // 未提交，其他会话不可见
+dbExec(db, "COMMIT")                     // 或 ROLLBACK
+```
+
+autoCommit=false 时不自动提交，连接关闭时未提交数据回滚丢失；`dbExec(db,
+"COMMIT")`/`"ROLLBACK"` 由脚本控制。DDL（CREATE/ALTER/DROP）在 Oracle 中总是
+自动提交，不受此口径影响。`dbExecBatch(db, sql, rows2D)` 为数组绑定批量执行
+（当前仅 Oracle 后端支持），一批一次网络往返，提交行为随连接的 autoCommit 设置。
+
+自动提交标志是**连接对象自身的字段**：`dbExec`/`dbExecBatch` 等函数按该字段决定
+是否提交，调用方无感（函数签名与调用方式不因事务模式变化）。同一连接可运行时
+切换（对 sqlite/mysql/pg/mssql 后端返回说明性 error，它们恒为自动提交）：
+
+```sflang
+dbSetAutoCommit(db, false)   // 切到显式事务，返回 false
+dbSetAutoCommit(db, true)    // 切回自动提交，返回 true
+dbSetAutoCommit(db)          // 只读当前值
+```
+
+注意：切换只影响后续语句，不提交也不回滚切换前未提交的数据。
 
 ---
 
@@ -948,7 +989,7 @@ Sflang 提供运行时文档查询，无需查阅外部文档即可了解每个�
 
 ```sflang
 // 无参：列出所有内置函数分类
-help()                  // → 多行字符串，按分类列出全部 ~680 个函数
+help()                  // → 多行字符串，按分类列出全部 ~720 个函数
 
 // 有参：查看函数详情
 help("regFind")         // → regFind 的签名、参数、返回值、示例、常见错误
@@ -968,35 +1009,26 @@ sf --list-builtins regex    # 筛选 regex 分类（带简介）
 sf --list-builtins math     # 筛选 math 分类
 ```
 
-### 已有文档的分类
+### 全部分类的文档覆盖（共 723 个函数 / 42 个分类，全部有详细文档）
 
-| 分类 | 函数数 | 说明 |
-|------|--------|------|
-| core | 19 | println/len/typeCode/typeName/help/range/keys/values/push/sprintf/sleep/error/isError/defaultVal/defaultUndef/assert/uuid/deepClone/fatalf |
-| concurrency | 22 | channel/mutex/rwlock/waitGroup/semaphore/once 全套 |
-| file | 16 | readFile/writeFile/openFile/readLine/fileExists/makeDir/getFileList ... |
-| array | 13 | sort/sortByFunc/reverse/contains/indexOf/slice/concat/insert/remove/shuffle |
-| system | 13 | getEnv/setEnv/osName/getCurDir/joinPath/listDir/systemCmd/exit ... |
-| bytes | 14 | byteArray/bytes/strFromBytes/copy/bytesHex/bytesFromHex/hexEncode/bytesToData/dataToBytes ... |
-| containers | 12 | stack（push/pop/peek/len/clear）+ queue（同） |
-| string | 13 | strToUpper/strSplit/strReplace/formatCode/strSub/strTrim/strJoin/strFind ... |
-| ring | 11 | 环形缓冲（push/pop/get/set/insert/remove/size/clear/toList） |
-| hash | 15 | md5/sha1/sha256/sm3/hmacSha256/hmacSm3/getOtpCode/genOtpCode/checkOtpCode ... |
-| encode | 10 | base64/url/html 编解码全套 |
-| datetime | 10 | now/datetime/dtFormat/dtAddDays/runTicker/formatTime ... |
-| math | 10 | abs/floor/ceil/round/sqrt/pow/min/max/random/randInt |
-| bigint | 7 | bigInt/bigFloat/toBigInt/toBigFloat/isBigInt/isBigFloat/bigFloatDiv |
-| regex | 6 | regMatch/regFind/regFindAll/regReplace/regSplit/regCompile |
-| crypto | 6 | aesEncrypt/aesDecrypt（+str 变体）/ genJwtToken/parseJwtToken（HS256+RS256） |
-| csv | 5 | readCsv/writeCsv（+别名和字符串版） |
-| json | 4 | jsonEncode/jsonDecode（+别名 toJson/fromJson） |
-| xml | 3 | fromXml/xmlGetNodeStr/formatXml |
-| test | 3 | testByText/testByContains/testByReg |
-| clipboard | 2 | getClipText/setClipText |
-| pinyin | 2 | toPinYin/toPinYinInitial |
-| template | 2 | renderMarkdown/replaceHtmlByMap |
+| 分类 | 数 | 分类 | 数 | 分类 | 数 | 分类 | 数 |
+|------|----|------|----|------|----|------|----|
+| core | 88 | image | 62 | http | 56 | string | 43 |
+| file | 32 | crypto | 31 | le | 29 | concurrency | 29 |
+| system | 27 | math | 24 | ssh | 22 | s3 | 22 |
+| imageGen | 20 | datetime | 19 | hash | 16 | excel | 14 |
+| db | 15 | bytes | 14 | zip | 13 | regex | 13 |
+| array | 13 | tcp | 12 | containers | 12 | ring | 11 |
+| encode | 10 | gui | 8 | ftp | 9 | json | 9 |
+| bigint | 7 | csv | 6 | seq | 5 | xxci | 4 |
+| proxy | 4 | dialog | 4 | config | 4 | xml | 3 |
+| test | 3 | docx | 3 | template | 2 | pinyin | 2 |
+| clipboard | 2 | email | 1 | | | | |
 
-共 **226 个函数** 有详细文档（25 个分类）。其余函数（image/http/db/s3/ssh/ftp/xlsx 等专用模块）暂无详细文档，但 help() 会显示"暂无文档"并提示分类。文档将持续补充。
+全部 723 个内置函数均有详细文档（签名/参数/返回/示例/常见错误），用
+`help("函数名")` 查看任一函数，`help("分类名")` 或 `sf --list-builtins <分类>`
+浏览分类。函数数按注册名计（含 Charlang 兼容别名，如 csvRead/csvWrite、
+toJson/fromJson、dbQueryString/dbQueryStr 等）。
 
 ---
 

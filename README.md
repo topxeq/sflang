@@ -23,33 +23,33 @@ Sflang is a lightweight, fast interpreted programming language implemented in Ru
 
 ## Built-in Function Categories
 
-~680 builtins organized by prefix. Use `sf --list-builtins` to list all, or `help("regFind")` to inspect a single function.
+723 builtins organized by prefix, all with built-in documentation. Use `sf --list-builtins` to list all, or `help("regFind")` to inspect a single function.
 
 | Category | Prefix / Examples | Coverage |
 |----------|-------------------|----------|
-| String | `str*` (strToUpper, strSplit, strReplace, strTrim, ...) | 35 |
+| String | `str*` (strToUpper, strSplit, strReplace, strTrim, ...) | 43 |
 | Array | `arr*`, sort/contains/slice/concat | 13 |
 | Math | `math*`, abs/floor/sqrt/pow/random | 24 |
 | Regex | `reg*` (regFind, regMatch, regReplace, ...) | 13 |
 | File IO | `fs*`, readFile/writeFile/openFile/getFileList | 32 |
 | JSON | `json*` (encode/decode/format) | 9 |
 | Encoding | base64/url/html encode & decode | 10 |
-| Hash/Crypto | md5/sha*/hmac/aes*/jwt | 20 |
+| Hash/Crypto | md5/sha*/hmac/aes*/jwt | 47 |
 | Datetime | `now*`/`dt*` (format/parse/add) | 19 |
 | System | `sys*` (env/dir/exec/clipboard) | 26 |
-| Database | `db*` (SQLite/MySQL/PostgreSQL/MSSQL/Oracle) | 12 |
-| HTTP/Network | httpServer/getWeb*/webSocket | 52 |
+| Database | `db*` + formatSqlValue (SQLite/MySQL/PostgreSQL/MSSQL/Oracle) | 15 |
+| HTTP/Network | httpServer/getWeb*/webSocket | 56 |
 | HTTP Client | getWeb/postWeb/downloadFile/urlExists | TLS 用系统证书库校验，连接池复用，自动重定向 |
 | TCP | tcpListen/Connect/Pipe | 12 |
 | Image | `image*` (load/save/resize/canvas) + `imageGen*` (procedural) | 82 |
 | Excel | `excel*` (read/write xlsx) | 14 |
 | Compression | `zip*`, gzip/compressBytes | 13 |
-| SSH/FTP/S3 | ssh*/ftp*/s3* | 46 |
+| SSH/FTP/S3 | ssh*/ftp*/s3* | 53 |
 | Email | sendMail (SMTP/SSL/attachments) | 1 |
-| Concurrency | channel/mutex/rwlock/waitgroup/semaphore/once | 6 |
+| Concurrency | channel/mutex/rwlock/waitgroup/semaphore/once | 29 |
 | GUI | `gui*` (WebView2 window) | 8 |
-| Containers | stack/queue/ring/seq | 30 |
-| Others | print/len/keys/range/sleep/uuid/typeCode/le*/xml*/csv*/docx*/proxy*/xxci*/pinyin* | ~140 |
+| Containers | stack/queue/ring/seq | 28 |
+| Others | print/len/keys/range/sleep/uuid/typeCode/le*/xml*/csv*/docx*/proxy*/xxci*/pinyin* | ~175 |
 
 ## Quick Start
 
