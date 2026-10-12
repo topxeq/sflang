@@ -1009,7 +1009,7 @@ sf --list-builtins regex    # 筛选 regex 分类（带简介）
 sf --list-builtins math     # 筛选 math 分类
 ```
 
-### 全部分类的文档覆盖（共 723 个函数 / 42 个分类，全部有详细文档）
+### 全部分类的文档覆盖（共 724 个函数 / 43 个分类，全部有详细文档）
 
 | 分类 | 数 | 分类 | 数 | 分类 | 数 | 分类 | 数 |
 |------|----|------|----|------|----|------|----|
@@ -1023,9 +1023,9 @@ sf --list-builtins math     # 筛选 math 分类
 | bigint | 7 | csv | 6 | seq | 5 | xxci | 4 |
 | proxy | 4 | dialog | 4 | config | 4 | xml | 3 |
 | test | 3 | docx | 3 | template | 2 | pinyin | 2 |
-| clipboard | 2 | email | 1 | | | | |
+| clipboard | 2 | email | 1 | tls | 1 | | |
 
-全部 723 个内置函数均有详细文档（签名/参数/返回/示例/常见错误），用
+全部 724 个内置函数均有详细文档（签名/参数/返回/示例/常见错误），用
 `help("函数名")` 查看任一函数，`help("分类名")` 或 `sf --list-builtins <分类>`
 浏览分类。函数数按注册名计（含 Charlang 兼容别名，如 csvRead/csvWrite、
 toJson/fromJson、dbQueryString/dbQueryStr 等）。

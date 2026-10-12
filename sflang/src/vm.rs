@@ -279,6 +279,7 @@ fn register_all_core(vm: &mut VM) {
     crate::builtins_cfg::register(vm);
     crate::builtins_template::register(vm);
     crate::builtins_tcp::register(vm);
+    crate::builtins_tls::register(vm);
     crate::builtins_proxy::register(vm);
     crate::builtins_xxci::register(vm);
     crate::builtins_image::register(vm);

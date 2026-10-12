@@ -83,6 +83,7 @@ pub mod sm;
 pub mod builtins_cfg;
 pub mod builtins_template;
 pub mod builtins_tcp;
+pub mod builtins_tls;
 pub mod builtins_proxy;
 pub mod des;
 pub mod builtins_xxci;

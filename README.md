@@ -23,7 +23,7 @@ Sflang is a lightweight, fast interpreted programming language implemented in Ru
 
 ## Built-in Function Categories
 
-723 builtins organized by prefix, all with built-in documentation. Use `sf --list-builtins` to list all, or `help("regFind")` to inspect a single function.
+724 builtins organized by prefix, all with built-in documentation. Use `sf --list-builtins` to list all, or `help("regFind")` to inspect a single function.
 
 | Category | Prefix / Examples | Coverage |
 |----------|-------------------|----------|
