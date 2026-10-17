@@ -1,0 +1,297 @@
+// ============================================================
+// goconnectit_pure.sf — 纯脚本实现的 goconnectit（加密 SOCKS5 代理）
+// https://github.com/topxeq/goconnectit
+//
+// 与 goconnectit.sf（内置函数版）参数完全一致，但服务端/客户端的
+// SOCKS5 协议解析、转发逻辑全部用 Sflang 脚本编写，加密层用
+// xxciWrapConn 原生包装（保证密码学正确性与吞吐量）。
+// 本脚本是"加密隧道上自定义协议"的模板，协议兼容 goconnectit。
+//
+// 用法：
+//   服务端：sf goconnectit_pure.sf -mode server -addr 0.0.0.0:8888 -password yourpassword -encrypt txdee
+//   客户端：sf goconnectit_pure.sf -mode client -server your-server:8888 -local 127.0.0.1:1080 -password yourpassword -encrypt txdee
+//
+// 命名约定：主层全局变量加 G 后缀，回调内局部变量加 T 后缀，
+// 两层绝不同名（Sflang 中函数内 `x := v` 会写到同名全局）。
+// ============================================================
+
+// ---------------- 配置全局变量（默认值与 goconnectit 一致） ----------------
+cfgModeG = "server"            // 运行模式：server / client
+cfgAddrG = "0.0.0.0:8888"      // 服务端监听地址
+cfgServerG = "127.0.0.1:8888"  // 客户端连接的服务器地址
+cfgLocalG = "127.0.0.1:1080"   // 客户端本地 SOCKS5 入口
+cfgPasswordG = "12345678"      // 加密密码
+cfgEncryptG = "des"            // 加密方法
+cfgVerboseG = false            // 详细日志
+
+// ---------------- 帮助、版本与日志 ----------------
+func showHelpP() {
+    pln("goconnectit_pure.sf — 纯脚本版加密 SOCKS5 代理（协议兼容 goconnectit）")
+    pln("")
+    pln("  -mode    运行模式：server 或 client（默认 server）")
+    pln("  -addr    服务端监听地址（默认 0.0.0.0:8888）")
+    pln("  -server  服务器地址（客户端模式，默认 127.0.0.1:8888）")
+    pln("  -local   本地 SOCKS5 监听地址（客户端模式，默认 127.0.0.1:1080）")
+    pln("  -password 加密密码（默认 12345678，至少 8 字符）")
+    pln("  -encrypt 加密方法：des / txdef / txdee / txde（默认 des，两端须一致）")
+    pln("  -debug / -v  详细日志")
+    pln("  -version 显示版本")
+}
+
+// logV 带时间戳的详细日志（仅 -debug 时输出）
+func logV(msgT) {
+    if cfgVerboseG {
+        pln("[" + getNowStr() + "] " + msgT)
+    }
+}
+
+// ---------------- 参数解析（与 goconnectit.sf 相同的规则） ----------------
+argiP := 0
+while argiP < len(argsG) {
+    aP := argsG[argiP]
+    valP := ""
+    hasValP := false
+    if strStartsWith(aP, "-") && strContainsIn(aP, ["="]) {
+        partsP := strSplit(aP, "=")
+        aP = partsP[0]
+        valP = partsP[1]
+        hasValP = true
+    }
+    if aP == "-h" || aP == "--help" || aP == "help" {
+        showHelpP()
+        exit(0)
+    } else if aP == "-version" {
+        pln("goconnectit_pure.sf (Sflang) 1.0.0 — 协议兼容 goconnectit v1.1.0")
+        exit(0)
+    } else if aP == "-mode" || aP == "-addr" || aP == "-server" || aP == "-local" || aP == "-password" || aP == "-encrypt" {
+        if !hasValP {
+            argiP = argiP + 1
+            if argiP >= len(argsG) {
+                pln("选项 " + aP + " 缺少参数")
+                exit(1)
+            }
+            valP = argsG[argiP]
+        }
+        if aP == "-mode" { cfgModeG = valP }
+        else if aP == "-addr" { cfgAddrG = valP }
+        else if aP == "-server" { cfgServerG = valP }
+        else if aP == "-local" { cfgLocalG = valP }
+        else if aP == "-password" { cfgPasswordG = valP }
+        else if aP == "-encrypt" { cfgEncryptG = valP }
+    } else if aP == "-debug" || aP == "-v" {
+        cfgVerboseG = true
+    } else {
+        pln("未知选项: " + aP + "（用 -h 查看帮助）")
+        exit(1)
+    }
+    argiP = argiP + 1
+}
+
+// ---------------- 参数校验 ----------------
+if cfgModeG != "server" && cfgModeG != "client" {
+    pln("无效模式: " + cfgModeG + "（必须是 server 或 client）")
+    exit(1)
+}
+if len(cfgPasswordG) < 8 {
+    pln("密码至少需要 8 个字符")
+    exit(1)
+}
+if !strContainsIn(cfgEncryptG, ["des", "txdef", "txdee", "txde"]) {
+    pln("无效加密方法: " + cfgEncryptG + "（必须是 des/txdef/txdee/txde）")
+    exit(1)
+}
+
+// splitHostPort 把 "host:port" 拆成 [host, port]（host 可为 [IPv6] 形式）
+func splitHostPort(sT) {
+    partsT := strSplitN(sT, "]:", 2)
+    if len(partsT) == 2 {
+        // [IPv6]:port 形式，host 保留方括号（tcpConnect 可直接解析）
+        return [partsT[0] + "]", strToInt(partsT[1])]
+    }
+    partsT = strSplitN(sT, ":", 2)
+    return [partsT[0], strToInt(partsT[1])]
+}
+
+// ============================================================
+// 服务端：加密连接上解析 SOCKS5，连接目标并双向转发
+// ============================================================
+
+// socks5FailReply 构造 SOCKS5 失败回复（code 为错误码字节）
+func socks5FailReply(codeT) {
+    return bytes([0x05, codeT, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+}
+
+// socks5OkReply 构造 SOCKS5 成功回复
+func socks5OkReply() {
+    return bytes([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+}
+
+// handleServerConn 服务端连接处理：解密 → SOCKS5 → 连目标 → 转发
+func handleServerConn(connA) {
+    // 1. 包装为加密连接（密码/方法与客户端一致）
+    encT := xxciWrapConn(connA, cfgPasswordG, cfgEncryptG)
+
+    // 2. SOCKS5 方法协商：VER + NMETHODS + METHODS
+    hdrT := tcpReadFull(encT, 2)
+    if isUndefined(hdrT) {
+        tcpClose(encT)
+        return
+    }
+    if hdrT[0] != 0x05 {
+        logV("不支持的 SOCKS 版本: " + toStr(hdrT[0]))
+        tcpClose(encT)
+        return
+    }
+    nmT := hdrT[1] + 0    // byte → int
+    if nmT > 0 {
+        mT := tcpReadFull(encT, nmT)
+        if isUndefined(mT) { tcpClose(encT); return }
+    }
+    tcpWrite(encT, bytes([0x05, 0x00]))
+
+    // 3. CONNECT 请求：VER CMD RSV ATYP + ADDR + PORT
+    rqT := tcpReadFull(encT, 4)
+    if isUndefined(rqT) || rqT[0] != 0x05 || rqT[1] != 0x01 {
+        logV("不支持的命令（仅支持 CONNECT）")
+        tcpClose(encT)
+        return
+    }
+    atypT := rqT[3]
+    hostT := ""
+    portT := 0
+    if atypT == 0x01 {
+        // IPv4：4 字节地址 + 2 字节端口
+        restT := tcpReadFull(encT, 6)
+        if isUndefined(restT) { tcpClose(encT); return }
+        hostT = toStr(restT[0]) + "." + toStr(restT[1]) + "." + toStr(restT[2]) + "." + toStr(restT[3])
+        portT = restT[4] * 256 + restT[5]
+    } else if atypT == 0x03 {
+        // 域名：1 字节长度 + 域名 + 2 字节端口
+        dlT := tcpReadFull(encT, 1)
+        if isUndefined(dlT) { tcpClose(encT); return }
+        domT := tcpReadFull(encT, dlT[0] + 0)
+        if isUndefined(domT) { tcpClose(encT); return }
+        ptT := tcpReadFull(encT, 2)
+        if isUndefined(ptT) { tcpClose(encT); return }
+        hostT = strFromBytes(domT)
+        portT = ptT[0] * 256 + ptT[1]
+    } else if atypT == 0x04 {
+        // IPv6：16 字节地址 + 2 字节端口
+        restT := tcpReadFull(encT, 18)
+        if isUndefined(restT) { tcpClose(encT); return }
+        grpT := []
+        for giT := 0; giT < 8; giT = giT + 1 {
+            appendArray(grpT, bytesHex(bytes([restT[giT * 2] + 0])) + bytesHex(bytes([restT[giT * 2 + 1] + 0])))
+        }
+        hostT = "[" + strJoin(grpT, ":") + "]"
+        portT = restT[16] * 256 + restT[17]
+    } else {
+        logV("不支持的地址类型: " + toStr(atypT))
+        tcpClose(encT)
+        return
+    }
+
+    // 4. 连接目标（10 秒超时，不可达时回 SOCKS5 失败帧）
+    logV("连接目标 " + hostT + ":" + toStr(portT))
+    tgtT := undefined
+    try {
+        tgtT = tcpConnect(hostT, portT, 10000)
+    } catch (errT) {
+        logV("连接目标失败: " + toStr(errT))
+        tcpWrite(encT, socks5FailReply(0x05))
+        tcpClose(encT)
+        return
+    }
+
+    // 5. 回复成功并双向转发（任一方断开即结束）
+    tcpWrite(encT, socks5OkReply())
+    tcpPipe(encT, tgtT)
+    tcpClose(encT)
+    tcpClose(tgtT)
+}
+
+// ============================================================
+// 客户端：本地 SOCKS5 入口，把请求经加密隧道转发给服务器
+// ============================================================
+
+// handleClientConn 客户端连接处理：本地 SOCKS5 ↔ 加密隧道
+func handleClientConn(connA) {
+    // 1. 连接 xxci 服务器并包装
+    upT := undefined
+    try {
+        srvPartsT := splitHostPort(cfgServerG)
+        upT = tcpConnect(srvPartsT[0], srvPartsT[1], 10000)
+    } catch (errT) {
+        logV("连接服务器失败: " + toStr(errT))
+        tcpClose(connA)
+        return
+    }
+    encT := xxciWrapConn(upT, cfgPasswordG, cfgEncryptG)
+
+    // 2. 读取本地应用的 SOCKS5 方法协商，整体转发（一帧发出）
+    gT := tcpReadFull(connA, 2)
+    if isUndefined(gT) || gT[0] != 0x05 {
+        tcpClose(encT)
+        tcpClose(connA)
+        return
+    }
+    mT := bytes([])
+    if gT[1] > 0 {
+        mT = tcpReadFull(connA, gT[1] + 0)
+        if isUndefined(mT) { tcpClose(encT); tcpClose(connA); return }
+    }
+    tcpWrite(encT, bytesJoin([gT, mT]))
+
+    // 3. 转发方法选择回复（2 字节）
+    repT := tcpReadFull(encT, 2)
+    if isUndefined(repT) { tcpClose(encT); tcpClose(connA); return }
+    tcpWrite(connA, repT)
+
+    // 4. 读取本地应用的 CONNECT 请求，整体转发
+    //    需按地址类型补齐长度，保证一帧完整发出（服务端按帧解密）
+    rqT := tcpReadFull(connA, 4)
+    if isUndefined(rqT) { tcpClose(encT); tcpClose(connA); return }
+    atypT := rqT[3]
+    restT := bytes([])
+    if atypT == 0x01 {
+        restT = tcpReadFull(connA, 6)
+    } else if atypT == 0x03 {
+        dlT := tcpReadFull(connA, 1)
+        if isUndefined(dlT) { tcpClose(encT); tcpClose(connA); return }
+        domT := tcpReadFull(connA, dlT[0] + 2)
+        if isUndefined(domT) { tcpClose(encT); tcpClose(connA); return }
+        restT = bytesJoin([dlT, domT])
+    } else if atypT == 0x04 {
+        restT = tcpReadFull(connA, 18)
+    } else {
+        tcpClose(encT)
+        tcpClose(connA)
+        return
+    }
+    if isUndefined(restT) { tcpClose(encT); tcpClose(connA); return }
+    tcpWrite(encT, bytesJoin([rqT, restT]))
+
+    // 5. 转发连接回复（服务器固定回 10 字节）
+    rpT := tcpReadFull(encT, 10)
+    if isUndefined(rpT) { tcpClose(encT); tcpClose(connA); return }
+    tcpWrite(connA, rpT)
+
+    // 6. 双向转发数据
+    tcpPipe(connA, encT)
+    tcpClose(encT)
+    tcpClose(connA)
+}
+
+// ---------------- 启动 ----------------
+if cfgModeG == "server" {
+    pln("纯脚本服务端启动于 " + cfgAddrG + " (加密: " + cfgEncryptG + ")...")
+    tcpListen(cfgAddrG, handleServerConn)
+} else {
+    pln("纯脚本客户端启动，本地代理 " + cfgLocalG + " -> " + cfgServerG + " (加密: " + cfgEncryptG + ")...")
+    tcpListen(cfgLocalG, handleClientConn)
+}
+
+// 常驻运行（Ctrl+C 退出）
+while true {
+    sleepMs(60000)
+}

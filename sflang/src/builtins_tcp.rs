@@ -12,6 +12,7 @@
 //!   tcpListen(addr, handler)       — 启动 TCP 服务器，handler(conn) 处理每个连接
 //!   tcpConnect(host, port)         — 连接到 TCP 服务器，返回 conn 对象
 //!   tcpRead(conn, n)               — 从连接读取 n 字节
+//!   tcpReadFull(conn, n)           — 读满 n 字节（不足时直到 EOF/错误）
 //!   tcpReadLine(conn)              — 读取一行（以 \n 结尾）
 //!   tcpWrite(conn, data)           — 写数据到连接
 //!   tcpWriteLine(conn, data)       — 写一行（追加 \n）
@@ -20,6 +21,10 @@
 //!   tcpRemoteAddr(conn)            — 获取对端地址
 //!   tcpLocalAddr(conn)             — 获取本端地址
 //!   tcpStopServer(server)          — 停止 TCP 服务器
+//!   tcpPipe(conn1, conn2)          — 双向转发两个连接
+//!
+//! 加密支持：连接经 xxciWrapConn 包装后（TcpConn.enc 为 Some），
+//! tcpRead/tcpReadFull/tcpReadLine/tcpWrite/tcpWriteLine/tcpPipe 自动走加密通道。
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -28,6 +33,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::builtins_helpers as bh;
+use crate::encconn::{ConnReadHandle, ConnWriteHandle, EncryptedIO};
 use crate::function::BuiltinDoc;
 use crate::value::{error_value, Value};
 use crate::vm::VM;
@@ -83,6 +89,27 @@ static DOC_TCP_READ: BuiltinDoc = BuiltinDoc {
     errors: &[
         "tcpRead() 读取失败（可能原因：连接已关闭或网络中断）",
         "tcpRead() 参数不是 TCP 连接（可能原因：传入错误类型或 undefined）",
+    ],
+};
+
+static DOC_TCP_READ_FULL: BuiltinDoc = BuiltinDoc {
+    category: "tcp",
+    signature: "tcpReadFull(conn, n) -> bytes|undefined",
+    summary: "读满恰好 n 字节（不足时持续等待），适合长度前缀帧、定长协议头等场景。",
+    params: &[
+        ("conn", "tcpConnect 或 tcpListen 回调中的连接对象"),
+        ("n", "必须读取的字节数（int，>0）"),
+    ],
+    returns: "bytes（恰好 n 字节）；一个字节都没读到且连接关闭时为 undefined",
+    examples: &[
+        "hdr := tcpReadFull(conn, 2)  // 读满 2 字节长度头",
+        "len := bytesToData(hdr, 2)  // 大端解读长度",
+        "body := tcpReadFull(conn, len)  // 读满整帧",
+    ],
+    errors: &[
+        "tcpReadFull() 已读 X/n 字节后连接关闭（可能原因：对端提前关闭、帧长度与实际数据不符或加密密码/方法不一致）",
+        "tcpReadFull() 读取失败（可能原因：连接已关闭或网络中断）",
+        "tcpReadFull() 第二参数应为正整数（可能原因：传入 0 或负数）",
     ],
 };
 
@@ -228,6 +255,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("tcpListen", bi_tcp_listen, &DOC_TCP_LISTEN);
     vm.register_builtin_doc_blocking("tcpConnect", bi_tcp_connect, &DOC_TCP_CONNECT);
     vm.register_builtin_doc_blocking("tcpRead", bi_tcp_read, &DOC_TCP_READ);
+    vm.register_builtin_doc_blocking("tcpReadFull", bi_tcp_read_full, &DOC_TCP_READ_FULL);
     vm.register_builtin_doc_blocking("tcpReadLine", bi_tcp_read_line, &DOC_TCP_READ_LINE);
     vm.register_builtin_doc_blocking("tcpWrite", bi_tcp_write, &DOC_TCP_WRITE);
     vm.register_builtin_doc_blocking("tcpWriteLine", bi_tcp_write_line, &DOC_TCP_WRITE_LINE);
@@ -245,9 +273,43 @@ pub fn register(vm: &mut VM) {
 ///
 /// 用 Mutex<TcpStream> 保护，使 TcpStream 可跨线程共享。
 /// 脚本层通过 Value::Native(Arc<TcpConn>) 引用。
+/// 经 xxciWrapConn 包装后 enc 为 Some，读写自动走加密通道
+/// （地址查询/超时/关闭仍作用于底层 socket）。
 pub struct TcpConn {
     /// stream 底层 TCP 流。
     pub stream: Mutex<TcpStream>,
+    /// enc 可选加密层（xxciWrapConn 包装后为 Some；构造后不再变化）。
+    pub enc: Option<EncryptedIO>,
+}
+
+impl TcpConn {
+    /// plain 创建明文连接（无加密层）。
+    pub fn plain(stream: TcpStream) -> Self {
+        TcpConn { stream: Mutex::new(stream), enc: None }
+    }
+
+    /// read_handle 取统一读句柄。
+    ///
+    /// 加密连接返回共享的解密 reader（内部互斥）；
+    /// 明文连接 try_clone 出独立句柄，避免阻塞时长期持锁。
+    pub fn read_handle(&self) -> ConnReadHandle {
+        match &self.enc {
+            Some(e) => ConnReadHandle::Enc(e.reader.clone()),
+            None => ConnReadHandle::Plain(
+                self.stream.lock().unwrap().try_clone().expect("TcpConn::read_handle: try_clone failed"),
+            ),
+        }
+    }
+
+    /// write_handle 取统一写句柄（规则同 read_handle）。
+    pub fn write_handle(&self) -> ConnWriteHandle {
+        match &self.enc {
+            Some(e) => ConnWriteHandle::Enc(e.writer.clone()),
+            None => ConnWriteHandle::Plain(
+                self.stream.lock().unwrap().try_clone().expect("TcpConn::write_handle: try_clone failed"),
+            ),
+        }
+    }
 }
 
 /// TcpServer Sflang 的 TCP 服务器对象。
@@ -311,6 +373,31 @@ fn to_bytes(v: &Value, fn_name: &str) -> Result<Vec<u8>, Value> {
     }
 }
 
+/// conn_read 单次读取：加密包装时走解密通道，明文走底层流。
+fn conn_read(conn: &TcpConn, buf: &mut [u8]) -> std::io::Result<usize> {
+    match &conn.enc {
+        Some(e) => e.reader.lock().unwrap().read(buf),
+        None => conn.stream.lock().unwrap().read(buf),
+    }
+}
+
+/// conn_write 写入数据：加密包装时走加密通道（内部整帧写全部），
+/// 明文保持单次 write 语义（返回实际写入数）。
+fn conn_write(conn: &TcpConn, data: &[u8]) -> std::io::Result<usize> {
+    match &conn.enc {
+        Some(e) => e.writer.lock().unwrap().write(data),
+        None => conn.stream.lock().unwrap().write(data),
+    }
+}
+
+/// conn_flush 刷新写端。
+fn conn_flush(conn: &TcpConn) {
+    match &conn.enc {
+        Some(e) => { let _ = e.writer.lock().unwrap().flush(); }
+        None => { let _ = conn.stream.lock().unwrap().flush(); }
+    }
+}
+
 // ============ TCP 服务器 ============
 
 /// bi_tcp_listen 启动 TCP 服务器。
@@ -360,9 +447,7 @@ fn bi_tcp_listen(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
                     // 将连接恢复为阻塞模式（listener 是非阻塞的，accept 出的 stream 也继承）
                     let _ = stream.set_nonblocking(false);
                     // 为每个连接创建 TcpConn 并在新线程调用 handler
-                    let conn = Arc::new(TcpConn {
-                        stream: Mutex::new(stream),
-                    });
+                    let conn = Arc::new(TcpConn::plain(stream));
                     let conn_val = Value::Native(Arc::new(conn));
                     let globals_clone = globals.clone();
                     let out_clone = out.clone();
@@ -459,9 +544,7 @@ fn bi_tcp_connect(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     // 禁用 Nagle 算法，降低延迟
     let _ = stream.set_nodelay(true);
 
-    let conn = Arc::new(TcpConn {
-        stream: Mutex::new(stream),
-    });
+    let conn = Arc::new(TcpConn::plain(stream));
     Ok(Value::Native(Arc::new(conn)))
 }
 
@@ -481,8 +564,7 @@ fn bi_tcp_read(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         return Ok(Value::Bytes(Arc::new(Vec::new())));
     }
     let mut buf = vec![0u8; n];
-    let mut guard = conn.stream.lock().unwrap();
-    let read = guard.read(&mut buf).map_err(|e| {
+    let read = conn_read(&conn, &mut buf).map_err(|e| {
         error_value(format!(
             "tcpRead() 读取失败: {} (可能原因：连接已关闭或网络中断)", e,
         ))
@@ -494,6 +576,52 @@ fn bi_tcp_read(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Bytes(Arc::new(buf)))
 }
 
+/// bi_tcp_read_full 读满恰好 n 字节。
+///
+/// 用法：
+///   tcpReadFull(conn, n) — 持续读取直到凑满 n 字节
+///
+/// 返回 bytes（恰好 n 字节）。一个字节都没读到且连接已关闭时返回 undefined
+/// （与 tcpRead 的"无数据关闭"语义一致）；读到部分数据后连接关闭或出错
+/// 则返回错误对象，错误信息带出已读字节数，便于 AI/脚本定位帧格式问题。
+fn bi_tcp_read_full(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let conn = conn_downcast(&args[0], "tcpReadFull")?;
+    let n = bh::as_int(args, 1, "tcpReadFull")?;
+    if n <= 0 {
+        return Err(error_value(format!(
+            "tcpReadFull() 第二参数应为正整数，得到 {} (可能原因：字节数为 0 或负数；读 0 字节请用 tcpRead)",
+            n,
+        )));
+    }
+    let n = n as usize;
+    let mut buf = vec![0u8; n];
+    let mut filled = 0usize;
+    while filled < n {
+        match conn_read(&conn, &mut buf[filled..]) {
+            Ok(0) => {
+                // 连接关闭（EOF）
+                if filled == 0 {
+                    return Ok(Value::Undefined);
+                }
+                return Err(error_value(format!(
+                    "tcpReadFull() 已读 {}/{} 字节后连接关闭 (可能原因：对端提前关闭、帧长度与实际数据不符或加密密码/方法不一致)",
+                    filled, n,
+                )));
+            }
+            Ok(k) => {
+                filled += k;
+            }
+            Err(e) => {
+                return Err(error_value(format!(
+                    "tcpReadFull() 读取失败（已读 {}/{} 字节）: {} (可能原因：连接已关闭或网络中断)",
+                    filled, n, e,
+                )));
+            }
+        }
+    }
+    Ok(Value::Bytes(Arc::new(buf)))
+}
+
 /// bi_tcp_read_line 读取一行（以 \n 结尾）。
 ///
 /// 用法：
@@ -502,11 +630,10 @@ fn bi_tcp_read(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// 如果连接关闭返回 undefined。
 fn bi_tcp_read_line(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let conn = conn_downcast(&args[0], "tcpReadLine")?;
-    let mut guard = conn.stream.lock().unwrap();
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
     loop {
-        match guard.read(&mut byte) {
+        match conn_read(&conn, &mut byte) {
             Ok(0) => {
                 // EOF
                 if buf.is_empty() {
@@ -544,14 +671,13 @@ fn bi_tcp_read_line(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 fn bi_tcp_write(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let conn = conn_downcast(&args[0], "tcpWrite")?;
     let data = to_bytes(&args[1], "tcpWrite")?;
-    let mut guard = conn.stream.lock().unwrap();
-    let written = guard.write(&data).map_err(|e| {
+    let written = conn_write(&conn, &data).map_err(|e| {
         error_value(format!(
             "tcpWrite() 写入失败: {} (可能原因：连接已关闭或对端拒绝)", e,
         ))
     })?;
     // 刷新确保数据立即发送
-    let _ = guard.flush();
+    conn_flush(&conn);
     Ok(Value::Int(written as i64))
 }
 
@@ -563,13 +689,12 @@ fn bi_tcp_write_line(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let conn = conn_downcast(&args[0], "tcpWriteLine")?;
     let mut data = to_bytes(&args[1], "tcpWriteLine")?;
     data.push(b'\n');
-    let mut guard = conn.stream.lock().unwrap();
-    let written = guard.write(&data).map_err(|e| {
+    let written = conn_write(&conn, &data).map_err(|e| {
         error_value(format!(
             "tcpWriteLine() 写入失败: {} (可能原因：连接已关闭或对端拒绝)", e,
         ))
     })?;
-    let _ = guard.flush();
+    conn_flush(&conn);
     Ok(Value::Int(written as i64))
 }
 
@@ -684,31 +809,23 @@ fn bi_tcp_stop_server(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// 内部启动两个线程分别转发两个方向的数据，阻塞至双方都结束。
 /// 供 tcpPipe 内置函数和 builtins_proxy 模块复用。
 ///
-/// 实现要点：用 try_clone 给每个方向的读写各克隆一份独立的 TcpStream，
+/// 实现要点：通过 TcpConn::read_handle/write_handle 取得每个方向的独立读写句柄
+/// （明文为 try_clone 的独立流，加密为共享的加解密端），
 /// 避免在阻塞 read 时持有 Mutex 锁导致另一方向无法写入（经典死锁）。
+/// 任一连接带加密层时，转发自动经过加密通道。
 pub fn pipe_connections(conn1: &Arc<TcpConn>, conn2: &Arc<TcpConn>) {
-    // 克隆出 4 个独立的流句柄，每个方向读写互不锁
-    let (mut read1, mut write2) = {
-        let s1 = conn1.stream.lock().unwrap();
-        let s2 = conn2.stream.lock().unwrap();
-        let r1 = s1.try_clone().expect("pipe_connections: try_clone failed");
-        let w2 = s2.try_clone().expect("pipe_connections: try_clone failed");
-        (r1, w2)
-    };
-    let (mut read2, mut write1) = {
-        let s1 = conn1.stream.lock().unwrap();
-        let s2 = conn2.stream.lock().unwrap();
-        let r2 = s2.try_clone().expect("pipe_connections: try_clone failed");
-        let w1 = s1.try_clone().expect("pipe_connections: try_clone failed");
-        (r2, w1)
-    };
+    // 每个方向各取一对独立读写句柄，方向之间互不持锁
+    let mut read1 = conn1.read_handle();
+    let mut write2 = conn2.write_handle();
+    let mut read2 = conn2.read_handle();
+    let mut write1 = conn1.write_handle();
 
     let (tx, rx) = std::sync::mpsc::channel();
     let tx2 = tx.clone();
 
     // 方向 1: conn1 -> conn2
     let h1 = std::thread::spawn(move || {
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; 32 * 1024]; // 32KB，对齐 Go io.Copy 默认缓冲
         loop {
             match read1.read(&mut buf) {
                 Ok(0) | Err(_) => break,
@@ -725,7 +842,7 @@ pub fn pipe_connections(conn1: &Arc<TcpConn>, conn2: &Arc<TcpConn>) {
 
     // 方向 2: conn2 -> conn1
     let h2 = std::thread::spawn(move || {
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; 32 * 1024]; // 32KB，对齐 Go io.Copy 默认缓冲
         loop {
             match read2.read(&mut buf) {
                 Ok(0) | Err(_) => break,
@@ -741,6 +858,7 @@ pub fn pipe_connections(conn1: &Arc<TcpConn>, conn2: &Arc<TcpConn>) {
     });
 
     // 等待任一方向结束，然后关闭两个连接以中断另一方向
+    // （shutdown 作用于底层 socket，加密层的克隆句柄同样会收到断开）
     rx.recv().ok();
     let _ = conn1.stream.lock().unwrap().shutdown(Shutdown::Both);
     let _ = conn2.stream.lock().unwrap().shutdown(Shutdown::Both);
@@ -823,6 +941,98 @@ mod tests {
             Value::Bytes(b) => assert_eq!(b.as_ref(), b"hello"),
             other => panic!("期望 bytes，得到 {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_tcp_read_full_across_segments() {
+        // 服务端分两次写 6 字节，tcpReadFull 应跨段读满
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut s) = stream {
+                    std::thread::spawn(move || {
+                        let _ = s.write_all(b"AB");
+                        let _ = s.flush();
+                        std::thread::sleep(Duration::from_millis(150));
+                        let _ = s.write_all(b"CDEF");
+                        let _ = s.flush();
+                        std::thread::sleep(Duration::from_millis(150));
+                    });
+                    break;
+                }
+            }
+        });
+        std::thread::sleep(Duration::from_millis(50));
+
+        let result = eval(&format!(r#"
+            var conn = tcpConnect("127.0.0.1", {})
+            var d = tcpReadFull(conn, 6)
+            tcpClose(conn)
+            return strFromBytes(d)
+        "#, port));
+        assert_eq!(result.to_str(), "ABCDEF");
+    }
+
+    #[test]
+    fn test_tcp_read_full_undefined_on_immediate_close() {
+        // 服务端直接关闭：一个字节都没读到应返回 undefined
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(s) = stream {
+                    drop(s);
+                    break;
+                }
+            }
+        });
+        std::thread::sleep(Duration::from_millis(50));
+
+        let result = eval(&format!(r#"
+            var conn = tcpConnect("127.0.0.1", {})
+            var d = tcpReadFull(conn, 4)
+            tcpClose(conn)
+            return isUndefined(d)
+        "#, port));
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_tcp_read_full_partial_read_errors() {
+        // 只给 2 字节就关闭：应报错且错误信息带出已读 2/4
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if let Ok(mut s) = stream {
+                    let _ = s.write_all(b"XY");
+                    let _ = s.flush();
+                    std::thread::sleep(Duration::from_millis(100));
+                    break;
+                }
+            }
+        });
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut sf = Sflang::new();
+        let src = format!(r#"
+            var conn = tcpConnect("127.0.0.1", {})
+            var d = tcpReadFull(conn, 4)
+        "#, port);
+        match sf.run_string(&src) {
+            Err(Value::Error(e)) => {
+                assert!(e.message.contains("2/4"), "错误应带已读进度: {}", e.message);
+            }
+            other => panic!("期望错误，得到 {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_tcp_read_full_negative_arg() {
+        let mut sf = Sflang::new();
+        let r = sf.run_string(r#"var d = tcpReadFull("x", -1)"#);
+        assert!(matches!(r, Err(Value::Error(_))), "负数参数应报错");
     }
 
     #[test]

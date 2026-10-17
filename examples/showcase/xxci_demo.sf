@@ -54,11 +54,11 @@ func testMethod(method, echoPort, serverPort, clientPort) {
     password := "mySecret123"
 
     // 启动 xxci 服务器
-    server := xxciServer("127.0.0.1:" + toStr(serverPort), password, method)
+    server := xxciServer("127.0.0.1:" + toStr(serverPort), password, method, true)
     sleepMs(100)
 
     // 启动 xxci 客户端
-    client := xxciClient("127.0.0.1:" + toStr(serverPort), "127.0.0.1:" + toStr(clientPort), password, method)
+    client := xxciClient("127.0.0.1:" + toStr(serverPort), "127.0.0.1:" + toStr(clientPort), password, method, true)
     sleepMs(150)
 
     // 通过本地 SOCKS5 入口连接回显服务器

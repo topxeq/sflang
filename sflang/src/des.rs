@@ -4,7 +4,7 @@
 //! 标准 FIPS 46-3 算法，无第三方依赖。
 //!
 //! 提供：
-//!   - DesBlock: 单块加密器（8字节块）
+//!   - DesBlock: 单块加密器（8字节块，u64+SP 复合盒实现，每块零堆分配）
 //!   - CtrStream: CTR 模式流加密器（与 Go crypto/cipher.NewCTR 行为一致）
 
 // IP 初始置换表（1-indexed）
@@ -156,19 +156,6 @@ fn bytes_to_bits(data: &[u8]) -> Vec<u8> {
     bits
 }
 
-/// bits_to_bytes 将位数组转为字节数组
-fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(bits.len() / 8);
-    for chunk in bits.chunks(8) {
-        let mut byte = 0u8;
-        for i in 0..8 {
-            byte |= chunk[i] << (7 - i);
-        }
-        bytes.push(byte);
-    }
-    bytes
-}
-
 /// permute 按置换表对位进行重排（表中值 1-indexed）
 fn permute(input: &[u8], table: &[u8]) -> Vec<u8> {
     table.iter().map(|&pos| input[pos as usize - 1]).collect()
@@ -184,108 +171,176 @@ fn left_rotate(bits: &mut Vec<u8>, n: usize) {
 
 // ---- DES 块加密器 ----
 
-/// DesBlock DES 单块加密器。
+/// DesBlock DES 单块加密器（u64 + SP 复合盒实现）。
 ///
-/// 8 字节密钥，加密 8 字节块。
+/// 8 字节密钥，加密 8 字节块。算术与早期位向量实现逐位等价
+/// （经 NIST 向量与 Go crypto/des 互通验证），但每块零堆分配：
+///   - IP/FP 用 u64 表驱动置换
+///   - 每轮 E 扩展 + 子密钥异或后，直接查 8 个 SP 复合盒
+///     （S 盒输出已按 P 置换预放到 32 位半字的对应位置），
+///     8 次 u32 查表异或即完成一轮 f 函数
 pub struct DesBlock {
-    // subkeys 16 轮子密钥（每轮 48 位）
-    subkeys: Vec<Vec<u8>>,
+    /// round_keys 每轮 48 位子密钥（低 48 位有效，6 位一组对齐 SP 盒下标）。
+    round_keys: [u64; 16],
+    /// sp SP 复合盒：sp[i][6 位输入] = 第 i 个 S 盒输出经 P 置换后的 32 位半字。
+    /// 与密钥无关，每个实例构造时生成（8x64x4B = 2KB，微秒级）。
+    sp: [[u32; 64]; 8],
+}
+
+/// make_bit_contrib 构建位贡献表：CONTRIB[k][v] = 输入第 k 字节取值 v 时
+/// 对整个置换输出的贡献（u64，按 out_bits 对齐 MSB）。
+///
+/// 用于 IP/FP/E 的快速置换：输出 = 逐输入字节查表后按位或，
+/// 把逐位串行移位链变成 4~8 次独立查表（ILP 友好）。
+fn make_bit_contrib(table: &[u8], out_bits: u32) -> Vec<[u64; 256]> {
+    let in_bytes = (table.len() + 7) / 8;
+    let mut c = vec![[0u64; 256]; in_bytes];
+    for k in 0..in_bytes {
+        for v in 0..256usize {
+            let mut acc = 0u64;
+            for (j, &t) in table.iter().enumerate() {
+                let pos = t as usize - 1; // 全局源位（0-indexed，MSB first）
+                if pos / 8 != k {
+                    continue;
+                }
+                let bit = (v >> (7 - (pos % 8))) & 1;
+                acc |= (bit as u64) << (out_bits - 1 - j as u32);
+            }
+            c[k][v] = acc;
+        }
+    }
+    c
+}
+
+// IP/FP/E 的位贡献表（与密钥无关，进程内构建一次）
+static IP_CONTRIB: std::sync::LazyLock<Vec<[u64; 256]>> =
+    std::sync::LazyLock::new(|| make_bit_contrib(&IP, 64));
+static FP_CONTRIB: std::sync::LazyLock<Vec<[u64; 256]>> =
+    std::sync::LazyLock::new(|| make_bit_contrib(&FP, 64));
+static E_CONTRIB: std::sync::LazyLock<Vec<[u64; 256]>> =
+    std::sync::LazyLock::new(|| make_bit_contrib(&E, 48));
+
+/// make_sp_boxes 由 S 盒 + P 置换生成 8 个 SP 复合盒。
+fn make_sp_boxes() -> [[u32; 64]; 8] {
+    let mut sp = [[0u32; 64]; 8];
+    for i in 0..8 {
+        for v in 0..64usize {
+            // 6 位输入 v：MSB first —— 行 = 首尾两位，列 = 中间 4 位（与位向量版一致）
+            let row = (((v >> 5) & 1) << 1) | (v & 1);
+            let col = (v >> 1) & 0xF;
+            let val = S_BOXES[i][row * 16 + col] as u32;
+            // 该 chunk 的 4 位输出在 32 位半字中的位置：第 i 组占 (31-4i)..(28-4i)
+            let word = val << (28 - 4 * i);
+            // 应用 P 置换（1-indexed，1 = 32 位字最高位）
+            let mut out = 0u32;
+            for (k, &p) in P.iter().enumerate() {
+                let bit = (word >> (32 - p as u32)) & 1;
+                out |= bit << (31 - k as u32);
+            }
+            sp[i][v] = out;
+        }
+    }
+    sp
 }
 
 impl DesBlock {
     /// new 从 8 字节密钥创建 DES 加密器。
     pub fn new(key: &[u8; 8]) -> Self {
+        // 密钥调度沿用位向量实现（每连接仅一次，性能不敏感）
         let key_bits = bytes_to_bits(key);
         // PC-1: 64 -> 56
         let permuted = permute(&key_bits, &PC1);
         // 分成左右各 28 位
         let mut left = permuted[..28].to_vec();
         let mut right = permuted[28..].to_vec();
-        let mut subkeys = Vec::with_capacity(16);
-        for round in 0..16 {
+        let mut round_keys = [0u64; 16];
+        for (round, rk) in round_keys.iter_mut().enumerate() {
             left_rotate(&mut left, SHIFTS[round] as usize);
             left_rotate(&mut right, SHIFTS[round] as usize);
             let mut combined = Vec::with_capacity(56);
             combined.extend_from_slice(&left);
             combined.extend_from_slice(&right);
-            // PC-2: 56 -> 48
-            subkeys.push(permute(&combined, &PC2));
+            // PC-2: 56 -> 48，打包为 u64 低 48 位（MSB first）
+            let pc2_bits = permute(&combined, &PC2);
+            let mut packed = 0u64;
+            for (j, &b) in pc2_bits.iter().enumerate() {
+                packed |= (b as u64) << (47 - j as u32);
+            }
+            *rk = packed;
         }
-        DesBlock { subkeys }
+        DesBlock {
+            round_keys,
+            sp: make_sp_boxes(),
+        }
     }
 
     /// encrypt_block 加密单个 8 字节块。
     pub fn encrypt_block(&self, input: &[u8; 8]) -> [u8; 8] {
-        self.process_block(input, false)
-    }
-
-    /// decrypt_block 解密单个 8 字节块。
-    pub fn decrypt_block(&self, input: &[u8; 8]) -> [u8; 8] {
-        self.process_block(input, true)
-    }
-
-    /// process_block 处理单个块（encrypt 为 true 时逆向使用子密钥）。
-    fn process_block(&self, input: &[u8; 8], decrypt: bool) -> [u8; 8] {
-        let bits = bytes_to_bits(input);
-        // IP 初始置换
-        let permuted = permute(&bits, &IP);
-        let mut left = permuted[..32].to_vec();
-        let mut right = permuted[32..].to_vec();
-
+        // IP 初始置换（位贡献表：8 次查表按位或）
+        let ic = &*IP_CONTRIB;
+        let mut pre = 0u64;
+        for k in 0..8 {
+            pre |= ic[k][input[k] as usize];
+        }
+        let mut left = (pre >> 32) as u32;
+        let mut right = pre as u32;
         for round in 0..16 {
-            let old_right = right.clone();
-            // f 函数
-            let f_result = self.f_function(&right, if decrypt { 15 - round } else { round });
-            // XOR
-            for i in 0..32 {
-                right[i] = left[i] ^ f_result[i];
-            }
+            let old_right = right;
+            let f = self.feistel(right, round);
+            right = left ^ f;
             left = old_right;
         }
-
-        // 合并 R16 + L16（注意顺序）
-        let mut combined = Vec::with_capacity(64);
-        combined.extend_from_slice(&right); // R16 在前
-        combined.extend_from_slice(&left); // L16 在后
-        // FP 逆初始置换
-        let final_bits = permute(&combined, &FP);
-        let bytes = bits_to_bytes(&final_bits);
-        let mut output = [0u8; 8];
-        output.copy_from_slice(&bytes);
-        output
+        // 合并 R16 + L16（R16 在前），FP 逆初始置换（位贡献表）
+        let combined = ((right as u64) << 32) | (left as u64);
+        let cb = combined.to_be_bytes();
+        let fc = &*FP_CONTRIB;
+        let mut out = 0u64;
+        for k in 0..8 {
+            out |= fc[k][cb[k] as usize];
+        }
+        out.to_be_bytes()
     }
 
-    /// f_function Feistel 轮函数。
-    ///
-    /// expand R(32) -> 48, XOR with subkey, S-box substitution, P permutation
-    fn f_function(&self, r: &[u8], round: usize) -> Vec<u8> {
-        // E 扩展: 32 -> 48
-        let expanded = permute(r, &E);
-        // XOR with subkey
-        let subkey = &self.subkeys[round];
-        let mut xored = Vec::with_capacity(48);
-        for i in 0..48 {
-            xored.push(expanded[i] ^ subkey[i]);
+    /// decrypt_block 解密单个 8 字节块（子密钥逆序使用）。
+    pub fn decrypt_block(&self, input: &[u8; 8]) -> [u8; 8] {
+        let ic = &*IP_CONTRIB;
+        let mut pre = 0u64;
+        for k in 0..8 {
+            pre |= ic[k][input[k] as usize];
         }
-        // S 盒替换: 48 -> 32
-        let mut s_output = Vec::with_capacity(32);
-        for i in 0..8 {
-            let chunk = &xored[i * 6..(i + 1) * 6];
-            // 行 = (chunk[0] << 1) | chunk[5]
-            let row = ((chunk[0] as usize) << 1) | (chunk[5] as usize);
-            // 列 = chunk[1..5] 组成的 4 位
-            let col = ((chunk[1] as usize) << 3)
-                | ((chunk[2] as usize) << 2)
-                | ((chunk[3] as usize) << 1)
-                | (chunk[4] as usize);
-            let val = S_BOXES[i][row * 16 + col];
-            // 输出 4 位
-            for j in (0..4).rev() {
-                s_output.push((val >> j) & 1);
-            }
+        let mut left = (pre >> 32) as u32;
+        let mut right = pre as u32;
+        for round in 0..16 {
+            let old_right = right;
+            let f = self.feistel(right, 15 - round);
+            right = left ^ f;
+            left = old_right;
         }
-        // P 置换: 32 -> 32
-        permute(&s_output, &P)
+        let combined = ((right as u64) << 32) | (left as u64);
+        let cb = combined.to_be_bytes();
+        let fc = &*FP_CONTRIB;
+        let mut out = 0u64;
+        for k in 0..8 {
+            out |= fc[k][cb[k] as usize];
+        }
+        out.to_be_bytes()
+    }
+
+    /// feistel 轮函数：E 扩展（位贡献表）-> 异或子密钥 -> 8 次 SP 盒查表异或。
+    fn feistel(&self, r: u32, round: usize) -> u32 {
+        let rb = r.to_be_bytes();
+        let ec = &*E_CONTRIB;
+        let mut e = 0u64;
+        for k in 0..4 {
+            e |= ec[k][rb[k] as usize];
+        }
+        let e = e ^ self.round_keys[round];
+        // 8 个 6 位分组各查一个 SP 盒，异或合成 32 位输出
+        let mut out = 0u32;
+        for (i, box_row) in self.sp.iter().enumerate() {
+            out |= box_row[((e >> (42 - 6 * i)) & 0x3F) as usize];
+        }
+        out
     }
 }
 
@@ -503,5 +558,48 @@ mod tests {
         dec.xor_key_stream(&mut recovered, &ciphertext);
 
         assert_eq!(&recovered[..], &plaintext[..]);
+    }
+
+    /// test_des_block_roundtrip_random 随机数据加解密回环（多密钥）。
+    #[test]
+    fn test_des_block_roundtrip_random() {
+        // 简单 LCG 生成确定性伪随机数据
+        let mut seed: u64 = 0x2026_1017;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as u8
+        };
+        for _key_i in 0..4 {
+            let key = [next(), next(), next(), next(), next(), next(), next(), next()];
+            let block = DesBlock::new(&key);
+            for _blk_i in 0..64 {
+                let pt = [next(), next(), next(), next(), next(), next(), next(), next()];
+                let ct = block.encrypt_block(&pt);
+                assert_ne!(ct, [0u8; 8]);
+                assert_eq!(block.decrypt_block(&ct), pt, "加解密回环失败");
+            }
+        }
+    }
+
+    /// test_ctr_throughput CTR 吞吐量基准（防止回退到慢速实现）。
+    ///
+    /// 4 MB 加解密：release 下阈值 1 秒（SP 盒版实测远快于此；
+    /// 早期位向量实现 release 约 1 MB/s，4MB 需 4 秒，会被拦截）。
+    /// debug 无优化运行放宽到 30 秒。
+    #[test]
+    fn test_ctr_throughput() {
+        let key = [0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        let iv = [0u8; 8];
+        let mut stream = CtrStream::new(&key, &iv);
+        let data = vec![0xABu8; 4 << 20]; // 4 MB
+        let mut out = vec![0u8; data.len()];
+        let t0 = std::time::Instant::now();
+        stream.xor_key_stream(&mut out, &data);
+        let el = t0.elapsed();
+        let limit_ms: u128 = if cfg!(debug_assertions) { 30_000 } else { 1_000 };
+        assert!(
+            el.as_millis() < limit_ms,
+            "DES-CTR 4MB 耗时 {}ms，性能回退（阈值 {}ms）", el.as_millis(), limit_ms,
+        );
     }
 }

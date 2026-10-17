@@ -654,8 +654,10 @@ mod tests {
             Arc::new(Mutex::new(std::collections::HashMap::new()));
         let out = new_out();
         spawn_task(f, vec![], globals, out).expect("spawn");
+        // 60 秒窗口：本测试验证的是"完成且无 panic"而非延迟；
+        // 全量测试并行负载下 5 秒窗口曾偶发超时（干净树单跑必过）
         assert!(
-            wait_until(|| queued_task_count() == 0, Duration::from_secs(5)),
+            wait_until(|| queued_task_count() == 0, Duration::from_secs(60)),
             "noop 任务应完成"
         );
     }

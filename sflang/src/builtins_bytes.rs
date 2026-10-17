@@ -205,10 +205,31 @@ static DOC_HEX_TO_STR: BuiltinDoc = BuiltinDoc {
     errors: &["hex 字符串长度必须为偶数；非法 hex 字符报错"],
 };
 
+static DOC_BYTES_JOIN: BuiltinDoc = BuiltinDoc {
+    category: "bytes",
+    signature: "bytesJoin(parts, sep?) -> bytes",
+    summary: "把 bytes/byteArray/string 组成的数组拼接为一个 bytes，可选分隔字节序列。",
+    params: &[
+        ("parts", "数组，元素可为 bytes / byteArray / string（string 按 UTF-8 编码）"),
+        ("sep", "可选分隔符，bytes / byteArray / string"),
+    ],
+    returns: "bytes：拼接结果",
+    examples: &[
+        "bytesJoin([bytes([0x00, 0x10]), bytes([0xAB])])  → [0x00,0x10,0xAB]",
+        "bytesJoin([\"A\", \"B\"], \"-\")  → [0x41,0x2D,0x42]",
+        "bytesJoin([hdr, body])  // 拼接协议帧：长度头 + 数据体",
+    ],
+    errors: &[
+        "bytesJoin() 第一参数应为数组 (可能原因：直接传了 bytes，应包成数组 [bytes])",
+        "bytesJoin() 数组元素 #N 应为 bytes/byteArray/string，得到 X (可能原因：混入了 int 等其他类型，可用 bytes([...]) 先转换)",
+    ],
+};
+
 /// register 注册所有字节序列内置函数到 VM。
 pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("byteArray", bi_byte_array, &DOC_BYTE_ARRAY);
     vm.register_builtin_doc("bytes", bi_bytes, &DOC_BYTES);
+    vm.register_builtin_doc("bytesJoin", bi_bytes_join, &DOC_BYTES_JOIN);
     vm.register_builtin_doc("byteArrayFromBytes", bi_byte_array_from_bytes, &DOC_BYTE_ARRAY_FROM_BYTES);
     vm.register_builtin_doc("byteArrayFromArray", bi_byte_array_from_array, &DOC_BYTE_ARRAY_FROM_ARRAY);
     vm.register_builtin_doc("arrayFromByteArray", bi_array_from_byte_array, &DOC_ARRAY_FROM_BYTE_ARRAY);
@@ -441,6 +462,62 @@ fn bi_copy(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let n = src_vec.len().min(avail);
     dst[dst_start as usize..dst_start as usize + n].copy_from_slice(&src_vec[..n]);
     Ok(Value::Int(n as i64))
+}
+
+/// seq_to_bytes 将单个值（bytes/byteArray/string）转为字节 Vec。
+fn seq_to_bytes(v: &Value, fn_name: &str, index: Option<usize>) -> Result<Vec<u8>, Value> {
+    let wrap_idx = |msg: String| -> Value {
+        match index {
+            Some(i) => crate::value::error_value(format!("{} [元素 #{}]", msg, i)),
+            None => crate::value::error_value(msg),
+        }
+    };
+    match v {
+        Value::Str(s) => Ok(s.as_bytes().to_vec()),
+        Value::Bytes(b) => Ok(b.as_ref().to_vec()),
+        Value::ByteArray(b) => Ok(b.lock().unwrap().clone()),
+        other => Err(wrap_idx(format!(
+            "{}() 应为 bytes/byteArray/string，得到 {} (可能原因：混入了 int 等其他类型，可用 bytes([...]) 先转换)",
+            fn_name, other.type_name(),
+        ))),
+    }
+}
+
+/// bi_bytes_join 把数组中的字节序列拼接为一个 bytes。
+///
+/// 用法：
+///   bytesJoin(parts)          — 顺序拼接
+///   bytesJoin(parts, sep)     — 每两个元素之间插入分隔
+///
+/// parts 为数组，元素可为 bytes/byteArray/string（UTF-8 编码）。
+/// 典型场景：拼接"长度头 + 数据体"的协议帧，二进制不能走 string 拼接。
+fn bi_bytes_join(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    bh::require_arg(args, 0, "bytesJoin")?;
+    let parts = match &args[0] {
+        Value::Array(a) => a.lock().unwrap().clone(),
+        other => {
+            return Err(crate::value::error_value(format!(
+                "bytesJoin() 第一参数应为数组，得到 {} (可能原因：直接传了 bytes，应包成数组 [bytes])",
+                other.type_name(),
+            )))
+        }
+    };
+    let sep = if args.len() > 1 {
+        Some(seq_to_bytes(&args[1], "bytesJoin", None)?)
+    } else {
+        None
+    };
+
+    let mut out: Vec<u8> = Vec::new();
+    for (i, item) in parts.iter().enumerate() {
+        if i > 0 {
+            if let Some(s) = &sep {
+                out.extend_from_slice(s);
+            }
+        }
+        out.extend_from_slice(&seq_to_bytes(item, "bytesJoin", Some(i))?);
+    }
+    Ok(Value::Bytes(Arc::new(out)))
 }
 
 /// bi_bytes_hex 将字节序列转为十六进制字符串。
@@ -735,5 +812,66 @@ fn bi_data_to_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             "dataToBytes() 不支持类型 {} (需要 int/bigInt；可能原因：传入了 float/string，请先取整或转整数)",
             v.type_name(),
         ))),
+    }
+}
+
+// ============ 测试 ============
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Sflang;
+
+    /// eval_str 执行脚本并返回末尾表达式值。
+    fn eval(src: &str) -> Value {
+        let mut sf = Sflang::new();
+        let wrapped = format!("func __f() {{ {} }} var __r = __f()", src);
+        sf.run_string(&wrapped).expect("eval failed");
+        sf.get_global("__r").expect("__r not set")
+    }
+
+    #[test]
+    fn test_bytes_join_basic() {
+        let r = eval(r#"return bytesJoin([bytes([0x01, 0x02]), "ab", byteArrayFromBytes(bytes([0x09]))])"#);
+        match r {
+            Value::Bytes(b) => assert_eq!(b.as_ref(), &[0x01, 0x02, 0x61, 0x62, 0x09]),
+            other => panic!("期望 bytes，得到 {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_bytes_join_with_sep() {
+        let r = eval(r#"return bytesJoin(["A", "B"], "-")"#);
+        match r {
+            Value::Bytes(b) => assert_eq!(b.as_ref(), b"A-B"),
+            other => panic!("期望 bytes，得到 {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_bytes_join_empty_and_single() {
+        let r = eval(r#"return bytesJoin([])"#);
+        match r {
+            Value::Bytes(b) => assert!(b.is_empty()),
+            other => panic!("期望空 bytes，得到 {:?}", other),
+        }
+        let r2 = eval(r#"return bytesJoin([bytes([7])])"#);
+        match r2 {
+            Value::Bytes(b) => assert_eq!(b.as_ref(), &[7]),
+            other => panic!("期望 bytes，得到 {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_bytes_join_bad_type() {
+        // 元素混入 int 应报错并带元素下标
+        let mut sf = Sflang::new();
+        let r = sf.run_string(r#"var x = bytesJoin([bytes([1]), 5])"#);
+        match r {
+            Err(Value::Error(e)) => {
+                assert!(e.message.contains("元素 #1"), "错误应带元素下标: {}", e.message);
+            }
+            other => panic!("期望错误，得到 {:?}", other),
+        }
     }
 }

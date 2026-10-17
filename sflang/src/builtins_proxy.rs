@@ -17,7 +17,7 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::builtins_helpers as bh;
@@ -167,9 +167,7 @@ fn bi_proxy_listen(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
                 Ok((stream, client_addr)) => {
                     // 恢复阻塞模式
                     let _ = stream.set_nonblocking(false);
-                    let conn = Arc::new(TcpConn {
-                        stream: Mutex::new(stream),
-                    });
+                    let conn = Arc::new(TcpConn::plain(stream));
                     let handler_clone = handler.clone();
                     let globals_clone = globals.clone();
                     let out_clone = out.clone();
@@ -261,18 +259,14 @@ fn bi_port_forward(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             match listener.accept() {
                 Ok((stream, client_addr)) => {
                     let _ = stream.set_nonblocking(false);
-                    let conn = Arc::new(TcpConn {
-                        stream: Mutex::new(stream),
-                    });
+                    let conn = Arc::new(TcpConn::plain(stream));
                     let target = target_addr.clone();
                     let out_clone = out.clone();
 
                     std::thread::spawn(move || {
                         match TcpStream::connect(&target) {
                             Ok(target_stream) => {
-                                let target_conn = Arc::new(TcpConn {
-                                    stream: Mutex::new(target_stream),
-                                });
+                                let target_conn = Arc::new(TcpConn::plain(target_stream));
                                 pipe_connections(&conn, &target_conn);
                             }
                             Err(e) => {
@@ -459,7 +453,7 @@ fn handle_socks5(
     }
 
     // 6. 双向转发
-    let target_conn = Arc::new(TcpConn { stream: Mutex::new(target) });
+    let target_conn = Arc::new(TcpConn::plain(target));
     pipe_connections(conn, &target_conn);
     Ok(())
 }
@@ -530,7 +524,7 @@ fn handle_http(
         }
 
         // 双向转发
-        let target_conn = Arc::new(TcpConn { stream: Mutex::new(target_stream) });
+        let target_conn = Arc::new(TcpConn::plain(target_stream));
         pipe_connections(conn, &target_conn);
         Ok(())
     } else {
@@ -580,7 +574,7 @@ fn handle_http(
         }
 
         // 双向转发
-        let target_conn = Arc::new(TcpConn { stream: Mutex::new(target_stream) });
+        let target_conn = Arc::new(TcpConn::plain(target_stream));
         pipe_connections(conn, &target_conn);
         Ok(())
     }

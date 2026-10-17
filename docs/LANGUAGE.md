@@ -40,6 +40,34 @@ var y = 42       // 声明并赋值
 x = "hello"      // 赋值（动态类型，可改变类型）
 ```
 
+### 作用域语义（重要！）
+
+- **`var` 声明局部变量**：只在当前函数（或块）内可见，不影响同名全局。
+- **`:=` 一律创建/写入全局变量**：无论出现在顶层、函数内、回调内还是块内。
+  函数内同名局部存在时优先写局部；否则写到全局。
+- **`=` 赋值**：优先写给最近可见的绑定（局部优先），否则写全局。
+
+```sflang
+x := 1                    // 全局 x
+func f() {
+    x := 99               // 写到全局 x（不是新局部！）
+    var y = 5             // 局部 y —— 用 var 才是局部
+}
+f()
+// 此时 x == 99，y 不存在
+
+func g() {
+    var x := 5            // 局部 x，与全局 x 无关
+    x = 6                 // 写局部
+    return x              // 6
+}
+```
+
+**回调陷阱**：tcpListen/run 等回调与主脚本共享全局表。若回调内用 `:=` 声明
+的变量与主层同名，会互相覆盖——网络程序中表现为"双方拿到对方的连接对象"
+这类诡异故障。约定：全局变量加 `G` 后缀，回调内局部一律用 `var` 声明且
+绝不与主层同名。
+
 复合赋值：`+= -= *= /= %= ??= &= |= ^= <<= >>=`
 
 自增自减：`++x` `x++` `--x` `x--`（前缀返回新值，后缀返回旧值）
@@ -1009,7 +1037,7 @@ sf --list-builtins regex    # 筛选 regex 分类（带简介）
 sf --list-builtins math     # 筛选 math 分类
 ```
 
-### 全部分类的文档覆盖（共 724 个函数 / 43 个分类，全部有详细文档）
+### 全部分类的文档覆盖（共 727 个函数 / 43 个分类，全部有详细文档）
 
 | 分类 | 数 | 分类 | 数 | 分类 | 数 | 分类 | 数 |
 |------|----|------|----|------|----|------|----|
@@ -1017,15 +1045,15 @@ sf --list-builtins math     # 筛选 math 分类
 | file | 32 | crypto | 31 | le | 29 | concurrency | 29 |
 | system | 27 | math | 24 | ssh | 22 | s3 | 22 |
 | imageGen | 20 | datetime | 19 | hash | 16 | excel | 14 |
-| db | 15 | bytes | 14 | zip | 13 | regex | 13 |
-| array | 13 | tcp | 12 | containers | 12 | ring | 11 |
+| db | 15 | bytes | 15 | zip | 13 | regex | 13 |
+| array | 13 | tcp | 13 | containers | 12 | ring | 11 |
 | encode | 10 | gui | 8 | ftp | 9 | json | 9 |
-| bigint | 7 | csv | 6 | seq | 5 | xxci | 4 |
+| bigint | 7 | csv | 6 | seq | 5 | xxci | 5 |
 | proxy | 4 | dialog | 4 | config | 4 | xml | 3 |
 | test | 3 | docx | 3 | template | 2 | pinyin | 2 |
 | clipboard | 2 | email | 1 | tls | 1 | | |
 
-全部 724 个内置函数均有详细文档（签名/参数/返回/示例/常见错误），用
+全部 727 个内置函数均有详细文档（签名/参数/返回/示例/常见错误），用
 `help("函数名")` 查看任一函数，`help("分类名")` 或 `sf --list-builtins <分类>`
 浏览分类。函数数按注册名计（含 Charlang 兼容别名，如 csvRead/csvWrite、
 toJson/fromJson、dbQueryString/dbQueryStr 等）。

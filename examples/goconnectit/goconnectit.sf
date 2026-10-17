@@ -1,0 +1,122 @@
+// ============================================================
+// goconnectit.sf — 用 Sflang 复刻 goconnectit（加密 SOCKS5 代理）
+// https://github.com/topxeq/goconnectit
+//
+// 用内置的 xxci 协议族实现（协议与 Go 版 goconnectit 完全兼容，
+// 相同密码和加密方法可与 Go 版互通），性能与 Go 版同量级。
+//
+// 用法（与 goconnectit 参数一致）：
+//   服务端：sf goconnectit.sf -mode server -addr 0.0.0.0:8888 -password yourpassword -encrypt txdee
+//   客户端：sf goconnectit.sf -mode client -server your-server:8888 -local 127.0.0.1:1080 -password yourpassword -encrypt txdee
+//
+// 说明：
+//   - 选项支持 "-mode server" 与 "-mode=server" 两种写法
+//   - 加密方法：des / txdef / txdee / txde（两端必须一致）
+//   - 编译为独立可执行文件：sf --build goconnectit.sf -output goconnectit.exe
+//
+// 命名约定：主层全局变量加 G 后缀，回调内局部变量加 T 后缀，
+// 两层绝不同名（Sflang 中函数内 `x := v` 会写到同名全局，见 LANGUAGE.md）。
+// ============================================================
+
+// ---------------- 配置全局变量（默认值与 goconnectit 一致） ----------------
+cfgModeG = "server"            // 运行模式：server / client
+cfgAddrG = "0.0.0.0:8888"      // 服务端监听地址
+cfgServerG = "127.0.0.1:8888"  // 客户端连接的服务器地址
+cfgLocalG = "127.0.0.1:1080"   // 客户端本地 SOCKS5 入口
+cfgPasswordG = "12345678"      // 加密密码
+cfgEncryptG = "des"            // 加密方法
+cfgVerboseG = false            // 详细日志（-debug/-v）
+
+// ---------------- 帮助与版本 ----------------
+func showHelpG() {
+    pln("goconnectit.sf — Sflang 版加密 SOCKS5 代理（协议兼容 goconnectit）")
+    pln("")
+    pln("  -mode    运行模式：server 或 client（默认 server）")
+    pln("  -addr    服务端监听地址（默认 0.0.0.0:8888）")
+    pln("  -server  服务器地址（客户端模式，默认 127.0.0.1:8888）")
+    pln("  -local   本地 SOCKS5 监听地址（客户端模式，默认 127.0.0.1:1080）")
+    pln("  -password 加密密码（默认 12345678，至少 8 字符）")
+    pln("  -encrypt 加密方法：des / txdef / txdee / txde（默认 des，两端须一致）")
+    pln("  -debug / -v  详细日志（输出每连接日志）")
+    pln("  -version 显示版本")
+}
+
+// ---------------- 参数解析 ----------------
+// 支持 "-mode server" 与 "-mode=server" 两种形式
+argiT := 0
+while argiT < len(argsG) {
+    aT := argsG[argiT]
+    valT := ""
+    hasValT := false
+    if strStartsWith(aT, "-") && strContainsIn(aT, ["="]) {
+        // -key=value 形式
+        partsT := strSplit(aT, "=")
+        aT = partsT[0]
+        valT = partsT[1]
+        hasValT = true
+    }
+    nextT := func() {
+        // 读取 "-key value" 形式的值
+        argiT = argiT + 1
+        if argiT >= len(argsG) {
+            pln("选项 " + aT + " 缺少参数")
+            exit(1)
+        }
+        return argsG[argiT]
+    }
+    if aT == "-h" || aT == "--help" || aT == "help" {
+        showHelpG()
+        exit(0)
+    } else if aT == "-version" {
+        pln("goconnectit.sf (Sflang xxci) 1.0.0 — 协议兼容 goconnectit v1.1.0")
+        exit(0)
+    } else if aT == "-mode" {
+        cfgModeG = hasValT ? valT : nextT()
+    } else if aT == "-addr" {
+        cfgAddrG = hasValT ? valT : nextT()
+    } else if aT == "-server" {
+        cfgServerG = hasValT ? valT : nextT()
+    } else if aT == "-local" {
+        cfgLocalG = hasValT ? valT : nextT()
+    } else if aT == "-password" {
+        cfgPasswordG = hasValT ? valT : nextT()
+    } else if aT == "-encrypt" {
+        cfgEncryptG = hasValT ? valT : nextT()
+    } else if aT == "-debug" || aT == "-v" {
+        cfgVerboseG = true
+    } else {
+        pln("未知选项: " + aT + "（用 -h 查看帮助）")
+        exit(1)
+    }
+    argiT = argiT + 1
+}
+
+// ---------------- 参数校验（与 goconnectit 一致） ----------------
+if cfgModeG != "server" && cfgModeG != "client" {
+    pln("无效模式: " + cfgModeG + "（必须是 server 或 client）")
+    exit(1)
+}
+if len(cfgPasswordG) < 8 {
+    pln("密码至少需要 8 个字符")
+    exit(1)
+}
+if !strContainsIn(cfgEncryptG, ["des", "txdef", "txdee", "txde"]) {
+    pln("无效加密方法: " + cfgEncryptG + "（必须是 des/txdef/txdee/txde）")
+    exit(1)
+}
+
+// ---------------- 启动 ----------------
+if cfgModeG == "server" {
+    // 服务端：监听加密 SOCKS5 连接（每个连接独立线程处理，目标拨号 10 秒超时）
+    pln("服务端启动于 " + cfgAddrG + " (加密: " + cfgEncryptG + ")...")
+    xxciServer(cfgAddrG, cfgPasswordG, cfgEncryptG, cfgVerboseG)
+} else {
+    // 客户端：本地 SOCKS5 入口，经加密隧道转发到服务器
+    pln("客户端启动，本地代理 " + cfgLocalG + " -> " + cfgServerG + " (加密: " + cfgEncryptG + ")...")
+    xxciClient(cfgServerG, cfgLocalG, cfgPasswordG, cfgEncryptG, cfgVerboseG)
+}
+
+// 常驻运行（Ctrl+C 退出）
+while true {
+    sleepMs(60000)
+}
