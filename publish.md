@@ -114,6 +114,8 @@ curl -fsSL https://magicdo.top/install/sf.sh | head -5
    + `cargo zigbuild`（zig cc 不认识合并写法 `-static-pie`，必须拆成 `-static -pie` 并让
    zig 驱动自选 rcrt1.o）。CI 已内置 PIE 校验（file grep "pie executable"）。
 9. **不再自动部署 /tools/sf**：往服务器手工目录（如 wl 的 `/tools/sf`）分发由项目负责人手工操作，发布流程只到 GitHub Release + 仙缘渡为止。
+10. **homepageBadge 自 0.1.9 起自动取 `$VERSION`**（配置不一致时告警覆盖）——此前该字段手工维护，v0.1.9 发布时漏改导致首页徽章停留在 v0.1.8。
+11. **版本去重自 0.1.9 起用 JSON 解析**（`$preObj.data.versions`）：旧正则依赖响应字段顺序，二次发布时未命中，同版本重复 addVersion 出现多条重复条目（需按 platform 去重清理，保留一条 isLatest）。
 
 ## 4. 新增平台的步骤（示例：未来加 FreeBSD/iOS）
 
