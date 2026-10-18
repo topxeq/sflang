@@ -563,7 +563,7 @@ defer unlock(mu)
   （环境变量 `SF_TASK_WORKERS` 可覆盖），任务在用户态分时调度（每 10 万条指令
   让出一次），阻塞等待（channel/锁/sleep）时挂起任务而非占用线程。
 - 阻塞型内置函数（文件/网络 IO 与压缩/xlsx/image 等重操作，共约 160 个：
-  readFile/writeFile/getWeb/postWeb/downloadFile/sshRun/dbQuery/ftpUpload/
+  readFile/writeFile/getWeb/postWeb/postForm/downloadFile/sshRun/dbQuery/ftpUpload/
   s3PutObject/tcpRead/sendMail/compressBytes/excelSaveAs/imageResize 等）
   在任务内调用时自动卸载到阻塞线程池（默认 256 线程，
   环境变量 `SF_BLOCKING_WORKERS` 可配），任务挂起等待结果、不占调度 worker——
@@ -997,7 +997,7 @@ import "lib.sf"               // 加载并执行，顶层定义合并到当前�
 | `eG` | 自然对数底 e |
 | `argsG` | 命令行参数数组 |
 | `scriptPathG` | 脚本路径 |
-| `paraMapG` | URL 查询参数 Map（仅 `sf -server` 脚本模式注入；键值已百分号解码） |
+| `paraMapG` | 请求参数 Map：URL 查询参数 + POST/PUT/PATCH 表单参数（urlencoded 及 multipart 非文件字段）合并，同名查询串优先（仅服务器模式注入；键值已解码，对齐 charlang ParseForm + FormToMap 语义） |
 | `reqMethodG` / `reqPathG` / `reqUriG` | HTTP 请求方法 / 路径 / 完整 URI（仅服务器模式注入） |
 | `requestG` / `responseG` | HTTP 请求/响应对象（仅服务器模式注入） |
 | `inputG` | 请求体文本（仅服务器模式注入） |

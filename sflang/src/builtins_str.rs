@@ -173,7 +173,7 @@ static DOC_STR_FIND: BuiltinDoc = BuiltinDoc {
 
 static DOC_BYTESAT: BuiltinDoc = BuiltinDoc {
     category: "string",
-    signature: "bytesAt(b, idx) -> int",
+    signature: "bytesAt(b, idx) -> int（b 为 string 或 bytes/byteArray）",
     summary: "获取字节值（0-255）。",
     params: &[("b", "bytes/string"), ("idx", "字节索引")],
     returns: "int",
@@ -193,7 +193,7 @@ static DOC_BYTESGBTOUTF8STR: BuiltinDoc = BuiltinDoc {
 
 static DOC_BYTESSLICE: BuiltinDoc = BuiltinDoc {
     category: "string",
-    signature: "bytesSlice(b, start[, end]) -> bytes",
+    signature: "bytesSlice(b, start[, end]) -> bytes（b 为 string 或 bytes/byteArray）",
     summary: "按字节切片。",
     params: &[("b", "bytes/string"), ("start", "起始"), ("end", "可选")],
     returns: "bytes",
@@ -742,8 +742,18 @@ pub(crate) fn bi_reverse_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Valu
 /// 用于协议解析、手动 UTF-8 处理等需要字节级访问的场景。
 /// 注：可能切断多字节字符（与按字符的 s[i:j] 切片不同）。
 fn bi_bytes_slice(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let s = bh::as_str(args, 0, "bytesSlice")?;
-    let bytes = s.as_bytes();
+    // 第一参数接受 string 或 bytes/byteArray（二进制切片，如 //TXDEF# 图片数据的解密截取）
+    let bytes: Vec<u8> = match &args[0] {
+        Value::Str(s) => s.as_bytes().to_vec(),
+        Value::Bytes(b) => b.as_ref().clone(),
+        Value::ByteArray(b) => b.lock().unwrap().clone(),
+        v => {
+            return Err(crate::value::error_value(format!(
+                "bytesSlice() 第 1 个参数应为 string/bytes/byteArray，得到 {}",
+                v.type_name()
+            )))
+        }
+    };
     let n = bytes.len() as i64;
     let start = bh::as_int(args, 1, "bytesSlice")?;
     let mut start = if start < 0 { start + n } else { start };
@@ -767,8 +777,18 @@ fn bi_bytes_slice(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 越界报错。负索引支持。
 fn bi_bytes_at(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
-    let s = bh::as_str(args, 0, "bytesAt")?;
-    let bytes = s.as_bytes();
+    // 第一参数接受 string 或 bytes/byteArray
+    let bytes: Vec<u8> = match &args[0] {
+        Value::Str(s) => s.as_bytes().to_vec(),
+        Value::Bytes(b) => b.as_ref().clone(),
+        Value::ByteArray(b) => b.lock().unwrap().clone(),
+        v => {
+            return Err(crate::value::error_value(format!(
+                "bytesAt() 第 1 个参数应为 string/bytes/byteArray，得到 {}",
+                v.type_name()
+            )))
+        }
+    };
     let n = bytes.len() as i64;
     let mut i = bh::as_int(args, 1, "bytesAt")?;
     if i < 0 { i += n; }

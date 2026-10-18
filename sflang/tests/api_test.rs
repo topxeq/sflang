@@ -3643,7 +3643,502 @@ fn test_http_save_file_uploads() {
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
+/// http_post_raw 向测试服务器发送原始 HTTP 请求并返回响应全文。
+fn http_post_raw(port: u16, raw_req: &str) -> String {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+    stream.write_all(raw_req.as_bytes()).unwrap();
+    let mut resp_buf = Vec::new();
+    stream.read_to_end(&mut resp_buf).unwrap();
+    String::from_utf8_lossy(&resp_buf).into_owned()
+}
+
+/// 取响应体（首个 \r\n\r\n 之后的部分）。
+fn http_body(resp: &str) -> &str {
+    let pos = resp.find("\r\n\r\n").map(|p| p + 4).unwrap_or(0);
+    &resp[pos..]
+}
+
+#[test]
+fn test_http_paramap_merges_post_form() {
+    let port = 19011;
+    start_test_server("\
+        var server = httpServer(\"--port={PORT}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/japi\", func(req, resp) {\n\
+            setRespContentType(resp, \"application/json\")\n\
+            return jsonEncode(paraMapG)\n\
+        })\n\
+        serverStart(server, \"--thread\")\n\
+    ", port);
+
+    // POST urlencoded：body 参数 + 查询串参数；同名字段查询串优先（对齐 Go r.Form 语义）
+    let req = format!(
+        "POST /japi?src=query&cmd=fromQuery HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\
+         Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\nreq=fromBody&value=42%20x",
+        port, "req=fromBody&value=42%20x".len()
+    );
+    let resp_raw = http_post_raw(port, &req);
+    let body = http_body(&resp_raw);
+    assert!(body.contains("\"req\":\"fromBody\""), "body 参数应入 paraMapG: {}", body);
+    assert!(body.contains("\"value\":\"42 x\""), "百分号解码应生效: {}", body);
+    assert!(body.contains("\"src\":\"query\""), "查询串参数应保留: {}", body);
+    assert!(body.contains("\"cmd\":\"fromQuery\""), "同名时查询串应优先: {}", body);
+
+    // GET 请求：仅查询串，不解析 body
+    let url = format!("http://127.0.0.1:{}/japi?src=queryonly", port);
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    sf.run_string(&format!("var result = getWeb(\"{}\")", url)).unwrap();
+    match sf.get_global("result").unwrap() {
+        Value::Str(s) => {
+            assert!(s.contains("\"src\":\"queryonly\""), "GET 查询串应生效: {}", s);
+            assert!(!s.contains("value"), "GET 不应残留上次 POST 的 body 参数: {}", s);
+        }
+        other => panic!("期望字符串，得到 {:?}", other),
+    }
+}
+
+#[test]
+fn test_http_paramap_merges_multipart_values() {
+    let port = 19012;
+    start_test_server("\
+        var server = httpServer(\"--port={PORT}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/upload\", func(req, resp) {\n\
+            setRespContentType(resp, \"application/json\")\n\
+            return jsonEncode(paraMapG)\n\
+        })\n\
+        serverStart(server, \"--thread\")\n\
+    ", port);
+
+    // multipart：非文件字段入 paraMapG，文件字段不入（由 saveFileUploads/parseReqForm 处理）
+    let boundary = "----sflangtest12";
+    let body = format!(
+        "--{b}\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nhello form\r\n\
+         --{b}\r\nContent-Disposition: form-data; name=\"avatar\"; filename=\"a.txt\"\r\n\
+         Content-Type: text/plain\r\n\r\nfile content\r\n\
+         --{b}--\r\n",
+        b = boundary
+    );
+    let req = format!(
+        "POST /upload?src=query HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\
+         Content-Type: multipart/form-data; boundary={}\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n{}",
+        port, boundary, body.len(), body
+    );
+    let resp_raw = http_post_raw(port, &req);
+    let resp_body = http_body(&resp_raw);
+    assert!(resp_body.contains("\"title\":\"hello form\""), "multipart 非文件字段应入 paraMapG: {}", resp_body);
+    assert!(resp_body.contains("\"src\":\"query\""), "查询串应与 multipart 字段合并: {}", resp_body);
+    assert!(!resp_body.contains("avatar"), "文件字段不应入 paraMapG: {}", resp_body);
+    assert!(!resp_body.contains("file content"), "文件内容不应入 paraMapG: {}", resp_body);
+}
+
+#[test]
+fn test_http_get_req_param_includes_form() {
+    let port = 19013;
+    start_test_server("\
+        var server = httpServer(\"--port={PORT}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/japi\", func(req, resp) {\n\
+            setRespContentType(resp, \"application/json\")\n\
+            return jsonEncode({\"p\": getReqParam(req, \"cmd\"), \"all\": getReqParams(req)[\"cmd\"]})\n\
+        })\n\
+        serverStart(server, \"--thread\")\n\
+    ", port);
+
+    let req = format!(
+        "POST /japi HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\
+         Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\ncmd=next",
+        port, "cmd=next".len()
+    );
+    let resp_raw = http_post_raw(port, &req);
+    let body = http_body(&resp_raw);
+    assert!(body.contains("\"p\":\"next\""), "getReqParam 应取到 POST 表单参数: {}", body);
+    assert!(body.contains("\"all\":\"next\""), "getReqParams 应取到 POST 表单参数: {}", body);
+}
+
+
+#[test]
+fn test_http_post_form_urlencoded_with_query() {
+    let port = 19014;
+    start_test_server("\
+        var server = httpServer(\"--port={PORT}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/japi\", func(req, resp) {\n\
+            setRespContentType(resp, \"application/json\")\n\
+            return jsonEncode(paraMapG)\n\
+        })\n\
+        serverStart(server, \"--thread\")\n\
+    ", port);
+
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    let url = format!("http://127.0.0.1:{}/japi?src=query", port);
+    sf.run_string(&format!(
+        "var result = postForm(\"{}\", {{\"req\": \"next\", \"note\": \"a b+c\"}})", url
+    )).unwrap();
+    match sf.get_global("result").unwrap() {
+        Value::Str(s) => {
+            assert!(s.contains("\"src\":\"query\""), "URL query 应入 paraMapG: {}", s);
+            assert!(s.contains("\"req\":\"next\""), "表单字段应入 paraMapG: {}", s);
+            assert!(s.contains("\"note\":\"a b+c\""), "表单编码解码应正确: {}", s);
+        }
+        other => panic!("期望字符串，得到 {:?}", other),
+    }
+}
+
+#[test]
+fn test_http_post_form_multipart_file() {
+    let port = 19015;
+    let tmp_base = std::env::temp_dir();
+    let tmp_dir = tmp_base.join(format!("sflang_postform_{}", port));
+    let tmp_dir_str = tmp_dir.to_string_lossy().replace('\\', "/");
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    start_test_server(&format!("\
+        var server = httpServer(\"--port={{PORT}}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/upload\", func(req, resp) {{\n\
+            var saved = saveFileUploads(req, \"{}\")\n\
+            if isErr(saved) {{ return str(saved) }}\n\
+            setRespContentType(resp, \"application/json\")\n\
+            return jsonEncode({{\"fields\": paraMapG, \"saved\": saved}})\n\
+        }})\n\
+        serverStart(server, \"--thread\")\n\
+    ", tmp_dir_str), port);
+
+    // 准备上传源文件（先建目录，服务端 saveFileUploads 也会自动建）
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let upload_src = tmp_dir.join("src.txt");
+    std::fs::write(&upload_src, b"postform file content").unwrap();
+
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    let url = format!("http://127.0.0.1:{}/upload", port);
+    let src_path = upload_src.to_string_lossy().replace('\\', "/");
+    sf.run_string(&format!(
+        "var result = postForm(\"{}\", {{\"title\": \"hello form\"}}, {{\"avatar\": \"{}\"}})", url, src_path
+    )).unwrap();
+    match sf.get_global("result").unwrap() {
+        Value::Str(s) => {
+            assert!(s.contains("\"title\":\"hello form\""), "multipart 文本字段应入 paraMapG: {}", s);
+            assert!(s.contains("src.txt"), "上传文件名应保留: {}", s);
+        }
+        other => panic!("期望字符串，得到 {:?}", other),
+    }
+
+    // saveFileUploads 按上传文件名落盘，文件内容应逐字节保存
+    let saved = tmp_dir.join("src.txt");
+    assert!(saved.exists(), "文件应已保存到 {}", saved.display());
+    assert_eq!(std::fs::read(&saved).unwrap(), b"postform file content");
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+
+#[test]
+fn test_http_getweb_unified_request() {
+    let port = 19016;
+    start_test_server("\
+        var server = httpServer(\"--port={PORT}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/echo\", func(req, resp) {\n\
+            setRespContentType(resp, \"application/json\")\n\
+            return jsonEncode({\"method\": getReqField(req, \"method\"), \"params\": paraMapG, \"body\": getReqBody(req), \"xtest\": getReqHeader(req, \"X-Test\")})\n\
+        })\n\
+        serverSetHandler(server, \"/bad\", func(req, resp) {\n\
+            setRespStatus(resp, 500)\n\
+            return \"boom\"\n\
+        })\n\
+        serverStart(server, \"--thread\")\n\
+    ", port);
+    let base = format!("http://127.0.0.1:{}", port);
+
+    // Map 参数 → 表单 POST（query+form 混合）
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    sf.run_string(&format!(
+        "var r1 = getWeb(\"{}/echo?src=q\", {{\"req\": \"next\"}})\n\
+         var r2 = getWeb(\"{}/echo\", {{\"a\": \"1\"}})\n\
+         var r3 = getWeb(\"{}/echo\", \"--method=PUT\", \"--body=raw\", \"--contentType=text/plain\")\n\
+         var r4 = getWeb(\"{}/echo\", `-post={{\"k\":\"v v\"}}`)\n\
+         var r5 = getWeb(\"{}/echo\", \"-headers={{\\\"X-Test\\\":\\\"tv\\\"}}\", \"--object\")\n\
+         var r6 = getWeb(\"{}/bad\", \"--returnAny\")\n\
+         var r7 = getWeb(\"{}/echo\", \"--method=DELETE\", \"--object\")",
+        base, base, base, base, base, base, base
+    )).unwrap();
+
+    let g = |sf: &mut Sflang, name: &str| -> String {
+        match sf.get_global(name).unwrap() {
+            Value::Str(s) => s.to_string(),
+            other => other.to_str(),
+        }
+    };
+    let r1 = g(&mut sf, "r1");
+    assert!(r1.contains("\"method\":\"POST\"") && r1.contains("\"src\":\"q\"") && r1.contains("\"req\":\"next\""), "r1: {}", r1);
+    let r3 = g(&mut sf, "r3");
+    assert!(r3.contains("\"method\":\"PUT\"") && r3.contains("\"body\":\"raw\""), "r3: {}", r3);
+    let r4 = g(&mut sf, "r4");
+    assert!(r4.contains("\"body\":\"k=v+v\"") && r4.contains("\"k\":\"v v\""), "r4: {}", r4);
+    let r5 = sf.get_global("r5").unwrap();
+    match &r5 {
+        Value::Map(m) => {
+            let m = m.lock().unwrap();
+            assert!(m.get("xtest").map(|v| v.to_str()) == Some("tv".to_string()), "r5 xtest: {:?}", m.get("xtest"));
+            assert_eq!(m.get("method").map(|v| v.to_str()), Some("GET".to_string()));
+        }
+        other => panic!("r5 应为 Map，得到 {:?}", other.type_name()),
+    }
+    let r6 = sf.get_global("r6").unwrap();
+    match &r6 {
+        Value::Map(m) => {
+            let m = m.lock().unwrap();
+            assert_eq!(m.get("respCode").map(|v| v.to_str()), Some("500".to_string()));
+            assert!(matches!(m.get("respBody"), Some(Value::Bytes(_))), "respBody 应为 bytes");
+        }
+        other => panic!("r6 应为 Map，得到 {:?}", other.type_name()),
+    }
+    let r7 = sf.get_global("r7").unwrap();
+    match &r7 {
+        Value::Map(m) => {
+            let m = m.lock().unwrap();
+            assert_eq!(m.get("method").map(|v| v.to_str()), Some("DELETE".to_string()));
+        }
+        other => panic!("r7 应为 Map，得到 {:?}", other.type_name()),
+    }
+    let _ = g(&mut sf, "r2"); // 确认 map 表单默认 POST 已执行（r2 无断言，防未编译）
+}
+
+#[test]
+fn test_http_getweb_save_to_and_bytes() {
+    let port = 19017;
+    start_test_server("\
+        var server = httpServer(\"--port={PORT}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/data\", func(req, resp) {\n\
+            return \"save-to-file-content\"\n\
+        })\n\
+        serverStart(server, \"--thread\")\n\
+    ", port);
+
+    let tmp = std::env::temp_dir().join(format!("sflang_getweb_save_{}", port));
+    let tmp_str = tmp.to_string_lossy().replace('\\', "/");
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    sf.run_string(&format!(
+        "var n = getWeb(\"http://127.0.0.1:{}/data\", \"--saveTo={}\")\n\
+         var b = getWeb(\"http://127.0.0.1:{}/data\", \"--bytes\")",
+        port, tmp_str, port
+    )).unwrap();
+    match sf.get_global("n").unwrap() {
+        Value::Int(n) => assert_eq!(n, "save-to-file-content".len() as i64),
+        other => panic!("saveTo 应返回字节数 int，得到 {:?}", other.type_name()),
+    }
+    assert_eq!(std::fs::read(&tmp).unwrap(), b"save-to-file-content");
+    match sf.get_global("b").unwrap() {
+        Value::Bytes(b) => assert_eq!(b.as_ref(), b"save-to-file-content"),
+        other => panic!("--bytes 应返回 bytes，得到 {:?}", other.type_name()),
+    }
+    let _ = std::fs::remove_file(&tmp);
+}
+
+
+#[test]
+fn test_http_getweb_withresp_and_redirect() {
+    let port = 19018;
+    start_test_server("\
+        var server = httpServer(\"--port={PORT}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/r1\", func(req, resp) {\n\
+            setRespStatus(resp, 302)\n\
+            setRespHeader(resp, \"Location\", \"/final\")\n\
+            return \"moved\"\n\
+        })\n\
+        serverSetHandler(server, \"/final\", func(req, resp) {\n\
+            setRespHeader(resp, \"X-Mark\", \"final1\")\n\
+            return \"final-page\"\n\
+        })\n\
+        serverStart(server, \"--thread\")\n\
+    ", port);
+    let base = format!("http://127.0.0.1:{}", port);
+
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    sf.run_string(&format!(
+        "var noredir = getWeb(\"{}/r1\", \"--noRedirect\", \"--withResp\")\n\
+         var followed = getWeb(\"{}/r1\")",
+        base, base
+    )).unwrap();
+
+    match sf.get_global("noredir").unwrap() {
+        Value::Map(m) => {
+            let m = m.lock().unwrap();
+            assert_eq!(m.get("status").map(|v| v.to_str()), Some("302".to_string()));
+            match m.get("headers") {
+                Some(Value::Map(h)) => {
+                    let h = h.lock().unwrap();
+                    assert_eq!(h.get("location").map(|v| v.to_str()), Some("/final".to_string()));
+                }
+                other => panic!("headers 应为 Map，得到 {:?}", other.map(|v| v.type_name())),
+            }
+            match m.get("body") {
+                Some(Value::Bytes(b)) => assert_eq!(b.as_ref(), b"moved"),
+                other => panic!("body 应为 bytes，得到 {:?}", other.map(|v| v.type_name())),
+            }
+            assert!(m.get("finalUrl").is_some(), "finalUrl 应存在");
+            assert!(m.get("elapsedMs").is_some(), "elapsedMs 应存在");
+        }
+        other => panic!("noredir 应为 Map，得到 {:?}", other.type_name()),
+    }
+    match sf.get_global("followed").unwrap() {
+        Value::Str(s) => assert_eq!(s.as_ref(), "final-page"),
+        other => panic!("followed 应为 string，得到 {:?}", other.type_name()),
+    }
+}
+
+#[test]
+fn test_http_getweb_session_cookies() {
+    let port = 19019;
+    start_test_server("\
+        var server = httpServer(\"--port={PORT}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/login\", func(req, resp) {\n\
+            setRespHeader(resp, \"Set-Cookie\", \"sid=abc123; Path=/; Max-Age=3600\")\n\
+            return jsonEncode({\"ok\": true})\n\
+        })\n\
+        serverSetHandler(server, \"/me\", func(req, resp) {\n\
+            setRespContentType(resp, \"application/json\")\n\
+            return jsonEncode({\"cookie\": getReqHeader(req, \"Cookie\")})\n\
+        })\n\
+        serverStart(server, \"--thread\")\n\
+    ", port);
+    let base = format!("http://127.0.0.1:{}", port);
+
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    sf.run_string(&format!(
+        "var sess = httpSession()\n\
+         var login = getWeb(\"{}/login\", sess, \"--object\")\n\
+         var me = getWeb(\"{}/me\", sess, \"--object\")\n\
+         var cookies = httpSessionDump(sess)",
+        base, base
+    )).unwrap();
+
+    match sf.get_global("me").unwrap() {
+        Value::Map(m) => {
+            let m = m.lock().unwrap();
+            assert_eq!(
+                m.get("cookie").map(|v| v.to_str()),
+                Some("sid=abc123".to_string()),
+                "第二次请求应自动携带会话 Cookie",
+            );
+        }
+        other => panic!("me 应为 Map，得到 {:?}", other.type_name()),
+    }
+    match sf.get_global("cookies").unwrap() {
+        Value::Array(a) => {
+            let a = a.lock().unwrap();
+            assert_eq!(a.len(), 1, "应有 1 条 Cookie");
+            match &a[0] {
+                Value::Map(m) => {
+                    let m = m.lock().unwrap();
+                    assert_eq!(m.get("name").map(|v| v.to_str()), Some("sid".to_string()));
+                    assert_eq!(m.get("value").map(|v| v.to_str()), Some("abc123".to_string()));
+                }
+                other => panic!("dump 元素应为 Map，得到 {:?}", other.type_name()),
+            }
+        }
+        other => panic!("dump 应为数组，得到 {:?}", other.type_name()),
+    }
+}
+
+#[test]
+fn test_http_getweb_maxsize_progress_saveto() {
+    let port = 19020;
+    let tmp = std::env::temp_dir().join(format!("sflang_getweb_stream_{}", port));
+    let tmp_str = tmp.to_string_lossy().replace('\\', "/");
+    let _ = std::fs::remove_file(&tmp);
+
+    start_test_server(&format!("\
+        var server = httpServer(\"--port={{PORT}}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/big\", func(req, resp) {{\n\
+            writeRespBytes(resp, strRepeat(\"x\", 100000))\n\
+            return\n\
+        }})\n\
+        serverStart(server, \"--thread\")\n\
+    "), port);
+    let base = format!("http://127.0.0.1:{}", port);
+
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    sf.run_string(&format!(
+        "var guard = getWeb(\"{}/big\", \"--maxSize=1000\")\n\
+         var lastRec = 0\n\
+         var calls = 0\n\
+         var n = getWeb(\"{}/big\", \"--saveTo={}\", func(rec, total) {{ lastRec = rec; calls = calls + 1 }})",
+        base, base, tmp_str
+    )).unwrap();
+
+    match sf.get_global("guard").unwrap() {
+        Value::Error(e) => {
+            let msg = e.message.clone();
+            assert!(msg.contains("上限"), "maxSize 应报上限错误: {}", msg);
+        }
+        other => panic!("maxSize 应返回 error 对象，得到 {:?}", other.type_name()),
+    }
+    match sf.get_global("n").unwrap() {
+        Value::Int(n) => assert_eq!(n, 100000, "saveTo 应返回写入字节数"),
+        other => panic!("saveTo 应返回 int，得到 {:?}", other.type_name()),
+    }
+    assert_eq!(std::fs::read(&tmp).unwrap(), vec![b'x'; 100000]);
+    let calls = match sf.get_global("calls").unwrap() {
+        Value::Int(c) => c,
+        other => panic!("calls 应为 int，得到 {:?}", other.type_name()),
+    };
+    assert!(calls >= 2, "进度回调应被多次调用 (calls={})", calls);
+    match sf.get_global("lastRec").unwrap() {
+        Value::Int(last) => assert_eq!(last, 100000, "最后一次回调应报告全部字节"),
+        other => panic!("lastRec 应为 int，得到 {:?}", other.type_name()),
+    }
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn test_http_getweb_retry_after() {
+    let port = 19021;
+    start_test_server("\
+        var server = httpServer(\"--port={PORT}\", \"--host=127.0.0.1\")\n\
+        serverSetHandler(server, \"/throttle\", func(req, resp) {\n\
+            if isUndefined(throttleCountG) {\n\
+                throttleCountG := 0\n\
+            }\n\
+            throttleCountG := throttleCountG + 1\n\
+            if throttleCountG < 2 {\n\
+                setRespStatus(resp, 429)\n\
+                setRespHeader(resp, \"Retry-After\", \"1\")\n\
+                return \"slow down\"\n\
+            }\n\
+            return \"ok-now\"\n\
+        })\n\
+        serverStart(server, \"--thread\")\n\
+    ", port);
+
+    let mut sf = Sflang::new();
+    sf.set_output(std::io::sink());
+    sf.run_string(&format!(
+        "var t1 = clock()\n\
+         var r = getWeb(\"http://127.0.0.1:{}/throttle\", \"--retry=3\")\n\
+         var ms = clock() - t1",
+        port
+    )).unwrap();
+    match sf.get_global("r").unwrap() {
+        Value::Str(s) => assert_eq!(s.as_ref(), "ok-now", "Retry-After 等待后重试应成功"),
+        other => panic!("应为 string，得到 {:?}", other.type_name()),
+    }
+    match sf.get_global("ms").unwrap() {
+        Value::Int(ms) => assert!(ms >= 900, "应等待 Retry-After 指定的 1 秒 (实际 {}ms)", ms),
+        other => panic!("ms 应为 int，得到 {:?}", other.type_name()),
+    }
+}
+
 // ---- 压缩与 ZIP 测试 ----
+
+
 
 #[test]
 fn test_compress_decompress_bytes() {

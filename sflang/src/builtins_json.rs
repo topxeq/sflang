@@ -577,6 +577,19 @@ impl<'a> Decoder<'a> {
     }
 }
 
+/// parse_json_str 解析完整 JSON 字符串为 Value（供其他模块内部使用）。
+///
+/// 要求整个字符串都是合法 JSON（末尾多余字符报错）；解析失败返回错误描述。
+pub fn parse_json_str(s: &str) -> Result<Value, String> {
+    let mut dec = Decoder::new(s);
+    let v = dec.parse_value().map_err(|e| e.to_str())?;
+    dec.skip_ws();
+    if dec.pos != dec.bytes.len() {
+        return Err("JSON 末尾存在多余字符".to_string());
+    }
+    Ok(v)
+}
+
 /// bi_json_decode 将 JSON 字符串解码为 Value。
 fn bi_json_decode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let s = bh::as_str(args, 0, "jsonDecode")?;

@@ -521,6 +521,25 @@ static DOC_PLNOW: BuiltinDoc = BuiltinDoc {
     errors: &["时间戳取自本地时区（与 getNowStr 一致）"],
 };
 
+static DOC_PL_ERR: BuiltinDoc = BuiltinDoc {
+    category: "core",
+    signature: "plErr(fmt, args...) -> undefined",
+    summary: "格式化输出一行到 stderr（进程级，不受 set_output 重定向影响，自动换行）。",
+    params: &[
+        ("fmt", "格式字符串（占位符同 printf）"),
+        ("args", "对应占位符的参数（可变）"),
+    ],
+    returns: "undefined",
+    examples: &[
+        "plErr(\"invalid token\")",
+        "plErr(\"failed to remove [%v] %v: %v\", i, path, err)",
+    ],
+    errors: &[
+        "与 pl 的区别：直写进程 stderr 而非 VM 输出通道——服务管理器（systemd/journald）",
+        "会捕获到标准服务日志；需要与正常输出分流、或主输出被重定向时使用",
+    ],
+};
+
 static DOC_FATALF: BuiltinDoc = BuiltinDoc {
     category: "core",
     signature: "fatalf(fmt, args...) -> !",
@@ -1382,6 +1401,7 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("printfln", bi_printfln, &DOC_PRINTFLN);
     vm.register_builtin_doc("pl", bi_printfln, &DOC_PL);
     vm.register_builtin_doc("plNow", bi_pl_now, &DOC_PLNOW);
+    vm.register_builtin_doc("plErr", bi_pl_err, &DOC_PL_ERR);
     vm.register_builtin_doc("fatalf", bi_fatalf, &DOC_FATALF);
     vm.register_builtin_doc("len", bi_len, &DOC_LEN);
     vm.register_builtin_doc("keys", bi_keys, &DOC_KEYS);
@@ -1520,6 +1540,19 @@ fn bi_printfln(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let s = sprintf(args)?;
     let out = _vm.output_handle();
     writeln!(out.lock().unwrap(), "{}", s).map_err(|e| crate::value::error_value(e.to_string()))?;
+    Ok(Value::Undefined)
+}
+
+/// bi_pl_err 格式化输出一行到 stderr（不退出进程）。
+///
+/// 用法：plErr("invalid token")
+///       plErr("failed to remove [%v] %v: %v", i, path, err)
+/// 与 pl 的区别：直写进程 stderr（eprintln），不受 VM set_output 重定向影响——
+/// systemd/journald 等服务管理器会捕获到标准服务日志；需要与正常输出分流、
+/// 或主输出被重定向/丢弃时使用。
+fn bi_pl_err(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let s = if args.is_empty() { String::new() } else { sprintf(args)? };
+    eprintln!("{}", s);
     Ok(Value::Undefined)
 }
 

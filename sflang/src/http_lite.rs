@@ -890,8 +890,12 @@ pub struct ClientResponse {
     pub status: u16,
     /// headers 响应头。
     pub headers: Vec<(String, String)>,
-    /// body 响应体。
+    /// body 响应体（流式落盘模式下为空，实际字节量见 body_len）。
     pub body: Vec<u8>,
+    /// body_len 实际接收的响应体字节数（含流式落盘模式）。
+    pub body_len: u64,
+    /// final_uri 重定向后的最终 URL（无重定向时与请求 URL 一致）。
+    pub final_uri: String,
 }
 
 impl ClientResponse {
@@ -916,7 +920,7 @@ impl ClientResponse {
 /// - `headers`: 自定义请求头列表（可选，`["Content-Type: text/plain", ...]`）
 /// - `timeout_secs`: 超时秒数（0 = 不超时）
 pub fn http_get(url: &str, headers: &[String], timeout_secs: u64) -> Result<ClientResponse, String> {
-    http_request("GET", url, &[], "", headers, timeout_secs, 0, None)
+    http_request("GET", url, &[], "", headers, timeout_secs, 0, None, false, &mut BodyReadOpts::default())
 }
 
 /// http_post 发送 HTTP POST 请求。
@@ -928,7 +932,7 @@ pub fn http_get(url: &str, headers: &[String], timeout_secs: u64) -> Result<Clie
 /// - `headers`: 额外请求头
 /// - `timeout_secs`: 超时秒数
 pub fn http_post(url: &str, body: &[u8], content_type: &str, headers: &[String], timeout_secs: u64) -> Result<ClientResponse, String> {
-    http_request("POST", url, body, content_type, headers, timeout_secs, 0, None)
+    http_request("POST", url, body, content_type, headers, timeout_secs, 0, None, false, &mut BodyReadOpts::default())
 }
 
 /// http_request 发送 HTTP 请求（支持任意方法，用于 S3 等需要 PUT/DELETE/HEAD 的场景）。
@@ -936,6 +940,7 @@ pub fn http_post(url: &str, body: &[u8], content_type: &str, headers: &[String],
 /// 底层使用 ureq crate 实现，自动处理 TLS、重定向、chunked 编码、连接池复用。
 /// `redirect_count` 参数保留以保持 API 兼容，实际由 ureq 内部处理重定向（最多 10 次）。
 /// `proxy` 参数可选，格式如 "http://host:port"、"socks5://host:port"，None 表示不使用代理。
+#[allow(clippy::too_many_arguments)]
 pub fn http_request(
     method: &str,
     url: &str,
@@ -945,8 +950,10 @@ pub fn http_request(
     timeout_secs: u64,
     _redirect_count: u32,
     proxy: Option<&str>,
+    insecure: bool,
+    read_opts: &mut BodyReadOpts,
 ) -> Result<ClientResponse, String> {
-    do_http_request(method, url, body, content_type, headers, timeout_secs, proxy)
+    do_http_request(method, url, body, content_type, headers, timeout_secs, proxy, insecure, 10, read_opts)
 }
 
 /// http_request_with_retry 发送 HTTP 请求，支持失败重试。
@@ -954,9 +961,11 @@ pub fn http_request(
 /// 仅在网络错误、超时、5xx、429 上重试；4xx（除 429）和 2xx/3xx 不重试。
 /// 重试采用指数退避：200ms、400ms、800ms... 上限 5s。
 /// `retries` 为 0 表示不重试（等价于 http_request）。
+/// `insecure` 为 true 时跳过 TLS 证书校验（自签名证书场景）。
 ///
 /// 统计：每次底层调用计入 total_requests/success_count/failure_count；
 /// 每次实际重试计入 retry_attempts。
+#[allow(clippy::too_many_arguments)]
 pub fn http_request_with_retry(
     method: &str,
     url: &str,
@@ -966,21 +975,40 @@ pub fn http_request_with_retry(
     timeout_secs: u64,
     proxy: Option<&str>,
     retries: u32,
+    insecure: bool,
+    max_redirects: u32,
+    read_opts: &mut BodyReadOpts,
 ) -> Result<ClientResponse, String> {
     let mut last_err: Option<String> = None;
+    // retry_after_secs 服务端 Retry-After 头指定的等待秒数（429/503 响应常见），
+    // 存在时优先于指数退避（上限 300s，避免被恶意服务端拖死）
+    let mut retry_after_secs: Option<u64> = None;
     for attempt in 0..=retries {
         if attempt > 0 {
             HTTP_STATS.retry_attempts.fetch_add(1, Ordering::Relaxed);
-            // 指数退避：200ms * 2^(attempt-1)，上限 5s
-            let backoff_ms = std::cmp::min(200u64 * (1u64 << (attempt - 1).min(5)), 5000);
-            std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+            match retry_after_secs.take() {
+                Some(secs) => {
+                    std::thread::sleep(std::time::Duration::from_secs(secs.min(300)));
+                }
+                None => {
+                    // 指数退避：200ms * 2^(attempt-1)，上限 5s
+                    let backoff_ms = std::cmp::min(200u64 * (1u64 << (attempt - 1).min(5)), 5000);
+                    std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+                }
+            }
         }
-        match do_http_request(method, url, body, content_type, headers, timeout_secs, proxy) {
+        match do_http_request(method, url, body, content_type, headers, timeout_secs, proxy, insecure, max_redirects, read_opts) {
             Ok(resp) => {
                 // 5xx 和 429 可重试
                 let retryable_status = resp.status == 429 || resp.status >= 500;
                 if retryable_status && attempt < retries {
                     last_err = Some(format!("HTTP {} 状态码 {} (可重试)", method, resp.status));
+                    // 服务端通过 Retry-After 头告知等待秒数（整数秒形式）时优先采用
+                    retry_after_secs = resp
+                        .headers
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case("retry-after"))
+                        .and_then(|(_, v)| v.trim().parse::<u64>().ok());
                     continue;
                 }
                 return Ok(resp);
@@ -995,6 +1023,27 @@ pub fn http_request_with_retry(
     Err(last_err.unwrap_or_else(|| "重试次数已耗尽".to_string()))
 }
 
+/// BodyReadOpts 响应体读取选项（进度回调 / 流式落盘 / 大小上限）。
+///
+/// 默认（Default）为全量读入内存，与既有行为完全一致。
+pub struct BodyReadOpts<'a> {
+    /// sink_path 流式落盘路径：给出时响应体逐块写入该文件，不进内存。
+    pub sink_path: Option<&'a std::path::Path>,
+    /// max_size 响应体大小上限（字节）：读取过程中一旦超过立即报错，防止意外 OOM。
+    pub max_size: Option<u64>,
+    /// progress 进度回调：每读取一块（64KB）调用一次，参数为 (已接收字节, 总字节)；总字节未知时为 -1。
+    pub progress: Option<&'a mut dyn FnMut(u64, i64)>,
+}
+
+impl<'a> Default for BodyReadOpts<'a> {
+    fn default() -> Self {
+        BodyReadOpts { sink_path: None, max_size: None, progress: None }
+    }
+}
+
+/// READ_CHUNK_SIZE 分块读取的块大小（64KB）。
+const READ_CHUNK_SIZE: usize = 64 * 1024;
+
 /// do_http_request 实际执行一次 HTTP 请求（统计计入全局计数器）。
 fn do_http_request(
     method: &str,
@@ -1004,10 +1053,25 @@ fn do_http_request(
     headers: &[String],
     timeout_secs: u64,
     proxy: Option<&str>,
+    insecure: bool,
+    max_redirects: u32,
+    read_opts: &mut BodyReadOpts,
 ) -> Result<ClientResponse, String> {
     HTTP_STATS.total_requests.fetch_add(1, Ordering::Relaxed);
 
-    let agent = match get_agent(timeout_secs, proxy) {
+    // URL 自动补 scheme（对齐 charlang）：不以 http:// / https:// 开头时自动补 http://
+    let url_owned;
+    let url = {
+        let lower = url.to_ascii_lowercase();
+        if lower.starts_with("http://") || lower.starts_with("https://") {
+            url
+        } else {
+            url_owned = format!("http://{}", url);
+            url_owned.as_str()
+        }
+    };
+
+    let agent = match get_agent(timeout_secs, proxy, insecure, max_redirects) {
         Ok(a) => a,
         Err(e) => {
             HTTP_STATS.failure_count.fetch_add(1, Ordering::Relaxed);
@@ -1015,7 +1079,7 @@ fn do_http_request(
         }
     };
     let method_upper = method.to_ascii_uppercase();
-    use std::io::Read;
+    use std::io::{Read, Write};
 
     // ureq 3.x 用 typestate 区分 RequestBuilder<WithoutBody>（GET/HEAD/DELETE）和 RequestBuilder<WithBody>（POST/PUT/PATCH）
     // 两条路径分别处理，header 设置逻辑用泛型函数 apply_req_headers 复用
@@ -1042,11 +1106,26 @@ fn do_http_request(
             req.send(body)
         }
         other => {
-            HTTP_STATS.failure_count.fetch_add(1, Ordering::Relaxed);
-            return Err(format!(
-                "不支持的 HTTP 方法: {} (可能原因：ureq Agent 仅提供 GET/POST/PUT/DELETE/HEAD/PATCH 便捷方法)",
-                other
-            ));
+            // 任意 HTTP 方法：通过 agent.run + http::Request 支持OPTIONS/TRACE/WebDAV 等扩展方法
+            let mut builder = ureq::http::Request::builder()
+                .method(other)
+                .uri(url);
+            if !content_type.is_empty() {
+                builder = builder.header("Content-Type", content_type);
+            }
+            for h in headers {
+                if let Some((k, v)) = h.split_once(':') {
+                    builder = builder.header(k.trim(), v.trim());
+                }
+            }
+            let req = match builder.body(body.to_vec()) {
+                Ok(r) => r,
+                Err(e) => {
+                    HTTP_STATS.failure_count.fetch_add(1, Ordering::Relaxed);
+                    return Err(format!("构造 {} 请求失败: {} (可能原因：方法名或 header 含非法字符)", other, e));
+                }
+            };
+            agent.run(req)
         }
     };
 
@@ -1063,6 +1142,7 @@ fn do_http_request(
 
     // 提取响应
     let status = resp.status().as_u16();
+    let final_uri = ureq::ResponseExt::get_uri(&resp).to_string();
     let mut headers_out: Vec<(String, String)> = Vec::new();
     for (k, v) in resp.headers().iter() {
         if let Ok(vs) = v.to_str() {
@@ -1070,15 +1150,68 @@ fn do_http_request(
         }
     }
 
-    // 读取响应体
-    let mut body_buf = Vec::new();
-    if let Err(e) = resp.body_mut().as_reader().read_to_end(&mut body_buf) {
-        HTTP_STATS.failure_count.fetch_add(1, Ordering::Relaxed);
-        return Err(format!("读取响应体失败: {}", e));
+    // 总字节数提示（Content-Length；缺失为 -1，由分块读取上报）
+    let total_hint: i64 = headers_out
+        .iter()
+        .find(|(k, _)| k == "content-length")
+        .and_then(|(_, v)| v.trim().parse::<i64>().ok())
+        .unwrap_or(-1);
+
+    // 读取响应体：分块读取，支持流式落盘 / 大小上限 / 进度回调
+    let mut body_buf: Vec<u8> = Vec::new();
+    let mut sink = match read_opts.sink_path {
+        Some(path) => {
+            let file = std::fs::File::create(path).map_err(|e| {
+                HTTP_STATS.failure_count.fetch_add(1, Ordering::Relaxed);
+                format!("创建落盘文件失败: {} (路径 {}；可能原因：目录不存在或无写入权限)", e, path.display())
+            })?;
+            Some(std::io::BufWriter::new(file))
+        }
+        None => None,
+    };
+    let mut received: u64 = 0;
+    let mut reader = resp.body_mut().as_reader();
+    loop {
+        let mut chunk = [0u8; READ_CHUNK_SIZE];
+        let n = reader.read(&mut chunk).map_err(|e| {
+            HTTP_STATS.failure_count.fetch_add(1, Ordering::Relaxed);
+            format!("读取响应体失败: {}", e)
+        })?;
+        if n == 0 {
+            break;
+        }
+        received += n as u64;
+        if let Some(limit) = read_opts.max_size {
+            if received > limit {
+                HTTP_STATS.failure_count.fetch_add(1, Ordering::Relaxed);
+                return Err(format!(
+                    "响应体大小超过上限: {} > {} 字节 (可用 --maxSize= 调大或移除该限制)",
+                    received, limit,
+                ));
+            }
+        }
+        match sink.as_mut() {
+            Some(w) => {
+                w.write_all(&chunk[..n]).map_err(|e| {
+                    HTTP_STATS.failure_count.fetch_add(1, Ordering::Relaxed);
+                    format!("写入落盘文件失败: {}", e)
+                })?;
+            }
+            None => body_buf.extend_from_slice(&chunk[..n]),
+        }
+        if let Some(cb) = read_opts.progress.as_mut() {
+            cb(received, total_hint);
+        }
+    }
+    if let Some(w) = sink.as_mut() {
+        w.flush().map_err(|e| {
+            HTTP_STATS.failure_count.fetch_add(1, Ordering::Relaxed);
+            format!("写入落盘文件失败: {}", e)
+        })?;
     }
 
     HTTP_STATS.success_count.fetch_add(1, Ordering::Relaxed);
-    Ok(ClientResponse { status, headers: headers_out, body: body_buf })
+    Ok(ClientResponse { status, headers: headers_out, body: body_buf, body_len: received, final_uri })
 }
 
 // ---------------------------------------------------------------------------
@@ -1160,28 +1293,44 @@ fn apply_req_headers<B>(
     req
 }
 
-/// AGENTS 全局 Agent 池，按 (timeout_secs, proxy) 缓存复用 Agent。
-/// 同一 (timeout, proxy) 的请求共享 Agent，从而共享连接池（keep-alive 复用）。
-/// 不同 timeout 或 proxy 的请求使用不同 Agent，各自独立连接池。
-static AGENTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<(u64, String), ureq::Agent>>> =
+/// AGENTS 全局 Agent 池，按 (timeout_secs, proxy, insecure) 缓存复用 Agent。
+/// 同一 (timeout, proxy, insecure) 的请求共享 Agent，从而共享连接池（keep-alive 复用）。
+/// 不同 timeout、proxy 或 insecure 的请求使用不同 Agent，各自独立连接池。
+static AGENTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<(u64, String, bool, u32), ureq::Agent>>> =
     std::sync::OnceLock::new();
 
-/// get_agent 获取（或创建）指定 (timeout, proxy) 的 ureq::Agent。
+/// ENV_PROXY 进程级缓存的环境代理设置（HTTP_PROXY/HTTPS_PROXY/ALL_PROXY + NO_PROXY，
+/// 由 ureq Proxy::try_from_env 解析；Windows 下还含注册表系统代理）。只在未显式给 --proxy 时生效。
+static ENV_PROXY: std::sync::OnceLock<Option<ureq::Proxy>> = std::sync::OnceLock::new();
+
+/// get_agent 获取（或创建）指定 (timeout, proxy, insecure) 的 ureq::Agent。
 ///
 /// Agent 配置：
 /// - http_status_as_error = false：4xx/5xx 不当作 Err，保持 sflang 习惯（返回状态码由调用方判断）
 /// - max_redirects = 10：自动跟随重定向，最多 10 次
 /// - user_agent = "Sflang/0.1"
 /// - TLS 根证书 = PlatformVerifier：用 OS 系统证书校验
-///   (Windows SChannel / Linux ca-certificates / macOS Keychain)
+///   (Windows SChannel / Linux ca-certificates / macOS Keychain)；
+///   insecure = true 时跳过证书校验（自签名证书 / 内网测试场景）
 /// - timeout_global：按 timeout_secs 配置（0 = 不超时）
 /// - proxy：可选代理，格式如 "http://host:port"、"socks5://host:port"
-fn get_agent(timeout_secs: u64, proxy: Option<&str>) -> Result<ureq::Agent, String> {
+/// get_agent 获取（或创建）指定 (timeout, proxy, insecure, max_redirects) 的 ureq::Agent。
+///
+/// 代理优先级：显式 proxy 参数 > 环境变量（HTTP_PROXY/HTTPS_PROXY/ALL_PROXY + NO_PROXY）> 无。
+/// 缓存键中的 proxy_key：""=无代理，"ENV"=环境代理，其他=显式代理串。
+fn get_agent(timeout_secs: u64, proxy: Option<&str>, insecure: bool, max_redirects: u32) -> Result<ureq::Agent, String> {
     use std::time::Duration;
     use ureq::tls::{RootCerts, TlsConfig};
 
-    let proxy_key = proxy.unwrap_or("").to_string();
-    let cache_key = (timeout_secs, proxy_key);
+    // 代理键：显式串原样；未显式给出时若环境里有代理则用 "ENV" 哨兵（解析结果进程级缓存）
+    let proxy_key = match proxy {
+        Some(p) => p.to_string(),
+        None => {
+            let has_env = ENV_PROXY.get_or_init(|| ureq::Proxy::try_from_env()).is_some();
+            if has_env { "ENV".to_string() } else { String::new() }
+        }
+    };
+    let cache_key = (timeout_secs, proxy_key.clone(), insecure, max_redirects);
 
     let agents = AGENTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     let mut guard = match agents.lock() {
@@ -1193,29 +1342,37 @@ fn get_agent(timeout_secs: u64, proxy: Option<&str>) -> Result<ureq::Agent, Stri
         return Ok(a.clone());
     }
 
+    let mut tls_builder = TlsConfig::builder().root_certs(RootCerts::PlatformVerifier);
+    if insecure {
+        // 跳过服务器证书校验（自签名证书 / 内网 HTTPS 测试场景）
+        tls_builder = tls_builder.disable_verification(true);
+    }
     let mut builder = ureq::Agent::config_builder()
         .http_status_as_error(false)
-        .max_redirects(10)
+        .max_redirects(max_redirects)
         .user_agent("Sflang/0.1")
         // 禁用 Accept-Encoding 头，避免 S3 SigV4 签名场景下服务器返回压缩响应
         // （未启用 gzip/brotli feature 时 ureq 不会自动解压，压缩响应会导致 S3 XML 解析失败）
         .accept_encoding(ureq::config::AutoHeaderValue::None)
-        .tls_config(
-            TlsConfig::builder()
-                .root_certs(RootCerts::PlatformVerifier)
-                .build(),
-        );
+        .tls_config(tls_builder.build());
 
     if timeout_secs > 0 {
         builder = builder.timeout_global(Some(Duration::from_secs(timeout_secs)));
     }
 
-    // 配置代理（ureq 原生支持 http/https/socks5 协议）
-    if let Some(p) = proxy {
-        let proxy = ureq::Proxy::new(p).map_err(|e| {
-            format!("代理配置失败: {} (可能原因：URL 格式错误，应为 http://host:port 或 socks5://host:port)", e)
-        })?;
-        builder = builder.proxy(Some(proxy));
+    // 配置代理：显式 > 环境（ureq 原生支持 http/https/socks5 协议）
+    match proxy {
+        Some(p) => {
+            let proxy = ureq::Proxy::new(p).map_err(|e| {
+                format!("代理配置失败: {} (可能原因：URL 格式错误，应为 http://host:port 或 socks5://host:port)", e)
+            })?;
+            builder = builder.proxy(Some(proxy));
+        }
+        None => {
+            if let Some(env_proxy) = ENV_PROXY.get() {
+                builder = builder.proxy(env_proxy.clone());
+            }
+        }
     }
 
     let agent: ureq::Agent = builder.build().into();

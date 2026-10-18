@@ -33,6 +33,7 @@ pub mod compiler;
 pub mod vm;
 pub mod scheduler;
 pub mod builtins;
+pub mod http_session;
 pub mod builtins_helpers;
 pub mod builtins_str;
 pub mod builtins_math;

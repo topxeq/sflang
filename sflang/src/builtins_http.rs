@@ -244,10 +244,10 @@ static DOC_GET_REQ_BODY_BYTES: BuiltinDoc = BuiltinDoc {
 static DOC_GET_REQ_PARAM: BuiltinDoc = BuiltinDoc {
     category: "http",
     signature: "getReqParam(req, key) -> string|undefined",
-    summary: "返回指定查询参数的值，不存在时返回 undefined。",
+    summary: "返回指定请求参数的值（URL 查询参数与 POST/PUT/PATCH 表单参数合并，同名查询串优先），不存在时返回 undefined。",
     params: &[
         ("req", "handler 中的请求对象"),
-        ("key", "查询参数名"),
+        ("key", "参数名"),
     ],
     returns: "string 值，不存在时 undefined",
     examples: &["page := getReqParam(req, \"page\")  // \"1\" 或 undefined"],
@@ -260,7 +260,7 @@ static DOC_GET_REQ_PARAM: BuiltinDoc = BuiltinDoc {
 static DOC_GET_REQ_PARAMS: BuiltinDoc = BuiltinDoc {
     category: "http",
     signature: "getReqParams(req) -> map",
-    summary: "返回所有查询参数（Map 对象）。",
+    summary: "返回所有请求参数（Map 对象；URL 查询参数与 POST/PUT/PATCH 表单参数合并，urlencoded 及 multipart 非文件字段，同名取首个）。",
     params: &[("req", "handler 中的请求对象")],
     returns: "Map{key: value}",
     examples: &["ps := getReqParams(req)  // {\"page\": \"1\", \"size\": \"10\"}"],
@@ -623,37 +623,107 @@ static DOC_SAVE_FILE_UPLOADS: BuiltinDoc = BuiltinDoc {
 
 static DOC_GET_WEB: BuiltinDoc = BuiltinDoc {
     category: "http",
-    signature: "getWeb(url [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"Header: value\"]) -> string",
-    summary: "发送 HTTP GET，返回响应体字符串。",
+    signature: "getWeb(url [, \"--method=M\", \"--body=TEXT\", \"--bodyFile=PATH\", \"-post={json}\", Map表单, bytes体, \"--contentType=CT\", \"--headers={json}\", \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"--insecure\", \"--bytes\", \"--object\", \"--returnAny\", \"--withResp\", \"--saveTo=PATH\", \"--encoding=ENC|auto\", \"--maxSize=N\", \"--maxRedirects=N\", \"--noRedirect\", session对象, progressFn, \"Header: value\"]) -> string|bytes|map|int",
+    summary: "全能 Web 请求（对齐 charlang getWeb）：默认 GET 返回响应体字符串；可通过开关/参数表达任意方法、表单、原始体、文件体、字节返回、JSON 解析、存盘、编码转换。",
     params: &[
         ("url", "目标 URL"),
-        ("--timeout", "可选超时秒数，默认 30"),
-        ("--proxy", "可选代理 URL，如 http://host:port 或 socks5://host:port"),
-        ("--retry", "可选重试次数，默认 0 不重试；仅在网络错误/超时/5xx/429 上重试，指数退避"),
-        ("header", "可选附加 header，如 \"Content-Type: json\"；支持多行或多参数"),
+        ("--method=M", "可选 HTTP 方法（GET/POST/PUT/DELETE/HEAD/PATCH）；未指定且有请求体时自动 POST"),
+        ("Map 参数", "可选，Map/Object{name: value} → urlencoded 表单体（同 postForm 的 valuesMap）"),
+        ("bytes 参数", "可选，Bytes/ByteArray → 原始请求体（如手工拼装的 multipart）"),
+        ("-post={json}", "可选，JSON 对象字符串 → urlencoded 表单体（charlang 兼容写法）"),
+        ("--body=TEXT", "可选，原始请求体（等价 charlang -postBody=）"),
+        ("--bodyFile=PATH", "可选，以文件内容为请求体（等价 charlang -postFile=）"),
+        ("--contentType=CT", "可选，显式 Content-Type；表单体自动补 urlencoded"),
+        ("--headers={json}", "可选，JSON 对象形式的 header 表（charlang 兼容）；也可用 \"Name: value\" 参数"),
+        ("--timeout=N", "可选超时秒数，默认 30"),
+        ("--proxy=URL", "可选代理 URL，如 http://host:port 或 socks5://host:port"),
+        ("--retry=N", "可选重试次数，默认 0；仅网络错误/超时/5xx/429 重试，指数退避"),
+        ("--insecure", "可选开关，跳过 TLS 证书校验（自签名证书 / 内网测试）"),
+        ("--bytes", "可选开关，返回 bytes 而非 string"),
+        ("--object", "可选开关，响应按 JSON 解析为对象（失败返回 error 对象）"),
+        ("--returnAny", "可选开关，非 200 时返回 Map{respCode, respBody(bytes)} 而非响应体"),
+        ("--saveTo=PATH", "可选，响应体流式存盘（不占内存），返回写入字节数（覆盖 downloadFile 场景）"),
+        ("--encoding=ENC", "可选，响应按指定编码转 UTF-8（gbk/gb2312/big5/shift_jis/latin1 等）；auto=按响应头/HTML meta 自动嗅探"),
+        ("--withResp", "可选开关，返回响应对象 Map{status, contentType, finalUrl, elapsedMs, headers, setCookies, body(bytes)}"),
+        ("--maxSize=N", "可选，响应体大小上限（字节），超限报错，防止意外 OOM"),
+        ("--maxRedirects=N", "可选，重定向跟随次数上限（默认 10）"),
+        ("--noRedirect", "可选开关，不跟随重定向（3xx 原样返回，配合 --withResp 可取 Location）"),
+        ("session 位置参数", "可选，httpSession() 创建的会话对象：自动携带与存储 Cookie"),
+        ("progressFn 位置参数", "可选，进度回调函数 func(receivedBytes, totalBytes)，每 64KB 调用一次，总长未知时 totalBytes 为 -1"),
+        ("header", "可选附加 header，如 \"Authorization: Bearer x\"；支持多行或多参数"),
     ],
-    returns: "string 响应体（失败时返回 error 对象）",
+    returns: "默认 string 响应体；--bytes → bytes；--object → 对象；--saveTo → int 字节数；--returnAny 非 200 → Map{respCode, respBody}。网络层失败返回 error 对象；4xx/5xx 不算失败（--returnAny 可感知状态码）",
     examples: &[
         "body := getWeb(\"https://example.com\")  // 简单 GET",
-        "body := getWeb(\"https://api.x.com\", \"--timeout=10\", \"Authorization: Bearer xxx\")  // 带超时和 header",
-        "body := getWeb(\"https://example.com\", \"--proxy=http://127.0.0.1:7890\")  // 通过代理",
-        "body := getWeb(\"https://flaky.api.com\", \"--retry=3\")  // 失败自动重试 3 次",
+        "resp := getWeb(spr(\"https://host/japi?src=%v\", \"q\"), {\"req\": \"next\", \"sc\": \"abc\"})  // query+表单混合 POST",
+        "resp := getWeb(url, bodyBytes, \"--contentType=multipart/form-data; boundary=x\")  // 手工 multipart",
+        "obj := getWeb(\"https://api.x.com/data\", \"--object\", \"--timeout=10\")  // 直接拿对象",
+        "n := getWeb(\"https://x.com/f.zip\", \"--saveTo=../temp/f.zip\")  // 下载到文件",
+        "r := getWeb(url, \"--returnAny\")  // 非 200 → r.respCode / r.respBody",
+        "r := getWeb(url, \"--withResp\")  // 完整响应对象：r.status / r.headers / r.body / r.finalUrl",
+        "sess := httpSession(); getWeb(loginUrl, {user:a, pwd:b}, sess); page := getWeb(meUrl, sess)  // Cookie 会话",
+        "n := getWeb(bigFileUrl, \"--saveTo=../temp/f.iso\", func(rec, total) { plNow(\"%v/%v\", rec, total) })  // 流式下载+进度",
+        "s := getWeb(\"http://old-site.com/x\", \"--encoding=auto\")  // 自动嗅探 GBK 等编码",
+        "body := getWeb(\"https://flaky.api.com\", \"--retry=3\")  // 失败自动重试",
     ],
     errors: &[
         "getWeb() 第 1 个参数应为 string (URL)",
+        "getWeb() 出现了多个 Map/bytes 参数（可能原因：表单/请求体只能有一个来源）",
+        "getWeb() -headers=/-post= 应为合法 JSON 对象字符串",
+        "getWeb() 读取请求体文件失败（可能原因：--bodyFile= 路径不存在）",
+        "getWeb() --encoding= 不支持的编码（常用 gbk/gb2312/big5/shift_jis/latin1）",
+        "getWeb() --object 解析失败（可能原因：响应不是合法 JSON）",
+        "getWeb() 保存响应体失败（可能原因：--saveTo= 目录不存在或无写入权限）",
         "getWeb() 请求失败（可能原因：URL 格式错误、网络不通、DNS 解析失败、TLS 证书验证失败、代理配置错误、服务器超时）",
     ],
 };
 
+
+static DOC_HTTP_SESSION: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "httpSession() -> session",
+    summary: "创建 Cookie 会话对象（跨请求共享 Cookie Jar），作为位置参数传入 getWeb/postWeb/postForm 即可自动携带与存储 Cookie。",
+    params: &[],
+    returns: "session 会话对象",
+    examples: &[
+        "sess := httpSession()",
+        "getWeb(loginUrl, {\"user\":\"a\", \"pwd\":\"b\"}, sess)   // 登录，Set-Cookie 自动入 Jar",
+        "page := getWeb(protectedUrl, sess)                      // 后续请求自动带 Cookie",
+        "httpSessionDump(sess)                                    // 查看当前 Cookie",
+    ],
+    errors: &[],
+};
+
+static DOC_HTTP_SESSION_CLEAR: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "httpSessionClear(session) -> undefined",
+    summary: "清空会话的 Cookie Jar（例如注销登录后）。",
+    params: &[("session", "httpSession() 创建的会话对象")],
+    returns: "undefined",
+    examples: &["httpSessionClear(sess)"],
+    errors: &["httpSessionClear() 参数应为 httpSession() 创建的会话对象"],
+};
+
+static DOC_HTTP_SESSION_DUMP: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "httpSessionDump(session) -> array",
+    summary: "返回会话当前 Cookie 快照（数组，元素为 {domain, path, name, value, expires, secure}），用于调试。",
+    params: &[("session", "httpSession() 创建的会话对象")],
+    returns: "array of Map{domain, path, name, value, expires, secure}；expires 为过期 Unix 秒，会话 Cookie 为 undefined",
+    examples: &["plt(httpSessionDump(sess))"],
+    errors: &["httpSessionDump() 参数应为 httpSession() 创建的会话对象"],
+};
+
 static DOC_GET_WEB_BYTES: BuiltinDoc = BuiltinDoc {
     category: "http",
-    signature: "getWebBytes(url [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"Header: value\"]) -> bytes",
+    signature: "getWebBytes(url [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"--insecure\", \"Header: value\"]) -> bytes",
     summary: "发送 HTTP GET，返回响应体原始字节（适合二进制内容如图片、压缩包）。",
     params: &[
         ("url", "目标 URL"),
         ("--timeout", "可选超时秒数，默认 30"),
         ("--proxy", "可选代理 URL，如 http://host:port 或 socks5://host:port"),
         ("--retry", "可选重试次数，默认 0 不重试"),
+        ("--insecure", "可选开关，跳过 TLS 证书校验（自签名证书 / 内网 HTTPS 测试场景）"),
         ("header", "可选附加 header"),
     ],
     returns: "bytes 响应体（失败时返回 error 对象）",
@@ -666,7 +736,7 @@ static DOC_GET_WEB_BYTES: BuiltinDoc = BuiltinDoc {
 
 static DOC_GET_WEB_BYTES_WITH_HEADERS: BuiltinDoc = BuiltinDoc {
     category: "http",
-    signature: "getWebBytesWithHeaders(url, headers [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\"]) -> bytes",
+    signature: "getWebBytesWithHeaders(url, headers [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"--insecure\"]) -> bytes",
     summary: "带 header 字典的 HTTP GET，返回响应体字节（用于需要鉴权等场景）。",
     params: &[
         ("url", "目标 URL"),
@@ -674,6 +744,7 @@ static DOC_GET_WEB_BYTES_WITH_HEADERS: BuiltinDoc = BuiltinDoc {
         ("--timeout", "可选超时秒数，默认 30"),
         ("--proxy", "可选代理 URL，如 http://host:port 或 socks5://host:port"),
         ("--retry", "可选重试次数，默认 0 不重试"),
+        ("--insecure", "可选开关，跳过 TLS 证书校验（自签名证书 / 内网 HTTPS 测试场景）"),
     ],
     returns: "bytes 响应体（失败时返回 error 对象）",
     examples: &[
@@ -688,7 +759,7 @@ static DOC_GET_WEB_BYTES_WITH_HEADERS: BuiltinDoc = BuiltinDoc {
 
 static DOC_POST_WEB: BuiltinDoc = BuiltinDoc {
     category: "http",
-    signature: "postWeb(url, body, contentType [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"Header: value\"]) -> string",
+    signature: "postWeb(url, body, contentType [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"--insecure\", \"Header: value\"]) -> string",
     summary: "发送 HTTP POST，返回响应体字符串。",
     params: &[
         ("url", "目标 URL"),
@@ -697,6 +768,7 @@ static DOC_POST_WEB: BuiltinDoc = BuiltinDoc {
         ("--timeout", "可选超时秒数，默认 30"),
         ("--proxy", "可选代理 URL，如 http://host:port 或 socks5://host:port"),
         ("--retry", "可选重试次数，默认 0 不重试；4xx（除 429）不重试"),
+        ("--insecure", "可选开关，跳过 TLS 证书校验（自签名证书 / 内网 HTTPS 测试场景）"),
         ("header", "可选附加 header"),
     ],
     returns: "string 响应体（失败时返回 error 对象）",
@@ -711,9 +783,38 @@ static DOC_POST_WEB: BuiltinDoc = BuiltinDoc {
     ],
 };
 
+
+static DOC_POST_FORM: BuiltinDoc = BuiltinDoc {
+    category: "http",
+    signature: "postForm(url, valuesMap [, filesMap] [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"--insecure\", \"Header: value\"]) -> string",
+    summary: "表单 POST：普通字段自动编码为 urlencoded；给出 filesMap 时自动升级为 multipart/form-data 并携带文件；query 参数写在 URL 上即可混合提交。",
+    params: &[
+        ("url", "目标 URL（查询串直接写在 URL 上，如 https://host/japi?src=query）"),
+        ("valuesMap", "Map/Object{name: value}，普通表单字段"),
+        ("filesMap", "可选，Map/Object{fieldName: 值}；值为文件路径 string、object{fileName, content} 或 bytes"),
+        ("--timeout=N", "可选超时秒数，默认 30"),
+        ("--proxy=URL", "可选代理 URL，如 http://host:port 或 socks5://host:port"),
+        ("--retry=N", "可选重试次数，默认 0 不重试"),
+        ("--insecure", "可选开关，跳过 TLS 证书校验"),
+        ("header", "可选附加 header"),
+    ],
+    returns: "string 响应体（失败时返回 error 对象；4xx/5xx 不算失败）",
+    examples: &[
+        "resp := postForm(\"https://host/japi?src=query\", {\"req\": \"next\", \"sc\": \"abc\"})  // query + 表单混合",
+        "resp := postForm(\"https://host/upload\", {\"title\": \"照片\"}, {\"avatar\": \"C:/pic.jpg\"})  // 带文件 → multipart",
+        "resp := postForm(\"https://host/upload\", {}, {\"blob\": {\"fileName\": \"a.bin\", \"content\": dataBytes}})  // 内存字节",
+    ],
+    errors: &[
+        "postForm() 需要至少 2 个参数 (url, valuesMap)",
+        "postForm() 出现了多个 Map 参数（可能原因：filesMap 应为第 3 个参数）",
+        "postForm() 读取文件失败（可能原因：路径不存在或无读取权限）",
+        "postForm() 请求失败（可能原因：URL 格式错误、网络不通、TLS 证书验证失败、代理配置错误、服务器拒绝）",
+    ],
+};
+
 static DOC_DOWNLOAD_FILE: BuiltinDoc = BuiltinDoc {
     category: "http",
-    signature: "downloadFile(url, savePath [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"Header: value\"]) -> int",
+    signature: "downloadFile(url, savePath [, \"--timeout=N\", \"--proxy=URL\", \"--retry=N\", \"--insecure\", \"Header: value\"]) -> int",
     summary: "下载远程文件到本地路径，成功返回写入的字节数。",
     params: &[
         ("url", "目标 URL"),
@@ -721,6 +822,7 @@ static DOC_DOWNLOAD_FILE: BuiltinDoc = BuiltinDoc {
         ("--timeout", "可选超时秒数，默认 30"),
         ("--proxy", "可选代理 URL，如 http://host:port 或 socks5://host:port"),
         ("--retry", "可选重试次数，默认 0 不重试"),
+        ("--insecure", "可选开关，跳过 TLS 证书校验（自签名证书 / 内网 HTTPS 测试场景）"),
         ("header", "可选附加 header"),
     ],
     returns: "int 写入字节数（失败时返回 error 对象）",
@@ -918,6 +1020,11 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc_blocking("getWebBytesWithHeaders", bi_get_web_bytes_with_headers, &DOC_GET_WEB_BYTES_WITH_HEADERS);
     vm.register_builtin_doc_blocking("postWeb", bi_post_web, &DOC_POST_WEB);
     vm.register_builtin_doc_blocking("postJson", bi_post_json, &DOC_POST_JSON);
+    vm.register_builtin_doc_blocking("postForm", bi_post_form, &DOC_POST_FORM);
+    // Cookie 会话
+    vm.register_builtin_doc("httpSession", bi_http_session, &DOC_HTTP_SESSION);
+    vm.register_builtin_doc("httpSessionClear", bi_http_session_clear, &DOC_HTTP_SESSION_CLEAR);
+    vm.register_builtin_doc("httpSessionDump", bi_http_session_dump, &DOC_HTTP_SESSION_DUMP);
     vm.register_builtin_doc_blocking("downloadFile", bi_download_file, &DOC_DOWNLOAD_FILE);
     vm.register_builtin_doc_blocking("urlExists", bi_url_exists, &DOC_URL_EXISTS);
     vm.register_builtin_doc("httpStats", bi_http_stats, &DOC_HTTP_STATS);
@@ -1444,7 +1551,7 @@ fn bi_get_req_body_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Bytes(Arc::new(body)))
 }
 
-/// bi_get_req_param 返回指定查询参数的值。
+/// bi_get_req_param 返回指定请求参数的值（查询串 + 表单）。
 ///
 /// 用法：`getReqParam(req, "key")`
 fn bi_get_req_param(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
@@ -1463,26 +1570,27 @@ fn bi_get_req_param(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         ))),
     };
     let req = req.inner.lock().unwrap();
-    let params = req.parse_query();
-    for (k, v) in &params {
-        if k == &key {
-            return Ok(Value::str(v));
+    for (k, v) in request_form_pairs(&req) {
+        if k == key {
+            return Ok(Value::str(&v));
         }
     }
     Ok(Value::Undefined)
 }
 
-/// bi_get_req_params 返回所有查询参数（Map 对象）。
+/// bi_get_req_params 返回所有请求参数（Map 对象，查询串 + 表单合并，同名取首个）。
 fn bi_get_req_params(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     if args.is_empty() {
         return Err(error_value("getReqParams() 需要至少 1 个参数 (req 对象)"));
     }
     let req = extract_req(&args[0])?;
     let req = req.inner.lock().unwrap();
-    let params = req.parse_query();
     let mut map = crate::ord_map::OrdMap::new();
-    for (k, v) in &params {
-        map.set(k.clone(), Value::str(v));
+    for (k, v) in request_form_pairs(&req) {
+        // 与 paraMapG 一致：同名参数仅首个生效（查询串优先）
+        if map.get(&k).is_none() {
+            map.set(k, Value::str(&v));
+        }
     }
     Ok(Value::Map(Arc::new(Mutex::new(map))))
 }
@@ -1970,6 +2078,10 @@ fn run_server_blocking(
 
         match listener.accept() {
             Ok((stream, _peer)) => {
+                // listener 为 nonblocking 以便轮询 stop 标志，但被接受的连接
+                // 必须切回阻塞模式：Windows 下接受的 socket 会继承非阻塞标志，
+                // TLS 握手后的请求读取会立刻收到 WouldBlock(10035) 并断连。
+                let _ = stream.set_nonblocking(false);
                 let h = handler.clone();
                 std::thread::spawn(move || {
                     handle_connection_thread(stream, &h);
@@ -2090,8 +2202,8 @@ impl ServerHandler {
             }
             g.insert("routeParamsG".to_string(), Value::Map(Arc::new(Mutex::new(params_map))));
 
-            // 查询参数 Map（paraMapG）与静态根目录（webRootG），与 CLI 服务器模式对齐
-            g.insert("paraMapG".to_string(), query_params_map(&req_guard));
+            // 请求参数 Map（paraMapG：查询串 + 表单，与 CLI 服务器模式对齐）与静态根目录（webRootG）
+            g.insert("paraMapG".to_string(), request_params_map(&req_guard));
             g.insert(
                 "webRootG".to_string(),
                 Value::str(&self.static_dir.as_ref()
@@ -2476,6 +2588,17 @@ fn handle_connection_impl<S: std::io::Read + std::io::Write>(
             eprintln!("{} {} {}", req.method, req.uri, req.remote_addr);
         }
 
+        // 请求侧连接关闭语义（RFC 7230 §6.6）：
+        //   - HTTP/1.1 请求头 Connection: close → 响应后必须关闭；
+        //   - HTTP/1.0 请求且未要求 Connection: keep-alive → 响应后默认关闭。
+        let req_wants_close = req.headers.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("connection") && v.eq_ignore_ascii_case("close")
+        });
+        let req_keep_alive = req.headers.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("connection") && v.eq_ignore_ascii_case("keep-alive")
+        });
+        let is_http10 = req.version.contains("1.0");
+
         // HEAD 请求：保留 GET 语义的响应头（含 Content-Length），但不发送 body 字节
         let is_head = req.method == "HEAD";
         let mut resp = handler.handle(req);
@@ -2483,9 +2606,11 @@ fn handle_connection_impl<S: std::io::Read + std::io::Write>(
             resp.is_head = true;
         }
 
-        let should_close = resp.headers.iter().any(|(k, v)| {
+        let resp_wants_close = resp.headers.iter().any(|(k, v)| {
             k.eq_ignore_ascii_case("connection") && v.eq_ignore_ascii_case("close")
         });
+
+        let should_close = req_wants_close || (is_http10 && !req_keep_alive) || resp_wants_close;
 
         let _ = http_lite::write_response(reader.get_mut(), &resp);
 
@@ -2776,6 +2901,15 @@ fn handle_cli_connection_impl<S: std::io::Read + std::io::Write>(
             eprintln!("{} {} {}", req.method, req.uri, req.remote_addr);
         }
 
+        // 请求侧连接关闭语义（RFC 7230 §6.6），与 serverStart 路径保持一致
+        let req_wants_close = req.headers.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("connection") && v.eq_ignore_ascii_case("close")
+        });
+        let req_keep_alive = req.headers.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("connection") && v.eq_ignore_ascii_case("keep-alive")
+        });
+        let is_http10 = req.version.contains("1.0");
+
         // 管理端点
         if req.path == "/admin/status" || req.path == "/admin/kill" {
             let mut resp = handle_cli_admin(&req, admin_token);
@@ -2783,6 +2917,9 @@ fn handle_cli_connection_impl<S: std::io::Read + std::io::Write>(
                 resp.is_head = true;
             }
             let _ = http_lite::write_response(reader.get_mut(), &resp);
+            if req_wants_close {
+                break;
+            }
             continue;
         }
 
@@ -2794,9 +2931,12 @@ fn handle_cli_connection_impl<S: std::io::Read + std::io::Write>(
             resp.is_head = true;
         }
 
-        let should_close = resp.headers.iter().any(|(k, v)| {
+        let resp_wants_close = resp.headers.iter().any(|(k, v)| {
             k.eq_ignore_ascii_case("connection") && v.eq_ignore_ascii_case("close")
         });
+
+        let should_close =
+            req_wants_close || (is_http10 && !req_keep_alive) || resp_wants_close;
 
         let _ = http_lite::write_response(reader.get_mut(), &resp);
 
@@ -2986,15 +3126,56 @@ fn decode_path_segments(path: &str) -> String {
     }
 }
 
-/// query_params_map 把请求的查询串解析为 Sflang 有序 Map（作为 paraMapG 注入）。
+/// request_form_pairs 按 Go/charlang ParseForm 语义合并请求参数对。
 ///
-/// 键和值均做百分号解码（http_lite::url_decode_pairs），
-/// 同名参数取第一个出现的值；无查询串时返回空 Map。
-fn query_params_map(req: &LiteReq) -> Value {
+/// 1. URL 查询串参数（键值百分号解码）；
+/// 2. POST/PUT/PATCH 请求体：
+///    - application/x-www-form-urlencoded → 整体按 urlencoded 解析；
+///    - multipart/form-data → 非文件字段值并入（文件字段不入参数，
+///      由 parseReqForm/saveFileUploads 处理）；
+///    - 其他 Content-Type 不解析（与 Go parsePostForm 一致）。
+///
+/// 查询参数在前，同名时取首个（即查询串优先），与 Go r.Form 合并顺序一致。
+fn request_form_pairs(req: &LiteReq) -> Vec<(String, String)> {
+    let mut pairs = req.parse_query();
+
+    let is_form_method = req.method == "POST" || req.method == "PUT" || req.method == "PATCH";
+    if !is_form_method {
+        return pairs;
+    }
+
+    let content_type = req.get_header("content-type").unwrap_or("").to_string();
+    if content_type.starts_with("application/x-www-form-urlencoded") {
+        let body_str = String::from_utf8_lossy(&req.body);
+        pairs.extend(http_lite::url_decode_pairs(&body_str));
+    } else if content_type.starts_with("multipart/form-data") {
+        let boundary = content_type.split("boundary=")
+            .nth(1)
+            .map(|b| b.trim().to_string())
+            .unwrap_or_default();
+        if !boundary.is_empty() {
+            for part in parse_multipart(&req.body, &boundary) {
+                if part.is_file {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(&part.data).into_owned();
+                pairs.push((part.name, text));
+            }
+        }
+    }
+
+    pairs
+}
+
+/// request_params_map 把请求参数（查询串 + 表单）解析为 Sflang 有序 Map（作为 paraMapG 注入）。
+///
+/// 对齐 Go/charlang 的 ParseForm + FormToMap 语义：URL 查询参数与 POST/PUT/PATCH
+/// 表单参数（urlencoded 及 multipart 非文件字段）合并；键值均做百分号解码
+/// （multipart 字段值不做百分号解码）；同名参数取第一个出现的值（查询串优先）。
+fn request_params_map(req: &LiteReq) -> Value {
     let mut m = crate::ord_map::OrdMap::new();
-    for (k, v) in req.parse_query() {
-        // OrdMap::set 语义为"已存在则覆盖"，这里改为仅首个生效以对齐常见
-        // Web 框架行为（取首个），避免重复参数时后者悄悄覆盖前者
+    for (k, v) in request_form_pairs(req) {
+        // 仅首个生效以对齐常见 Web 框架行为（取首个），避免重复参数时后者悄悄覆盖前者
         if m.get(&k).is_none() {
             m.set(k, Value::str(&v));
         }
@@ -3040,8 +3221,8 @@ fn execute_script_file(
     sf.set_global("basePathG", Value::str(&script_root.to_string_lossy()));
     sf.set_global("scriptPathG", Value::str(&script_path.to_string_lossy()));
     sf.set_global("runModeG", Value::str("sfserver"));
-    // paraMapG：URL 查询参数 Map（键值均做百分号解码）
-    sf.set_global("paraMapG", query_params_map(req));
+    // paraMapG：请求参数 Map（查询串 + 表单，键值均已解码）
+    sf.set_global("paraMapG", request_params_map(req));
     // webRootG：静态 Web 根目录（脚本据此定位 uploads/downloads 等静态资源目录）
     sf.set_global("webRootG", Value::str(&web_dir.to_string_lossy()));
     sf.set_global("msRootG", Value::str(&script_root.to_string_lossy()));
@@ -3194,8 +3375,8 @@ fn execute_sfp_file(
     sf.set_global("basePathG", Value::str(&script_root.to_string_lossy()));
     sf.set_global("scriptPathG", Value::str(&sfp_path.to_string_lossy()));
     sf.set_global("runModeG", Value::str("sfp"));
-    // paraMapG：URL 查询参数 Map（键值均做百分号解码），与 .sf 脚本模式一致
-    sf.set_global("paraMapG", query_params_map(req));
+    // paraMapG：请求参数 Map（查询串 + 表单，键值均已解码），与 .sf 脚本模式一致
+    sf.set_global("paraMapG", request_params_map(req));
     // webRootG：静态 Web 根目录
     sf.set_global("webRootG", Value::str(&web_dir.to_string_lossy()));
     sf.set_global("msRootG", Value::str(&script_root.to_string_lossy()));
@@ -4059,8 +4240,9 @@ fn parse_headers_from_args(args: &[Value], start_idx: usize) -> Vec<String> {
     let mut headers = Vec::new();
     for i in start_idx..args.len() {
         if let Value::Str(s) = &args[i] {
-            // 检查是否是 --timeout= 等开关
-            if s.starts_with("--") || s.starts_with("-timeout=") || s.starts_with("-headers=") {
+            // 以 - 开头的一律视为开关（--timeout=/-method=/-post= 等已由各自解析器处理）；
+            // HTTP header 名不可能以 - 开头，故此规则安全且覆盖全部现有及未来开关
+            if s.starts_with('-') {
                 continue;
             }
             // 多行 header 支持
@@ -4118,14 +4300,152 @@ fn get_retry_from_args(args: &[Value], start_idx: usize) -> u32 {
     0
 }
 
-/// bi_get_web 发送 HTTP GET 请求，返回响应体字符串。
+/// get_insecure_from_args 解析可选的 "--insecure"/"-insecure" 开关（跳过 TLS 证书校验）。
+fn get_insecure_from_args(args: &[Value], start_idx: usize) -> bool {
+    for i in start_idx..args.len() {
+        if let Value::Str(s) = &args[i] {
+            if s.as_ref() == "--insecure" || s.as_ref() == "-insecure" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// ===========================================================================
+// Cookie 会话（httpSession 家族）
+// ===========================================================================
+
+/// bi_http_session 创建 Cookie 会话对象（跨请求共享 Cookie Jar）。
 ///
-/// 用法：
-///   getWeb(url)                          -- 简单 GET
-///   getWeb(url, "--timeout=30")          -- 带超时
-///   getWeb(url, "Content-Type: json")    -- 带自定义 header
-///   getWeb(url, "--proxy=http://host:port") -- 通过代理
-fn bi_get_web(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+/// 用法：sess := httpSession()，之后 getWeb/postWeb/postForm 把 sess 作为位置参数传入即可：
+///   getWeb(loginUrl, {"user":"a","pwd":"b"}, sess)
+///   getWeb(protectedUrl, sess)
+fn bi_http_session(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
+    Ok(Value::Native(Arc::new(crate::http_session::HttpSession::new())))
+}
+
+/// bi_http_session_clear 清空会话的 Cookie Jar。
+fn bi_http_session_clear(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let sess = extract_http_session(&args[0], "httpSessionClear")?;
+    sess.clear();
+    Ok(Value::Undefined)
+}
+
+/// bi_http_session_dump 返回会话当前 Cookie 快照（数组，元素为 {domain, path, name, value, expires, secure}）。
+///
+/// expires 为过期 Unix 秒（会话 Cookie 为 undefined）；用于调试与 AI 排障。
+fn bi_http_session_dump(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    let sess = extract_http_session(&args[0], "httpSessionDump")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let arr: Vec<Value> = sess
+        .dump()
+        .into_iter()
+        .map(|c| {
+            let mut m = crate::ord_map::OrdMap::new();
+            m.set("domain".to_string(), Value::str(&c.domain));
+            m.set("path".to_string(), Value::str(&c.path));
+            m.set("name".to_string(), Value::str(&c.name));
+            m.set("value".to_string(), Value::str(&c.value));
+            m.set(
+                "expires".to_string(),
+                c.expires_epoch.map(Value::Int).unwrap_or(Value::Undefined),
+            );
+            let _ = now;
+            m.set("secure".to_string(), Value::Bool(c.secure_only));
+            Value::Map(Arc::new(std::sync::Mutex::new(m)))
+        })
+        .collect();
+    Ok(Value::Array(Arc::new(std::sync::Mutex::new(arr))))
+}
+
+/// extract_http_session 从参数中提取会话对象。
+fn extract_http_session<'a>(v: &'a Value, fn_name: &str) -> Result<&'a crate::http_session::HttpSession, Value> {
+    match v {
+        Value::Native(n) => n
+            .downcast_ref::<crate::http_session::HttpSession>()
+            .ok_or_else(|| {
+                error_value(format!(
+                    "{}() 参数应为 httpSession() 创建的会话对象，得到其他原生对象",
+                    fn_name
+                ))
+            }),
+        other => Err(error_value(format!(
+            "{}() 参数应为 httpSession() 创建的会话对象，得到 {}",
+            fn_name,
+            other.type_name()
+        ))),
+    }
+}
+
+/// split_url_parts 把 URL 拆为 (scheme, host, path)（Cookie 匹配用；容错解析）。
+///
+/// 无 scheme 时按 http 处理（与请求层的自动补 scheme 规则一致）；path 为空时为 "/"。
+fn split_url_parts(url: &str) -> (String, String, String) {
+    let (scheme, rest) = match url.find("://") {
+        Some(i) => (url[..i].to_ascii_lowercase(), &url[i + 3..]),
+        None => ("http".to_string(), url),
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let host = rest[..end].to_ascii_lowercase();
+    let host = host.split('@').next().unwrap_or(&host).to_string(); // 去掉 userinfo
+    let path_part = &rest[end.min(rest.len())..];
+    let path = match path_part.find(['?', '#']) {
+        Some(i) => &path_part[..i],
+        None => path_part,
+    };
+    let path = if path.is_empty() { "/".to_string() } else { path.to_string() };
+    (scheme, host, path)
+}
+
+/// attach_session_cookies 把会话 Cookie 附加为 Cookie 请求头（用户显式给的 Cookie 头优先）。
+fn attach_session_cookies(session: &crate::http_session::HttpSession, url: &str, headers: &mut Vec<String>) {
+    if headers.iter().any(|h| h.to_ascii_lowercase().starts_with("cookie:")) {
+        return; // 用户显式设置过 Cookie 头，不覆盖
+    }
+    let (scheme, host, path) = split_url_parts(url);
+    if let Some(cookie) = session.cookie_header_for(&scheme, &host, &path) {
+        headers.push(format!("Cookie: {}", cookie));
+    }
+}
+
+/// harvest_session_cookies 把响应中的 Set-Cookie 存入会话 Jar。
+fn harvest_session_cookies(session: &crate::http_session::HttpSession, url: &str, resp_headers: &[(String, String)]) {
+    let (_, host, path) = split_url_parts(url);
+    let set_cookies: Vec<String> = resp_headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie"))
+        .map(|(_, v)| v.clone())
+        .collect();
+    session.store_from_response("https", &host, &path, &set_cookies);
+}
+
+/// bi_get_web 全能 Web 请求函数（对齐 charlang tkc.GetWeb 能力集，向后兼容）。
+///
+/// 用法（除 url 外全部可选，顺序任意）：
+///   getWeb(url)                                              // 最简 GET
+///   getWeb(url, "--method=POST", "--body=...", "--contentType=...")   // 任意方法 + 原始体
+///   getWeb(url, {"a": "1", "b": "2"})                        // Map 参数 → urlencoded 表单体
+///   getWeb(url, "-post={\"a\":\"1\"}")                        // JSON 串 → urlencoded 表单体（charlang 兼容）
+///   getWeb(url, bodyBytes)                                   // bytes 参数 → 原始体（multipart 手工拼装场景）
+///   getWeb(url, "-headers={\"Token\":\"x\"}", "--timeout=30", "--insecure")  // JSON header 表
+///   getWeb(url, "--bytes") / getWeb(url, "--object")          // 返回字节 / JSON 解析为对象
+///   getWeb(url, "--withResp")                                 // 返回响应对象（status/headers/body/finalUrl...）
+///   getWeb(url, "--saveTo=path")                             // 流式存盘，返回写入字节数
+///   getWeb(url, "--returnAny")                               // 非 200 返回 {respCode, respBody}
+///   getWeb(url, "--encoding=gbk") / "--encoding=auto"         // 响应转码 / 按响应头自动嗅探
+///   getWeb(url, "--noRedirect") / "--maxRedirects=N"          // 重定向控制
+///   getWeb(url, "--maxSize=N")                                // 响应体大小上限保护
+///   getWeb(url, sessObj) / getWeb(url, progressFn)            // 会话对象 / 进度回调（位置参数）
+///
+/// 请求体优先级（对齐 charlang）：bytes 位置参数 > --bodyFile= > --body= > --post=(JSON→表单) > Map 参数(表单)。
+/// Content-Type：--contentType= > header 中的 Content-Type > 自动（表单体 → application/x-www-form-urlencoded）。
+/// Method：显式 --method= 永远生效；未指定且有请求体时自动 POST，否则 GET。
+/// 默认返回响应体 string（4xx/5xx 不算失败，与既有 Sflang 语义一致）；网络层失败返回 error 对象。
+fn bi_get_web(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let url = match args.get(0) {
         Some(Value::Str(s)) => s.to_string(),
         Some(v) => return Err(error_value(format!(
@@ -4134,26 +4454,411 @@ fn bi_get_web(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         None => return Err(error_value("getWeb() 需要至少 1 个参数 (URL)")),
     };
 
+    // ---- 扫描可选参数（顺序任意；开关同时接受 --x= 与 -x= 两种写法，对齐 charlang）----
+    let mut method: Option<String> = None;
+    let mut post_json: Option<String> = None;   // --post= JSON 对象串 → 表单体
+    let mut body_str: Option<String> = None;    // --body= 原始请求体
+    let mut body_file: Option<String> = None;   // --bodyFile= 文件体
+    let mut content_type: Option<String> = None;
+    let mut headers_json: Option<String> = None;
+    let mut encoding: Option<String> = None;
+    let mut save_to: Option<String> = None;
+    let mut max_size: Option<u64> = None;
+    let mut max_redirects: u32 = 10;
+    let mut want_bytes = false;
+    let mut want_object = false;
+    let mut want_return_any = false;
+    let mut want_with_resp = false;
+
+    let mut form_entries: Option<Vec<(String, Value)>> = None; // Map 位置参数 → 表单
+    let mut body_bytes: Option<Vec<u8>> = None;                // Bytes/ByteArray 位置参数 → 原始体
+    let mut session: Option<&crate::http_session::HttpSession> = None;
+    let mut progress_fn: Option<Value> = None;
+
+    for arg in args.iter().skip(1) {
+        match arg {
+            Value::Map(_) | Value::Object(_) => {
+                if form_entries.is_some() {
+                    return Err(error_value(
+                        "getWeb() 出现了多个 Map 参数 (可能原因：表单字段应只用一个 Map，请求体请用 --body= 或 bytes 参数)",
+                    ));
+                }
+                form_entries = Some(extract_form_entries(arg)?);
+            }
+            Value::Bytes(b) => {
+                if body_bytes.is_some() {
+                    return Err(error_value(
+                        "getWeb() 出现了多个 bytes 参数 (可能原因：原始请求体只能有一个，表单字段请用 Map 参数)",
+                    ));
+                }
+                body_bytes = Some(b.as_ref().clone());
+            }
+            Value::ByteArray(b) => {
+                if body_bytes.is_some() {
+                    return Err(error_value(
+                        "getWeb() 出现了多个 bytes 参数 (可能原因：原始请求体只能有一个，表单字段请用 Map 参数)",
+                    ));
+                }
+                body_bytes = Some(b.lock().unwrap().clone());
+            }
+            Value::Native(n) => {
+                if let Some(sess) = n.downcast_ref::<crate::http_session::HttpSession>() {
+                    if session.is_some() {
+                        return Err(error_value("getWeb() 出现了多个会话对象参数"));
+                    }
+                    session = Some(sess);
+                } else {
+                    return Err(error_value(format!(
+                        "getWeb() 出现了无法识别的对象参数 (可能原因：会话对象应由 httpSession() 创建，其他原生对象不能作为参数)"
+                    )));
+                }
+            }
+            Value::Func(_) | Value::Builtin(_) => {
+                if progress_fn.is_some() {
+                    return Err(error_value("getWeb() 出现了多个进度回调函数参数"));
+                }
+                progress_fn = Some(arg.clone());
+            }
+            Value::Str(s) => {
+                let s: &str = s.as_ref();
+                if let Some(v) = s.strip_prefix("--method=").or_else(|| s.strip_prefix("-method=")) {
+                    method = Some(v.to_ascii_uppercase());
+                } else if let Some(v) = s.strip_prefix("--post=").or_else(|| s.strip_prefix("-post=")) {
+                    post_json = Some(v.to_string());
+                } else if let Some(v) = s.strip_prefix("--body=").or_else(|| s.strip_prefix("-body=").or_else(|| s.strip_prefix("-postBody="))) {
+                    body_str = Some(v.to_string());
+                } else if let Some(v) = s.strip_prefix("--bodyFile=").or_else(|| s.strip_prefix("-bodyFile=").or_else(|| s.strip_prefix("-postFile="))) {
+                    body_file = Some(v.to_string());
+                } else if let Some(v) = s.strip_prefix("--contentType=").or_else(|| s.strip_prefix("-contentType=")) {
+                    content_type = Some(v.to_string());
+                } else if let Some(v) = s.strip_prefix("--headers=").or_else(|| s.strip_prefix("-headers=")) {
+                    headers_json = Some(v.to_string());
+                } else if let Some(v) = s.strip_prefix("--encoding=").or_else(|| s.strip_prefix("-encoding=")) {
+                    encoding = Some(v.to_string());
+                } else if let Some(v) = s.strip_prefix("--saveTo=").or_else(|| s.strip_prefix("-saveTo=")) {
+                    save_to = Some(v.to_string());
+                } else if let Some(v) = s.strip_prefix("--maxSize=").or_else(|| s.strip_prefix("-maxSize=")) {
+                    let n: i64 = v.trim().parse().map_err(|_| {
+                        error_value(format!("getWeb() --maxSize= 应为非负整数字节数 (得到 {})", v))
+                    })?;
+                    if n < 0 {
+                        return Err(error_value(format!("getWeb() --maxSize= 不能为负数 (得到 {})", n)));
+                    }
+                    max_size = Some(n as u64);
+                } else if let Some(v) = s.strip_prefix("--maxRedirects=").or_else(|| s.strip_prefix("-maxRedirects=")) {
+                    let n: i64 = v.trim().parse().map_err(|_| {
+                        error_value(format!("getWeb() --maxRedirects= 应为非负整数 (得到 {})", v))
+                    })?;
+                    if n < 0 {
+                        return Err(error_value(format!("getWeb() --maxRedirects= 不能为负数 (得到 {})", n)));
+                    }
+                    max_redirects = n as u32;
+                } else if s == "--noRedirect" || s == "-noRedirect" {
+                    max_redirects = 0;
+                } else if s == "--bytes" || s == "-bytes" {
+                    want_bytes = true;
+                } else if s == "--object" || s == "-object" {
+                    want_object = true;
+                } else if s == "--returnAny" || s == "-returnAny" {
+                    want_return_any = true;
+                } else if s == "--withResp" || s == "-withResp" {
+                    want_with_resp = true;
+                }
+                // 其余字符串参数（--timeout=/--proxy=/--retry=/--insecure/"Name: value"）
+                // 由下方既有助手统一解析
+            }
+            _ => {}
+        }
+    }
+
     let headers = parse_headers_from_args(args, 1);
     let timeout = get_timeout_from_args(args, 1);
     let proxy = get_proxy_from_args(args, 1);
     let retries = get_retry_from_args(args, 1);
+    let insecure = get_insecure_from_args(args, 1);
+
+    // -headers={json}：JSON 对象串 → header 列表（charlang 兼容）
+    let mut headers = headers;
+    if let Some(hj) = headers_json {
+        let hv = crate::builtins_json::parse_json_str(&hj).map_err(|e| error_value(format!(
+            "getWeb() -headers= 应为 JSON 对象字符串: {} (可能原因：写法错误，如 -headers={{\"Token\":\"x\"}})", e
+        )))?;
+        for (k, v) in extract_form_entries(&hv)? {
+            headers.push(format!("{}: {}", k, v.to_str()));
+        }
+    }
+
+    // ---- 会话：请求前附带 Cookie ----
+    if let Some(sess) = session.as_ref() {
+        attach_session_cookies(sess, &url, &mut headers);
+    }
+
+    // ---- 解析请求体（优先级对齐 charlang：bytes > 文件 > 原始串 > JSON 表单 > Map 表单）----
+    let mut body: Vec<u8> = Vec::new();
+    let mut body_is_form = false;
+
+    if let Some(bb) = body_bytes {
+        body = bb;
+    } else if let Some(f) = body_file {
+        body = std::fs::read(&f).map_err(|e| error_value(format!(
+            "getWeb() 读取请求体文件失败: {} (路径 {}；可能原因：文件不存在或无读取权限)", e, f,
+        )))?;
+    } else if let Some(b) = body_str {
+        body = b.into_bytes();
+    } else if let Some(pj) = post_json {
+        let pv = crate::builtins_json::parse_json_str(&pj).map_err(|e| error_value(format!(
+            "getWeb() -post= 应为 JSON 对象字符串: {} (可能原因：写法错误，如 -post={{\"a\":\"1\"}})", e
+        )))?;
+        for (k, v) in extract_form_entries(&pv)? {
+            if !body.is_empty() {
+                body.push(b'&');
+            }
+            body.extend_from_slice(
+                format!(
+                    "{}={}",
+                    crate::builtins_encode::url_form_encode_str(&k),
+                    crate::builtins_encode::url_form_encode_str(&v.to_str()),
+                )
+                .as_bytes(),
+            );
+        }
+        body_is_form = true;
+    } else if let Some(fe) = form_entries {
+        for (k, v) in &fe {
+            if !body.is_empty() {
+                body.push(b'&');
+            }
+            body.extend_from_slice(
+                format!(
+                    "{}={}",
+                    crate::builtins_encode::url_form_encode_str(k),
+                    crate::builtins_encode::url_form_encode_str(&v.to_str()),
+                )
+                .as_bytes(),
+            );
+        }
+        body_is_form = true;
+    }
+
+    let has_body = !body.is_empty();
+
+    // Content-Type：显式 > header 中已带 > 表单体自动补 urlencoded
+    let mut content_type = content_type.unwrap_or_default();
+    if content_type.is_empty()
+        && body_is_form
+        && !headers.iter().any(|h| h.to_ascii_lowercase().starts_with("content-type:"))
+    {
+        content_type = "application/x-www-form-urlencoded".to_string();
+    }
+
+    // Method：显式指定永远生效；未指定且有请求体 → POST（对齐 charlang），否则 GET
+    let method_upper = method.unwrap_or_else(|| {
+        if has_body { "POST".to_string() } else { "GET".to_string() }
+    });
+
+    // ---- 响应体读取选项：流式落盘 / 大小上限 / 进度回调 ----
+    let started = std::time::Instant::now();
+    let mut read_opts = http_lite::BodyReadOpts {
+        sink_path: save_to.as_deref().map(std::path::Path::new),
+        max_size,
+        progress: None,
+    };
+    let mut progress_err: Option<String> = None;
+    if let Some(fv) = progress_fn.clone() {
+        let progress_vm = &mut *vm;
+        let err_slot = &mut progress_err;
+        let mut cb = move |received: u64, total: i64| {
+            let call_result = progress_vm.call_function_value(
+                fv.clone(),
+                vec![Value::Int(received as i64), Value::Int(total)],
+            );
+            if let Err(e) = call_result {
+                if err_slot.is_none() {
+                    *err_slot = Some(e.to_str());
+                }
+            }
+        };
+        read_opts.progress = Some(&mut cb);
+
+        let result = http_lite::http_request_with_retry(
+            &method_upper, &url, &body, &content_type, &headers, timeout, proxy.as_deref(), retries, insecure, max_redirects, &mut read_opts,
+        );
+        let resp = match result {
+            Ok(r) => r,
+            Err(e) => return Ok(error_value(format!(
+                "getWeb() 请求失败: {} (可能原因：URL 格式错误、网络不通、DNS 解析失败、TLS 证书验证失败、代理配置错误、服务器超时、响应体超过 --maxSize= 上限)",
+                e
+            ))),
+        };
+        return finish_get_web_response(
+            &url, resp, session, want_bytes, want_object, want_return_any, want_with_resp,
+            save_to, encoding, started, progress_err,
+        );
+    }
 
     let result = http_lite::http_request_with_retry(
-        "GET", &url, &[], "", &headers, timeout, proxy.as_deref(), retries,
+        &method_upper, &url, &body, &content_type, &headers, timeout, proxy.as_deref(), retries, insecure, max_redirects, &mut read_opts,
     );
-    match result {
-        Ok(resp) => {
-            let text = String::from_utf8_lossy(&resp.body).into_owned();
-            Ok(Value::str(&text))
-        }
-        Err(e) => Ok(error_value(format!(
-            "getWeb() 请求失败: {} (可能原因：URL 格式错误、网络不通、DNS 解析失败、TLS 证书验证失败、代理配置错误、服务器超时)",
+    let resp = match result {
+        Ok(r) => r,
+        Err(e) => return Ok(error_value(format!(
+            "getWeb() 请求失败: {} (可能原因：URL 格式错误、网络不通、DNS 解析失败、TLS 证书验证失败、代理配置错误、服务器超时、响应体超过 --maxSize= 上限)",
             e
         ))),
-    }
+    };
+
+    finish_get_web_response(
+        &url, resp, session, want_bytes, want_object, want_return_any, want_with_resp,
+        save_to, encoding, started, progress_err,
+    )
 }
 
+/// finish_get_web_response getWeb 的响应后处理（存盘/响应对象/字节/对象/编码/字符串各形态）。
+#[allow(clippy::too_many_arguments)]
+fn finish_get_web_response(
+    url: &str,
+    resp: http_lite::ClientResponse,
+    session: Option<&crate::http_session::HttpSession>,
+    want_bytes: bool,
+    want_object: bool,
+    want_return_any: bool,
+    want_with_resp: bool,
+    save_to: Option<String>,
+    encoding: Option<String>,
+    started: std::time::Instant,
+    progress_err: Option<String>,
+) -> Result<Value, Value> {
+    // 进度回调中的脚本错误在此返回（AI 友好：不静默吞掉）
+    if let Some(pe) = progress_err {
+        return Ok(error_value(format!("getWeb() 进度回调执行出错: {}", pe)));
+    }
+
+    // 会话：把响应 Set-Cookie 存入 Jar
+    if let Some(sess) = session.as_ref() {
+        harvest_session_cookies(sess, url, &resp.headers);
+    }
+
+    // --saveTo：流式模式下 body 为空，写入字节数以 body_len 为准
+    if let Some(dest) = save_to {
+        return Ok(Value::Int(resp.body_len as i64));
+    }
+
+    // --withResp：完整响应对象（状态码/响应头/最终 URL/耗时/响应体）
+    if want_with_resp {
+        let mut header_map = crate::ord_map::OrdMap::new();
+        let mut set_cookies: Vec<Value> = Vec::new();
+        for (k, v) in &resp.headers {
+            if k.eq_ignore_ascii_case("set-cookie") {
+                set_cookies.push(Value::str(v));
+                continue;
+            }
+            // 同名响应头取首个（与 paraMapG 的取首语义一致）
+            if header_map.get(k).is_none() {
+                header_map.set(k.clone(), Value::str(v));
+            }
+        }
+        let content_type = resp
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        let mut m = crate::ord_map::OrdMap::new();
+        m.set("status".to_string(), Value::Int(resp.status as i64));
+        m.set("contentType".to_string(), Value::str(&content_type));
+        m.set("finalUrl".to_string(), Value::str(&resp.final_uri));
+        m.set("elapsedMs".to_string(), Value::Int(started.elapsed().as_millis() as i64));
+        m.set("headers".to_string(), Value::Map(Arc::new(std::sync::Mutex::new(header_map))));
+        m.set("setCookies".to_string(), Value::Array(Arc::new(std::sync::Mutex::new(set_cookies))));
+        m.set("body".to_string(), Value::Bytes(Arc::new(resp.body.clone())));
+        return Ok(Value::Map(Arc::new(std::sync::Mutex::new(m))));
+    }
+
+    // --returnAny：非 200 返回 {respCode, respBody}（对齐 charlang -returnAny）
+    if want_return_any && resp.status != 200 {
+        let mut m = crate::ord_map::OrdMap::new();
+        m.set("respCode".to_string(), Value::Int(resp.status as i64));
+        m.set("respBody".to_string(), Value::Bytes(Arc::new(resp.body.clone())));
+        return Ok(Value::Map(Arc::new(std::sync::Mutex::new(m))));
+    }
+
+    // --bytes：返回原始字节
+    if want_bytes {
+        return Ok(Value::Bytes(Arc::new(resp.body)));
+    }
+
+    // --object：JSON 解析为对象（失败返回 error 对象）
+    if want_object {
+        let text = String::from_utf8_lossy(&resp.body);
+        return match crate::builtins_json::parse_json_str(&text) {
+            Ok(v) => Ok(v),
+            Err(e) => Ok(error_value(format!(
+                "getWeb() --object 解析失败: {} (可能原因：响应不是合法 JSON；状态码 {})",
+                e, resp.status,
+            ))),
+        };
+    }
+
+    // 默认：字符串（--encoding= 指定源编码时转 UTF-8；auto 按响应头/HTML meta 嗅探）
+    if let Some(enc_label) = encoding {
+        let label = enc_label.trim();
+        if !label.is_empty() && !label.eq_ignore_ascii_case("utf-8") && !label.eq_ignore_ascii_case("utf8") {
+            let resolved: Option<String> = if label.eq_ignore_ascii_case("auto") {
+                sniff_response_charset(&resp)
+            } else {
+                Some(label.to_string())
+            };
+            if let Some(label) = resolved {
+                let enc = encoding_rs::Encoding::for_label(label.as_bytes()).ok_or_else(|| {
+                    error_value(format!(
+                        "getWeb() --encoding= 不支持的编码: {} (可能原因：拼写错误；常用 gbk/gb2312/big5/shift_jis/latin1，或用 auto 自动嗅探)",
+                        label,
+                    ))
+                })?;
+                let (cow, _, _) = enc.decode(&resp.body);
+                return Ok(Value::str(&cow));
+            }
+        }
+    }
+    let text = String::from_utf8_lossy(&resp.body).into_owned();
+    Ok(Value::str(&text))
+}
+
+/// sniff_response_charset 从响应 Content-Type 头或 HTML meta 标签嗅探字符集。
+///
+/// 先查 Content-Type 的 charset=；没有再扫前 2KB 的 HTML 文本中的 charset=；
+/// 都没有返回 None（按 UTF-8 处理）。
+fn sniff_response_charset(resp: &http_lite::ClientResponse) -> Option<String> {
+    // 1) Content-Type 头：charset=xxx
+    if let Some((_, ct)) = resp.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+        if let Some(pos) = ct.to_ascii_lowercase().find("charset=") {
+            let rest = &ct[pos + 8..];
+            let label: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            if !label.is_empty() {
+                return Some(label);
+            }
+        }
+    }
+    // 2) HTML meta 标签：<meta charset=xxx> 或 <meta http-equiv=... content="...charset=xxx">
+    let head = &resp.body[..resp.body.len().min(2048)];
+    let head_str = String::from_utf8_lossy(head);
+    let lower = head_str.to_ascii_lowercase();
+    if let Some(pos) = lower.find("charset=") {
+        let rest = &head_str[pos + 8..];
+        let label: String = rest
+            .trim_start_matches(['"', '\''])
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        if !label.is_empty() {
+            return Some(label);
+        }
+    }
+    None
+}
 /// bi_get_web_bytes 发送 HTTP GET 请求，返回响应体字节。
 ///
 /// 用法：`getWebBytes(url, "--timeout=30")` 或 `getWebBytes(url, "--proxy=http://host:port")`
@@ -4171,8 +4876,10 @@ fn bi_get_web_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let proxy = get_proxy_from_args(args, 1);
     let retries = get_retry_from_args(args, 1);
 
+    let insecure = get_insecure_from_args(args, 1);
+
     let result = http_lite::http_request_with_retry(
-        "GET", &url, &[], "", &headers, timeout, proxy.as_deref(), retries,
+        "GET", &url, &[], "", &headers, timeout, proxy.as_deref(), retries, insecure, 10, &mut http_lite::BodyReadOpts::default(),
     );
     match result {
         Ok(resp) => Ok(Value::Bytes(Arc::new(resp.body))),
@@ -4252,11 +4959,37 @@ fn bi_post_web(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let proxy = get_proxy_from_args(args, 3);
     let retries = get_retry_from_args(args, 3);
 
+    let insecure = get_insecure_from_args(args, 3);
+
+    // 会话对象（httpSession() 创建，位置参数）：请求前附 Cookie，响应后存 Set-Cookie
+    let mut headers = headers;
+    let mut session: Option<&crate::http_session::HttpSession> = None;
+    for arg in args.iter().skip(3) {
+        if let Value::Native(n) = arg {
+            if let Some(sess) = n.downcast_ref::<crate::http_session::HttpSession>() {
+                if session.is_some() {
+                    return Err(error_value("postWeb() 出现了多个会话对象参数"));
+                }
+                session = Some(sess);
+            } else {
+                return Err(error_value(
+                    "postWeb() 出现了无法识别的对象参数 (可能原因：会话对象应由 httpSession() 创建)",
+                ));
+            }
+        }
+    }
+    if let Some(sess) = session.as_ref() {
+        attach_session_cookies(sess, &url, &mut headers);
+    }
+
     let result = http_lite::http_request_with_retry(
-        "POST", &url, &body, &content_type, &headers, timeout, proxy.as_deref(), retries,
+        "POST", &url, &body, &content_type, &headers, timeout, proxy.as_deref(), retries, insecure, 10, &mut http_lite::BodyReadOpts::default(),
     );
     match result {
         Ok(resp) => {
+            if let Some(sess) = session.as_ref() {
+                harvest_session_cookies(sess, &url, &resp.headers);
+            }
             let text = String::from_utf8_lossy(&resp.body).into_owned();
             Ok(Value::str(&text))
         }
@@ -4265,6 +4998,227 @@ fn bi_post_web(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             e
         ))),
     }
+}
+
+/// bi_post_form 表单 POST：普通字段自动编码，可选文件字段自动升级为 multipart。
+///
+/// 用法：
+///   postForm(url, valuesMap)                       → application/x-www-form-urlencoded
+///   postForm(url, valuesMap, filesMap)             → multipart/form-data（带文件）
+///   postForm(url, valuesMap, filesMap, 开关...)     → 同 postWeb 的开关（--timeout/--proxy/--retry/--insecure/Header）
+///
+/// - valuesMap: Map/Object{name: value}，值按字符串编码；
+/// - filesMap: Map/Object{fieldName: 值}，值三种形态：
+///     string                     → 文件路径（自动读取，文件名取 baseName）；
+///     object{fileName, content}  → 内存内容（content 为 bytes/byteArray/string）；
+///     bytes                      → 内存内容（文件名默认 "file.bin"）。
+/// - 混合 query 参数：直接把查询串写在 URL 上（?a=1&b=2），服务器端 paraMapG 会与表单字段合并。
+/// - 无文件字段时发送 urlencoded；有文件字段时发送 multipart/form-data（随机 boundary）。
+/// - 返回响应体 string；网络层失败返回 error 对象（同 postWeb，4xx/5xx 不算失败）。
+fn bi_post_form(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
+    if args.len() < 2 {
+        return Err(error_value("postForm() 需要至少 2 个参数 (url, valuesMap)"));
+    }
+    let url = match &args[0] {
+        Value::Str(s) => s.to_string(),
+        v => return Err(error_value(format!(
+            "postForm() 第 1 个参数应为 string (URL)，得到 {}",
+            v.type_name()
+        ))),
+    };
+    let value_entries = extract_form_entries(&args[1])?; // name: value 键值对
+    let values: Vec<(String, String)> = value_entries
+        .into_iter()
+        .map(|(k, v)| (k, v.to_str()))
+        .collect();
+
+    // 第 3 个参数起的 Map/Object 视为 filesMap（至多一个），其余字符串参数留给开关解析
+    let mut files: Option<Vec<(String, Value)>> = None;
+    let mut session: Option<&crate::http_session::HttpSession> = None;
+    for arg in args.iter().skip(2) {
+        match arg {
+            Value::Map(_) | Value::Object(_) => {
+                if files.is_some() {
+                    return Err(error_value(
+                        "postForm() 出现了多个 Map 参数 (可能原因：valuesMap 与 filesMap 顺序颠倒，filesMap 应为第 3 个参数)",
+                    ));
+                }
+                files = Some(extract_form_entries(arg)?);
+            }
+            Value::Native(n) => {
+                if let Some(sess) = n.downcast_ref::<crate::http_session::HttpSession>() {
+                    if session.is_some() {
+                        return Err(error_value("postForm() 出现了多个会话对象参数"));
+                    }
+                    session = Some(sess);
+                } else {
+                    return Err(error_value(
+                        "postForm() 出现了无法识别的对象参数 (可能原因：会话对象应由 httpSession() 创建)",
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // 组装请求体与 Content-Type
+    let (body, content_type) = match files {
+        None => {
+            // urlencoded：k=v&k2=v2（表单编码规则，与 urlFormEncode 一致）
+            let mut parts: Vec<String> = Vec::with_capacity(values.len());
+            for (k, v) in &values {
+                parts.push(format!(
+                    "{}={}",
+                    crate::builtins_encode::url_form_encode_str(k),
+                    crate::builtins_encode::url_form_encode_str(v),
+                ));
+            }
+            (parts.join("&").into_bytes(), "application/x-www-form-urlencoded".to_string())
+        }
+        Some(file_entries) => {
+            let boundary = format!("----SflangForm{}", random_boundary_suffix());
+            let mut body: Vec<u8> = Vec::new();
+            // 普通字段在前，文件字段在后（与常见客户端约定一致）
+            for (k, v) in &values {
+                body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+                body.extend_from_slice(
+                    format!("Content-Disposition: form-data; name=\"{}\"\r\n\r\n", k).as_bytes(),
+                );
+                body.extend_from_slice(v.as_bytes());
+                body.extend_from_slice(b"\r\n");
+            }
+            for (field_name, spec) in &file_entries {
+                let (file_name, data) = resolve_file_entry(field_name, spec)?;
+                let mime = http_lite::guess_mime_type(&file_name);
+                body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+                body.extend_from_slice(
+                    format!(
+                        "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n",
+                        field_name, file_name
+                    )
+                    .as_bytes(),
+                );
+                body.extend_from_slice(format!("Content-Type: {}\r\n\r\n", mime).as_bytes());
+                body.extend_from_slice(&data);
+                body.extend_from_slice(b"\r\n");
+            }
+            body.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+            (body, format!("multipart/form-data; boundary={}", boundary))
+        }
+    };
+
+    // 开关解析从第 3 个参数开始（第 2/3 位可能是 valuesMap/filesMap，非字符串不影响解析）
+    let headers = parse_headers_from_args(args, 2);
+    let timeout = get_timeout_from_args(args, 2);
+    let proxy = get_proxy_from_args(args, 2);
+    let retries = get_retry_from_args(args, 2);
+    let insecure = get_insecure_from_args(args, 2);
+
+    let mut headers = headers;
+    if let Some(sess) = session.as_ref() {
+        attach_session_cookies(sess, &url, &mut headers);
+    }
+
+    let result = http_lite::http_request_with_retry(
+        "POST", &url, &body, &content_type, &headers, timeout, proxy.as_deref(), retries, insecure, 10, &mut http_lite::BodyReadOpts::default(),
+    );
+    match result {
+        Ok(resp) => {
+            if let Some(sess) = session.as_ref() {
+                harvest_session_cookies(sess, &url, &resp.headers);
+            }
+            let text = String::from_utf8_lossy(&resp.body).into_owned();
+            Ok(Value::str(&text))
+        }
+        Err(e) => Ok(error_value(format!(
+            "postForm() 请求失败: {} (可能原因：URL 格式错误、网络不通、TLS 证书验证失败、代理配置错误、文件路径不存在、服务器拒绝)",
+            e
+        ))),
+    }
+}
+
+/// extract_form_entries 从 Map/Object 提取 form 字段键值对（供 valuesMap/filesMap 使用）。
+fn extract_form_entries(v: &Value) -> Result<Vec<(String, Value)>, Value> {
+    let mut entries = Vec::new();
+    match v {
+        Value::Map(m) => {
+            let m = m.lock().unwrap();
+            for (k, val) in &m.entries {
+                entries.push((k.clone(), val.clone()));
+            }
+        }
+        Value::Object(o) => {
+            let o = o.lock().unwrap();
+            for (k, val) in o.data.iter() {
+                entries.push((k.clone(), val.clone()));
+            }
+        }
+        _ => return Err(error_value(format!(
+            "postForm() 参数应为 map/object，得到 {}",
+            v.type_name()
+        ))),
+    }
+    Ok(entries)
+}
+
+/// resolve_file_entry 解析文件字段：路径 / object{fileName, content} / bytes → (文件名, 字节)。
+fn resolve_file_entry(field_name: &str, spec: &Value) -> Result<(String, Vec<u8>), Value> {
+    match spec {
+        Value::Str(path) => {
+            let data = std::fs::read(path.as_ref()).map_err(|e| {
+                error_value(format!(
+                    "postForm() 读取文件失败: {} (字段 {}；可能原因：路径不存在或无读取权限)",
+                    e, field_name
+                ))
+            })?;
+            // 文件名取路径最后一段（兼容 / 与 \ 分隔符）
+            let base = path.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(path);
+            Ok((base.to_string(), data))
+        }
+        Value::Object(o) => {
+            let o = o.lock().unwrap();
+            let file_name = match o.data.get("fileName") {
+                Some(Value::Str(s)) => s.to_string(),
+                Some(other) => other.to_str(),
+                None => return Err(error_value(format!(
+                    "postForm() 文件字段 {} 的 object 缺少 fileName (可能原因：应传 {{fileName: ..., content: ...}})",
+                    field_name
+                ))),
+            };
+            let content = match o.data.get("content") {
+                Some(Value::Bytes(b)) => b.as_ref().clone(),
+                Some(Value::ByteArray(b)) => b.lock().unwrap().clone(),
+                Some(Value::Str(s)) => s.as_bytes().to_vec(),
+                Some(other) => return Err(error_value(format!(
+                    "postForm() 文件字段 {} 的 content 应为 bytes/byteArray/string，得到 {}",
+                    field_name,
+                    other.type_name()
+                ))),
+                None => return Err(error_value(format!(
+                    "postForm() 文件字段 {} 的 object 缺少 content (可能原因：应传 {{fileName: ..., content: ...}})",
+                    field_name
+                ))),
+            };
+            Ok((file_name, content))
+        }
+        Value::Bytes(b) => Ok(("file.bin".to_string(), b.as_ref().clone())),
+        Value::ByteArray(b) => Ok(("file.bin".to_string(), b.lock().unwrap().clone())),
+        other => Err(error_value(format!(
+            "postForm() 文件字段 {} 的值应为 string (路径)/object{{fileName, content}}/bytes，得到 {}",
+            field_name,
+            other.type_name()
+        ))),
+    }
+}
+
+/// random_boundary_suffix 生成 multipart 随机 boundary 后缀（24 位十六进制）。
+fn random_boundary_suffix() -> String {
+    const HEX_CHARS: &[u8] = b"0123456789abcdef";
+    let mut out = String::with_capacity(24);
+    for _ in 0..24 {
+        out.push(HEX_CHARS[(crate::builtins_math::next_rand() as usize) % 16] as char);
+    }
+    out
 }
 
 /// bi_download_file 下载文件到本地。
@@ -4293,8 +5247,10 @@ fn bi_download_file(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let proxy = get_proxy_from_args(args, 2);
     let retries = get_retry_from_args(args, 2);
 
+    let insecure = get_insecure_from_args(args, 2);
+
     let result = http_lite::http_request_with_retry(
-        "GET", &url, &[], "", &headers, timeout, proxy.as_deref(), retries,
+        "GET", &url, &[], "", &headers, timeout, proxy.as_deref(), retries, insecure, 10, &mut http_lite::BodyReadOpts::default(),
     );
     match result {
         Ok(resp) => {
@@ -4422,8 +5378,10 @@ fn bi_get_web_bytes_with_headers(_vm: &mut VM, args: &[Value]) -> Result<Value, 
     let proxy = get_proxy_from_args(args, 2);
     let retries = get_retry_from_args(args, 2);
 
+    let insecure = get_insecure_from_args(args, 2);
+
     let result = http_lite::http_request_with_retry(
-        "GET", &url, &[], "", &headers, timeout, proxy.as_deref(), retries,
+        "GET", &url, &[], "", &headers, timeout, proxy.as_deref(), retries, insecure, 10, &mut http_lite::BodyReadOpts::default(),
     );
     match result {
         Ok(resp) => Ok(Value::Bytes(Arc::new(resp.body))),

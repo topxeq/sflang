@@ -393,6 +393,14 @@ fn bi_url_decode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 /// 适用于 HTML 表单提交、query string 中的表单参数。
 fn bi_url_form_encode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let s = bh::as_str(args, 0, "urlFormEncode")?;
+    Ok(Value::str_from(url_form_encode_str(s)))
+}
+
+/// url_form_encode_str 表单编码核心（application/x-www-form-urlencoded 规则）。
+///
+/// 空格 → +（非 %20）；+ → %2B；其余非保留字符外 %XX。
+/// 供 urlFormEncode 内置函数与 postForm 等需要构造表单体处共用。
+pub(crate) fn url_form_encode_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for byte in s.bytes() {
         if byte == b' ' {
@@ -405,7 +413,7 @@ fn bi_url_form_encode(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             out.push_str(&format!("%{:02X}", byte));
         }
     }
-    Ok(Value::str_from(out))
+    out
 }
 
 /// bi_url_form_decode 表单解码。

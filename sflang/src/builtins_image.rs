@@ -103,32 +103,48 @@ static DOC_IMAGE_LOAD_FROM_BYTES: BuiltinDoc = BuiltinDoc {
 
 static DOC_IMAGE_SAVE: BuiltinDoc = BuiltinDoc {
     category: "image",
-    signature: "imageSave(img, path, format) -> undefined",
-    summary: "保存图片到文件。",
+    signature: "imageSave(img, path, format [, \"-quality=N\"]) -> undefined",
+    summary: "保存图片到文件（JPEG 可用 -quality=1-100 指定质量，默认 75）。",
     params: &[
         ("img", "image 图片对象"),
         ("path", "输出文件路径"),
         ("format", "格式 \"png\"/\"jpg\"/\"gif\"/\"bmp\"/\"webp\""),
+        ("-quality=N", "可选，JPEG 编码质量（1-100，仅对 jpg/jpeg 生效）"),
     ],
     returns: "undefined",
-    examples: &["imageSave(img, \"out.png\", \"png\")"],
-    errors: &["img 不是 image 对象", "路径不可写或磁盘空间不足", "格式拼写错误"],
+    examples: &[
+        "imageSave(img, \"out.png\", \"png\")",
+        "imageSave(img, \"out.jpg\", \"jpg\", \"-quality=90\")",
+    ],
+    errors: &[
+        "img 不是 image 对象",
+        "路径不可写或磁盘空间不足",
+        "格式拼写错误",
+        "-quality 值超出 1-100 范围",
+    ],
 };
 
 static DOC_IMAGE_SAVE_TO_BYTES: BuiltinDoc = BuiltinDoc {
     category: "image",
-    signature: "imageSaveToBytes(img, format) -> bytes",
-    summary: "将图片编码为字节。",
+    signature: "imageSaveToBytes(img, format [, \"-quality=N\"]) -> bytes",
+    summary: "将图片编码为字节（JPEG 可用 -quality=1-100 指定质量，默认 75）。",
     params: &[
         ("img", "image 图片对象"),
         ("format", "格式 \"png\"/\"jpg\"/\"gif\"/\"bmp\"/\"webp\""),
+        ("-quality=N", "可选，JPEG 编码质量（1-100，仅对 jpg/jpeg 生效）"),
     ],
     returns: "bytes 编码后的图片字节",
     examples: &[
         "var b = imageSaveToBytes(img, \"png\")",
         "writeFileBin(\"out.png\", b)",
+        "var j = imageSaveToBytes(img, \"jpg\", \"-quality=90\")",
     ],
-    errors: &["img 不是 image 对象", "图片数据无效", "格式拼写错误"],
+    errors: &[
+        "img 不是 image 对象",
+        "图片数据无效",
+        "格式拼写错误",
+        "-quality 值超出 1-100 范围",
+    ],
 };
 
 // ===================== 图片基本操作 =====================
@@ -1339,10 +1355,50 @@ fn bi_image_load_from_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value
     Ok(wrap_image(img))
 }
 
+/// parse_quality 从可选参数中解析 "-quality=N" 开关（JPEG 质量 1-100）。
+///
+/// 未给出时返回 None（使用编码器默认质量 75）。
+fn parse_quality(args: &[Value], start: usize, fn_name: &str) -> Result<Option<u8>, Value> {
+    for arg in args.iter().skip(start) {
+        let s = match arg {
+            Value::Str(s) => s.as_ref(),
+            _ => continue,
+        };
+        if let Some(q_str) = s.strip_prefix("-quality=") {
+            let q: i64 = q_str.trim().parse().map_err(|_| {
+                error_value(format!(
+                    "{}() -quality 值应为整数 (得到 {})",
+                    fn_name, q_str,
+                ))
+            })?;
+            if !(1..=100).contains(&q) {
+                return Err(error_value(format!(
+                    "{}() -quality 值应在 1-100 范围内 (得到 {})",
+                    fn_name, q,
+                )));
+            }
+            return Ok(Some(q as u8));
+        }
+    }
+    Ok(None)
+}
+
+/// encode_jpeg_with_quality 以指定质量将图片编码为 JPEG 字节。
+fn encode_jpeg_with_quality(
+    img: &image::DynamicImage,
+    quality: u8,
+) -> Result<Vec<u8>, image::ImageError> {
+    let mut buf = std::io::Cursor::new(Vec::new());
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
+    img.write_with_encoder(encoder)?;
+    Ok(buf.into_inner())
+}
+
 /// bi_image_save 保存图片到文件。
 ///
 /// 用法：
 ///   imageSave(img, path, format)
+///   imageSave(img, path, format, "-quality=90")   // JPEG 质量
 ///
 /// format: "png"/"jpg"/"gif"/"bmp"/"webp"
 fn bi_image_save(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
@@ -1350,8 +1406,29 @@ fn bi_image_save(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let path = bh::as_str(args, 1, "imageSave")?;
     let fmt_str = bh::as_str(args, 2, "imageSave")?;
     let format = parse_format(fmt_str).map_err(error_value)?;
+    let quality = parse_quality(args, 3, "imageSave")?;
 
     let img = img_state.img.lock().unwrap();
+    // JPEG 且显式给出质量时走编码器路径（save_with_format 固定默认质量 75）
+    if format == image::ImageFormat::Jpeg {
+        if let Some(q) = quality {
+            let file = std::fs::File::create(path).map_err(|e| {
+                error_value(format!(
+                    "imageSave() 保存 '{}' 失败: {} (可能原因：路径不可写或磁盘空间不足)",
+                    path, e,
+                ))
+            })?;
+            let writer = std::io::BufWriter::new(file);
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(writer, q);
+            img.write_with_encoder(encoder).map_err(|e| {
+                error_value(format!(
+                    "imageSave() 保存 '{}' 失败: {} (可能原因：图片数据无效)",
+                    path, e,
+                ))
+            })?;
+            return Ok(Value::Undefined);
+        }
+    }
     img.save_with_format(path, format).map_err(|e| {
         error_value(format!(
             "imageSave() 保存 '{}' 失败: {} (可能原因：路径不可写或磁盘空间不足)",
@@ -1365,14 +1442,28 @@ fn bi_image_save(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：
 ///   imageSaveToBytes(img, format) → bytes
+///   imageSaveToBytes(img, format, "-quality=90") → bytes   // JPEG 质量
 ///
 /// format: "png"/"jpg"/"gif"/"bmp"/"webp"
 fn bi_image_save_to_bytes(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let img_state = image_downcast(&args[0], "imageSaveToBytes")?;
     let fmt_str = bh::as_str(args, 1, "imageSaveToBytes")?;
     let format = parse_format(fmt_str).map_err(error_value)?;
+    let quality = parse_quality(args, 2, "imageSaveToBytes")?;
 
     let img = img_state.img.lock().unwrap();
+    // JPEG 且显式给出质量时走编码器路径（write_to 固定默认质量 75）
+    if format == image::ImageFormat::Jpeg {
+        if let Some(q) = quality {
+            let data = encode_jpeg_with_quality(&img, q).map_err(|e| {
+                error_value(format!(
+                    "imageSaveToBytes() 编码失败: {} (可能原因：图片数据无效)",
+                    e,
+                ))
+            })?;
+            return Ok(Value::Bytes(Arc::new(data)));
+        }
+    }
     let mut buf = std::io::Cursor::new(Vec::new());
     img.write_to(&mut buf, format).map_err(|e| {
         error_value(format!(
