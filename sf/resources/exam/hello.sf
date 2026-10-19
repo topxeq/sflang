@@ -1,0 +1,8 @@
+// Sflang 专区示例：hello.sf
+// ==================================
+// 用法：sf --exam hello.sf
+// 专区别名机制见 sf --help（--exam），首个示例从 Hello 开始。
+
+pln("Hello, Sflang!")
+pln("这是 Sflang 专区（https://magicdo.top/sf/exam/）的公共示例脚本。")
+pln("查看全部内置函数：sf --list-builtins；函数详情：help(\"函数名\")")

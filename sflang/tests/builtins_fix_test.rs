@@ -340,3 +340,53 @@ fn test_random_str_huge_length_returns_error() {
     assert_eq!(eval("return len(randomStr(10))"), Value::Int(10));
     assert!(run("return randomStr(1000000)").is_ok(), "恰在上限内应可用");
 }
+
+// ---- pln/print 双模输出（含 printf 占位符时格式化，否则空格连接） ----
+
+/// MemBuf 测试用内存输出缓冲区（set_output 需要 Write + Send + 'static）。
+#[derive(Clone, Default)]
+struct MemBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for MemBuf {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// run_capture 执行代码并捕获标准输出（set_output 到内存缓冲区）。
+fn run_capture(src: &str) -> String {
+    let inner = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut sf = Sflang::new();
+    sf.set_output(MemBuf(inner.clone()));
+    sf.run_string(src).expect("run failed");
+    let out = String::from_utf8(inner.lock().unwrap().clone()).expect("utf8");
+    out
+}
+
+/// pln 是 println 行为（与 charlang 一致）：参数空格连接，不格式化；
+/// 占位符原样输出，格式化打印应使用 pl。
+#[test]
+fn test_pln_plain_no_formatting() {
+    assert_eq!(run_capture("pln(\"hello\")"), "hello\n");
+    assert_eq!(run_capture("pln(\"count:\", 5)"), "count: 5\n");
+    assert_eq!(run_capture("pln(\"[%d] %s\", 1, \"a\")"), "[%d] %s 1 a\n");
+    assert_eq!(run_capture("pln(\"progress 100%\", 1)"), "progress 100% 1\n");
+}
+
+/// print（不换行）与 pln 相同的空格连接规则。
+#[test]
+fn test_print_plain_no_formatting() {
+    assert_eq!(run_capture("print(\"a\", 1)"), "a 1");
+    assert_eq!(run_capture("print(\"%d\", 5)"), "%d 5");
+}
+
+/// pl 才是 printf + 换行的格式化打印（与 charlang 一致）。
+#[test]
+fn test_pl_formats() {
+    assert_eq!(run_capture("pl(\"[%d] %s\", 1, \"a\")"), "[1] a\n");
+    assert_eq!(run_capture("pl(\"%.2f\", 3.14159)"), "3.14\n");
+}

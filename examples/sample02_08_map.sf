@@ -28,7 +28,7 @@ pln("missing:", m["nonexistent"])
 // ---- 遍历（按插入顺序）----
 pln("\n--- 遍历（插入顺序）---")
 for k, v in m {
-    pl("  %s = %v\n", k, v)
+    pl("  %s = %v", k, v)
 }
 
 // ---- len / hasKey ----
@@ -47,21 +47,21 @@ pln("jsonEncode:", jsonEncode(m))
 pln("\n--- object vs map ---")
 pln("object 遍历（顺序不可预测）:")
 var obj = {b: 2, a: 1, c: 3}
-for k, v in obj { pl("  %s=%v\n", k, v) }
+for k, v in obj { pl("  %s=%v", k, v) }
 pln("map 遍历（插入顺序）:")
 var mp = map{"b": 2, "a": 1, "c": 3}
-for k, v in mp { pl("  %s=%v\n", k, v) }
+for k, v in mp { pl("  %s=%v", k, v) }
 
 // ---- 实用：配置映射 ----
 pln("\n--- 配置映射 ---")
 var config = map{"debug": true, "timeout": 30, "retries": 3}
 for k, v in config {
-    pl("  %s: %v\n", k, v)
+    pl("  %s: %v", k, v)
 }
 
 // ---- 实用：HTTP 头 ----
 pln("\n--- HTTP 头 ---")
 var headers = map{"Content-Type": "application/json", "Accept": "application/json"}
 for k, v in headers {
-    pl("  %s: %s\n", k, v)
+    pl("  %s: %s", k, v)
 }

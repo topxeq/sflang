@@ -84,18 +84,18 @@ static DOC_STR_SPLIT: BuiltinDoc = BuiltinDoc {
 
 static DOC_STR_JOIN: BuiltinDoc = BuiltinDoc {
     category: "string",
-    signature: "strJoin(sep, arr) -> string",
+    signature: "strJoin(arr, sep) -> string",
     summary: "用分隔符 sep 连接字符串数组的各元素。",
     params: &[
-        ("sep", "分隔符字符串"),
         ("arr", "待连接的字符串数组（非字符串元素自动转换）"),
+        ("sep", "分隔符字符串"),
     ],
     returns: "string 连接后的字符串",
     examples: &[
-        "strJoin(\",\", [\"a\",\"b\",\"c\"])   → \"a,b,c\"",
-        "strJoin(\"\", [\"a\",\"b\"])         → \"ab\"",
+        "strJoin([\"a\",\"b\",\"c\"], \",\")   → \"a,b,c\"",
+        "strJoin([\"a\",\"b\"], \"\")         → \"ab\"",
     ],
-    errors: &["参数顺序：sep 在前，arr 在后"],
+    errors: &["参数顺序：arr 在前，sep 在后"],
 };
 
 static DOC_STR_SUB: BuiltinDoc = BuiltinDoc {

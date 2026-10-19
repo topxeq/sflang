@@ -20,6 +20,7 @@ Sflang is a lightweight, fast interpreted programming language implemented in Ru
 - **Script embedding**: Usable as a Rust library or standalone CLI (`sf`)
 - **Standalone executable**: `sf --build script.sf` packs a script into a single executable
 - **Remote/cloud scripts**: `sf --remote <url>` runs a script from a URL; `sf --cloud <name>` runs it from a base URL configured in `~/.sf/cloud.cfg`
+- **Example scripts**: `sf --exam <name>` runs a public example script from the Sflang 专区 (default `https://magicdo.top/sf/exam/`, overridable via `~/.sf/exam.cfg`), e.g. `sf --exam editor.sf`
 
 ## Built-in Function Categories
 
@@ -73,6 +74,10 @@ sf --remote https://example.com/scripts/basic.sf
 sf --cloud basic.sf
 # which is equivalent to:
 sf --remote https://script.example.com/basic.sf
+
+# Run a public example script from the Sflang 专区
+# (hosted at https://magicdo.top/sf/exam/, base URL overridable via ~/.sf/exam.cfg)
+sf --exam editor.sf
 
 # REPL
 sf

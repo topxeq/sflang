@@ -420,7 +420,7 @@ static DOC_RUN_CODE: BuiltinDoc = BuiltinDoc {
 static DOC_PRINT: BuiltinDoc = BuiltinDoc {
     category: "core",
     signature: "print(...) -> undefined",
-    summary: "打印参数（空格分隔）不换行，输出到标准输出。",
+    summary: "打印参数（空格分隔）不换行，不做 printf 格式化。",
     params: &[("...", "任意类型，自动转为字符串（多个用空格分隔）")],
     returns: "undefined（无返回值）",
     examples: &[
@@ -433,11 +433,14 @@ static DOC_PRINT: BuiltinDoc = BuiltinDoc {
 static DOC_PLN: BuiltinDoc = BuiltinDoc {
     category: "core",
     signature: "pln(...) -> undefined",
-    summary: "println 的简写别名：打印参数（空格分隔）并换行。",
-    params: &[("...", "任意类型，自动转为字符串")],
+    summary: "println 的简写别名：参数按默认格式（空格分隔）打印并换行，不做 printf 格式化（与 charlang 的 pln 一致）。",
+    params: &[("...", "任意类型，自动转为字符串，多个参数用空格分隔")],
     returns: "undefined",
-    examples: &["pln(\"hello\")  // 输出 hello 并换行"],
-    errors: &[],
+    examples: &[
+        "pln(\"hello\")          // 输出 hello 并换行",
+        "pln(\"count:\", 5)     // 输出 count: 5",
+    ],
+    errors: &["需要 printf 风格格式化打印请用 pl（格式化 + 换行）或 printf（格式化不换行）"],
 };
 
 static DOC_PR: BuiltinDoc = BuiltinDoc {
@@ -1499,7 +1502,10 @@ pub fn register(vm: &mut VM) {
     vm.register_builtin_doc("help", bi_help, &DOC_HELP);
 }
 
-/// bi_println 打印并换行。
+/// bi_println 打印并换行（println 行为）。
+///
+/// 与 charlang 的 pln 一致：参数按默认格式（to_str）空格连接输出，不做 printf
+/// 格式化——需要格式化打印请用 pl（printf + 换行）或 printf。
 fn bi_println(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let s = args.iter().map(|v| v.to_str()).collect::<Vec<_>>().join(" ");
     let out = _vm.output_handle();
@@ -1507,7 +1513,7 @@ fn bi_println(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     Ok(Value::Undefined)
 }
 
-/// bi_print 打印不换行。
+/// bi_print 打印不换行。规则与 bi_println 相同（空格连接，不格式化）。
 fn bi_print(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let s = args.iter().map(|v| v.to_str()).collect::<Vec<_>>().join(" ");
     let out = _vm.output_handle();

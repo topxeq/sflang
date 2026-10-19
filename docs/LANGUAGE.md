@@ -12,6 +12,8 @@ sf script.sf             # 执行脚本
 sf -e "println(\"hi\")"  # 执行代码
 sf --remote <url>        # 从 URL 下载并执行脚本
 sf --cloud basic.sf      # 从云端执行脚本（基础 URL 配置于 ~/.sf/cloud.cfg）
+sf --exam editor.sf      # 从 Sflang 专区执行公共示例脚本
+                         # （默认 https://magicdo.top/sf/exam/，可用 ~/.sf/exam.cfg 覆盖）
 sf -h                    # 帮助
 ```
 

@@ -31,7 +31,7 @@ pln("缺失的键:", person["missing"])
 // ---- 遍历 ----
 pln("\n--- 遍历 ---")
 for k, v in person {
-    pl("  %s = %v\n", k, v)
+    pl("  %s = %v", k, v)
 }
 
 // ---- Object 加方法（OOP）----

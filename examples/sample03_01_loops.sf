@@ -15,13 +15,13 @@ for i in range(3) {
 pln("\n--- for-in 带索引 ---")
 var fruits = ["apple", "banana", "cherry"]
 for idx, fruit in fruits {
-    pln("  [%d] %s", idx, fruit)
+    pl("  [%d] %s", idx, fruit)
 }
 
 // 遍历字符串
 pln("\n--- for-in 字符串 ---")
 for i, ch in "abc" {
-    pl("  %d: %s(code=%d)\n", i, charFromCode(ch), ch)
+    pl("  %d: %s(code=%d)", i, charFromCode(ch), ch)
 }
 
 // 遍历对象
@@ -81,7 +81,7 @@ pln("\n--- 嵌套循环 ---")
 for i in range(3) {
     for j in range(3) {
         if j == 2 { break }
-        pln("  i=%d j=%d", i, j)
+        pl("  i=%d j=%d", i, j)
     }
 }
 

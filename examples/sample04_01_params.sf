@@ -38,7 +38,7 @@ pln("全指定:", createFile("cfg.ini", "r", "gbk"))
 // ---- 可变参数（... 标记最后一个参数）----
 func sumUp(v0, v1, ...rest) {
     var total = v0 + v1
-    pln("固定参数 v0=%d v1=%d, 可变参数个数=%d", v0, v1, len(rest))
+    pl("固定参数 v0=%d v1=%d, 可变参数个数=%d", v0, v1, len(rest))
     for v in rest {
         total += v
     }

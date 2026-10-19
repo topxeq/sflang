@@ -6,6 +6,8 @@
 //   sf -e "<code>"           执行代码字符串
 //   sf --remote <url>        从 URL 下载并执行脚本
 //   sf --cloud <name>        从云端执行脚本（基础 URL 配置于 ~/.sf/cloud.cfg）
+//   sf --exam <name>         从 Sflang 专区执行公共示例脚本（默认 https://magicdo.top/sf/exam/，
+//                            可用 ~/.sf/exam.cfg 覆盖基础 URL）
 //   sf --edit [file.sf]      内嵌 GUI 编辑器（仅 Windows）：新建窗口或打开文件编辑
 //   sf -server [options]     启动 HTTP 应用服务器
 //   sf --build <script.sf>   编译脚本为独立可执行文件
@@ -30,10 +32,11 @@ use sflang::Sflang;
 
 /// 内嵌 GUI 编辑器脚本源码（仅 Windows，经 --edit 启动）。
 ///
-/// 源文件随仓库维护（sf/resources/sf_editor.sf），编译期内嵌进二进制，
+/// 源文件随仓库维护（sf/resources/exam/editor.sf，同时托管在 Sflang 专区供
+/// `sf --exam editor.sf` 下载执行），编译期内嵌进二进制，
 /// 无需随 sf.exe 分发额外文件。编辑器自身解析 argsG：
 /// 第一个非 -- 开头参数为预载文件路径，--debug 开启调试输出。
-const EDITOR_SRC: &str = include_str!("../resources/sf_editor.sf");
+const EDITOR_SRC: &str = include_str!("../resources/exam/editor.sf");
 
 /// 嵌入脚本标记。追加到 exe 末尾：[脚本内容][脚本长度u64 LE][SFLANG_PACK]
 const PACK_MAGIC: &[u8] = b"SFLANG_PACK";
@@ -163,6 +166,25 @@ fn real_main() -> ExitCode {
                     ExitCode::from(1)
                 }
             }
+        }
+        "--exam" | "-exam" | "--example" | "-example" => {
+            // 从 Sflang 专区下载公共示例脚本并执行（对标 Charlang 的 -exam）
+            if args.len() < 3 {
+                eprintln!("错误：--exam 需要一个脚本名参数");
+                eprintln!("用法：sf --exam editor.sf");
+                eprintln!("说明：从 Sflang 专区下载公共示例脚本并执行，");
+                eprintln!("      默认地址为 {}", join_cloud_url(&load_exam_base_url(), "<脚本名>"));
+                eprintln!("      可在用户目录 .sf 下创建 exam.cfg（内容为一行基础 URL）覆盖默认地址");
+                return ExitCode::from(1);
+            }
+            let name = args[2].trim();
+            if name.is_empty() {
+                eprintln!("错误：--exam 的脚本名不能为空");
+                return ExitCode::from(1);
+            }
+            let script_args: Vec<String> = args[3..].to_vec();
+            let url = join_cloud_url(&load_exam_base_url(), name);
+            run_remote(&url, script_args)
         }
         "--edit" | "-edit" => {
             // 内嵌 GUI 编辑器：sf --edit [文件路径] [--debug]
@@ -530,6 +552,27 @@ fn join_cloud_url(base: &str, name: &str) -> String {
     format!("{}/{}", base.trim_end_matches('/'), name.trim_start_matches('/'))
 }
 
+// ---- Sflang 专区（--exam） ----
+//
+// 对标 Charlang 的 -exam（topget.org/dc/t/charlang/example/）：公共示例脚本
+// 托管在服务器上，sf --exam <脚本名> 下载并执行。
+//   专区默认地址：https://magicdo.top/sf/exam/（xyd01 服务器 nginx 静态目录）
+//   可用 ~/.sf/exam.cfg（一行基础 URL）覆盖，便于私有镜像或调试。
+
+/// EXAM_BASE_URL_DEFAULT 是 Sflang 专区的默认基础 URL。
+const EXAM_BASE_URL_DEFAULT: &str = "https://magicdo.top/sf/exam/";
+
+/// load_exam_base_url 读取专区基础 URL：优先 ~/.sf/exam.cfg，缺失或无效时用默认值。
+fn load_exam_base_url() -> String {
+    let cfg_path = sf_home_dir().join("exam.cfg");
+    if let Ok(content) = std::fs::read_to_string(&cfg_path) {
+        if let Some(url) = parse_cfg_content(&content) {
+            return url;
+        }
+    }
+    EXAM_BASE_URL_DEFAULT.to_string()
+}
+
 /// run_remote 从 URL 下载脚本并执行（--remote 与 --cloud 的公共路径）。
 ///
 /// scriptPathG 设为完整 URL，便于脚本内引用自身来源。
@@ -610,6 +653,9 @@ fn print_help() {
     println!("  sf --cloud <脚本名>      从云端执行脚本（基础 URL 配置于 ~/.sf/cloud.cfg）");
     println!("      示例：cloud.cfg 内容为 https://script.example.com/ 时，");
     println!("            sf --cloud basic.sf 等同于 sf --remote https://script.example.com/basic.sf");
+    println!("  sf --exam <脚本名>       从 Sflang 专区执行公共示例脚本，");
+    println!("                           如 sf --exam editor.sf（默认下载自");
+    println!("                           https://magicdo.top/sf/exam/，可用 ~/.sf/exam.cfg 覆盖）");
     println!("  sf --edit [file.sf]      内嵌 GUI 编辑器（仅 Windows）：新建窗口编辑，");
     println!("                           或打开指定 .sf 文件编辑；编辑器内可运行/构建，");
     println!("                           --debug 开启调试输出");
@@ -749,5 +795,18 @@ mod tests {
         assert_eq!(join_cloud_url("https://a.com", "basic.sf"), "https://a.com/basic.sf");
         assert_eq!(join_cloud_url("https://a.com//", "/basic.sf"), "https://a.com/basic.sf");
         assert_eq!(join_cloud_url("https://a.com/scripts/", "demo/basic.sf"), "https://a.com/scripts/demo/basic.sf");
+    }
+
+    /// --exam 默认专区地址拼接
+    #[test]
+    fn test_exam_default_url() {
+        assert_eq!(
+            join_cloud_url(EXAM_BASE_URL_DEFAULT, "editor.sf"),
+            "https://magicdo.top/sf/exam/editor.sf"
+        );
+        assert_eq!(
+            join_cloud_url(EXAM_BASE_URL_DEFAULT, "/editor.sf"),
+            "https://magicdo.top/sf/exam/editor.sf"
+        );
     }
 }

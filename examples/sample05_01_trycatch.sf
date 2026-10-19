@@ -93,9 +93,9 @@ var divisors = [2, 0, 5]
 for i in range(len(nums)) {
     try {
         var result = safeDivide(nums[i], divisors[i])
-        pln("  %d / %d = %d", nums[i], divisors[i], result)
+        pl("  %d / %d = %d", nums[i], divisors[i], result)
     } catch (e) {
-        pln("  %d / %d 失败: %s", nums[i], divisors[i], e)
+        pl("  %d / %d 失败: %s", nums[i], divisors[i], e)
     }
 }
 
