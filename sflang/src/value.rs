@@ -26,7 +26,24 @@ pub use crate::datetime::DateTime;
 pub use crate::ord_map::OrdMap;
 pub use crate::function::{Builtin, BuiltinFn, Function};
 pub use crate::object_map::Map;
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::http_lite::{SfHttpRequest, SfHttpResponse, SfWebSocket};
+#[cfg(target_arch = "wasm32")]
+/// wasm（浏览器）目标：HTTP 功能裁剪，占位类型仅保持 Value 变体形状与
+/// TypeCode 编码稳定（固定编码是版本兼容承诺，不变动编号与变体）。
+mod http_placeholders {
+    /// SfHttpRequest HTTP 请求对象占位（浏览器版不可用，仅类型占位）。
+    #[derive(Debug)]
+    pub struct SfHttpRequest;
+    /// SfHttpResponse HTTP 响应对象占位。
+    #[derive(Debug)]
+    pub struct SfHttpResponse;
+    /// SfWebSocket WebSocket 连接对象占位。
+    #[derive(Debug)]
+    pub struct SfWebSocket;
+}
+#[cfg(target_arch = "wasm32")]
+pub use http_placeholders::{SfHttpRequest, SfHttpResponse, SfWebSocket};
 
 /// TypeCode 类型编码。
 ///
@@ -306,9 +323,12 @@ impl Value {
                 if n.downcast_ref::<std::sync::Arc<std::sync::Mutex<rust_xlsxwriter::Workbook>>>().is_some() {
                     return "workbook".to_string();
                 }
+                // 数据库/HTTP 服务器原生对象：wasm（浏览器）目标不编译对应模块
+                #[cfg(not(target_arch = "wasm32"))]
                 if n.downcast_ref::<crate::builtins_db::DatabaseConn>().is_some() {
                     return "database".to_string();
                 }
+                #[cfg(not(target_arch = "wasm32"))]
                 if n.downcast_ref::<std::sync::Arc<crate::builtins_http::SfHttpServer>>().is_some() {
                     return "httpServer".to_string();
                 }
@@ -330,6 +350,7 @@ impl Value {
                 if n.downcast_ref::<std::sync::Arc<crate::builtins_seq::SeqState>>().is_some() {
                     return "seq".to_string();
                 }
+                #[cfg(not(target_arch = "wasm32"))]
                 if n.downcast_ref::<std::sync::Arc<crate::builtins_s3::S3Client>>().is_some() {
                     return "s3Client".to_string();
                 }

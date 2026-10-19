@@ -29,7 +29,8 @@ use std::collections::{BinaryHeap, VecDeque};
 use std::cmp::Reverse;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::Instant;
+use crate::clock::Mono as Instant;
+use crate::clock::mono_now;
 
 use crate::value::Value;
 use crate::vm::VM;
@@ -122,9 +123,22 @@ static SCHED: OnceLock<Scheduler> = OnceLock::new();
 struct Scheduler {
     inner: Mutex<SchedInner>,
     /// cv 就绪队列/定时器变化通知（worker 空闲时等待）。
+    /// wasm（浏览器）目标无线程也不阻塞等待，不建 Condvar（其 new 在
+    /// wasm32-unknown-unknown 上不可用）。
+    #[cfg(not(target_arch = "wasm32"))]
     cv: Condvar,
-    /// worker_count worker 线程数（启动时按 CPU 核数确定）。
+    /// worker_count worker 线程数（启动时按 CPU 核数确定；wasm 恒 0）。
     worker_count: usize,
+}
+
+impl Scheduler {
+    /// notify 通知 worker 取任务。wasm 无 worker 线程，为空操作。
+    #[cfg(not(target_arch = "wasm32"))]
+    fn notify(&self) {
+        self.cv.notify_one();
+    }
+    #[cfg(target_arch = "wasm32")]
+    fn notify(&self) {}
 }
 
 /// next_task_id 全局任务 ID 分配。
@@ -133,11 +147,40 @@ fn next_task_id() -> u64 {
     ID.fetch_add(1, Ordering::SeqCst)
 }
 
+/// fire_due_timers 触发所有到期的定时器（CAS Blocked→Ready 入就绪队列）。
+/// worker_loop 与 wasm 单线程泵（pump_once/pump_all/pump_until）共用。
+fn fire_due_timers(g: &mut SchedInner) -> bool {
+    let now = mono_now();
+    let mut fired = false;
+    while let Some(Reverse((deadline, _t))) = g.timers.peek() {
+        if *deadline <= now {
+            let Reverse((_, t)) = g.timers.pop().unwrap();
+            if t
+                .state
+                .compare_exchange(
+                    task_state::BLOCKED,
+                    task_state::READY,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
+            {
+                g.ready.push_back(t);
+            }
+            fired = true;
+        } else {
+            break;
+        }
+    }
+    fired
+}
+
 /// sched 获取全局调度器（首次访问时创建并启动 worker 线程）。
 fn sched() -> &'static Scheduler {
     SCHED.get_or_init(|| {
         // worker 数默认 = CPU 核数；可用环境变量 SF_TASK_WORKERS 覆盖
         // （IO 密集负载可调大；注意任务内阻塞 IO 本身仍占一个 worker）
+        #[cfg(not(target_arch = "wasm32"))]
         let workers = std::env::var("SF_TASK_WORKERS")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
@@ -148,15 +191,20 @@ fn sched() -> &'static Scheduler {
                     .ok()
             })
             .unwrap_or(4);
+        #[cfg(target_arch = "wasm32")]
+        // wasm（浏览器）无线程：单线程泵模型，无常驻 worker
+        let workers = 0usize;
         let s = Scheduler {
             inner: Mutex::new(SchedInner {
                 ready: VecDeque::new(),
                 timers: BinaryHeap::new(),
             }),
+            #[cfg(not(target_arch = "wasm32"))]
             cv: Condvar::new(),
             worker_count: workers,
         };
-        // 启动 worker 线程（常驻；进程退出随之终止）
+        // 启动 worker 线程（常驻；进程退出随之终止）。wasm 目标无线程，跳过。
+        #[cfg(not(target_arch = "wasm32"))]
         for i in 0..workers {
             std::thread::Builder::new()
                 .name(format!("sf-worker-{}", i))
@@ -165,6 +213,95 @@ fn sched() -> &'static Scheduler {
         }
         s
     })
+}
+
+/// pump_once wasm 单线程执行器步进（仅 wasm32 编译）：触发到期定时器，
+/// 取一个就绪任务执行一个切片。返回是否有活动（供泵循环判断退出）。
+///
+/// 桌面目标不需要此函数：就绪队列由常驻 worker 线程消费。
+#[cfg(target_arch = "wasm32")]
+pub fn pump_once() -> bool {
+    let task = {
+        let s = sched();
+        let mut g = s.inner.lock().unwrap();
+        fire_due_timers(&mut g);
+        g.ready.pop_front()
+    };
+    let Some(task) = task else {
+        return false;
+    };
+    // checkout：CAS Ready→Running（防止双重执行），与 worker_loop 同语义
+    if task
+        .state
+        .compare_exchange(
+            task_state::READY,
+            task_state::RUNNING,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return true; // 队列有活动（条目被跳过），继续泵
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_task_slice_once(&task);
+    }));
+    if result.is_err() {
+        task.state.store(task_state::FINISHED, Ordering::SeqCst);
+        eprintln!("[run 任务异常] 任务执行发生内部 panic，已终止该任务");
+    }
+    true
+}
+
+/// pump_all wasm：持续泵任务直到就绪队列排空（仅 wasm32 编译）。
+/// 用于顶层脚本结束后排空 fire-and-forget 任务。带步数上限（默认 100 万切片），
+/// 防止无限循环任务（如 ticker）挂死页面；到达上限时输出告警并返回。
+#[cfg(target_arch = "wasm32")]
+pub fn pump_all() {
+    const MAX_SLICES: usize = 1_000_000;
+    let mut n = 0usize;
+    loop {
+        {
+            let s = sched();
+            let mut g = s.inner.lock().unwrap();
+            fire_due_timers(&mut g);
+            if g.ready.is_empty() {
+                return;
+            }
+        }
+        if !pump_once() {
+            return;
+        }
+        n += 1;
+        if n >= MAX_SLICES {
+            eprintln!("[wasm] 任务泵达到步数上限（{} 切片），剩余任务放弃执行（可能原因：任务内有无限循环）", MAX_SLICES);
+            return;
+        }
+    }
+}
+
+/// pump_until wasm：泵任务/定时器直到截止时间（仅 wasm32 编译）。
+/// 非任务上下文 sleep/sleepMs 的替代实现（std::thread::sleep 在 wasm 不可用）。
+/// 无就绪任务且仅有未来定时器时按时钟自旋（浏览器单线程无其他等待手段）。
+#[cfg(target_arch = "wasm32")]
+pub fn pump_until(deadline: Instant) {
+    loop {
+        {
+            let s = sched();
+            let mut g = s.inner.lock().unwrap();
+            fire_due_timers(&mut g);
+            if mono_now() >= deadline {
+                return;
+            }
+            if !g.ready.is_empty() {
+                drop(g);
+                pump_once();
+                continue;
+            }
+        }
+        // 就绪队列空、定时器未到期：最短自旋等待（单线程唯一手段）
+        std::hint::spin_loop();
+    }
 }
 
 /// worker_loop worker 线程主循环：取任务→执行切片→按结果处置。
@@ -176,41 +313,25 @@ fn worker_loop() {
             let mut g = s.inner.lock().unwrap();
             loop {
                 // 到期定时器：唤醒对应任务（CAS Blocked→Ready 入就绪队列）
-                let now = Instant::now();
-                let mut fired = false;
-                while let Some(Reverse((deadline, _t))) = g.timers.peek() {
-                    if *deadline <= now {
-                        let Reverse((_, t)) = g.timers.pop().unwrap();
-                        if t.state.compare_exchange(
-                            task_state::BLOCKED,
-                            task_state::READY,
-                            Ordering::SeqCst,
-                            Ordering::SeqCst,
-                        )
-                        .is_ok()
-                        {
-                            g.ready.push_back(t);
-                        }
-                        fired = true;
-                    } else {
-                        break;
-                    }
-                }
-                if fired {
+                if fire_due_timers(&mut g) {
                     continue; // 定时器唤醒的任务已入队，回头取
                 }
                 if let Some(t) = g.ready.pop_front() {
                     break t;
                 }
                 // 无就绪任务：按最近定时器到期时间等待（无定时器则无限等待）
+                let now = mono_now();
                 let timeout = g
                     .timers
                     .peek()
                     .map(|Reverse((d, _))| d.saturating_duration_since(now));
-                g = match timeout {
-                    Some(d) => s.cv.wait_timeout(g, d).unwrap().0,
-                    None => s.cv.wait(g).unwrap(),
-                };
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    g = match timeout {
+                        Some(d) => s.cv.wait_timeout(g, d).unwrap().0,
+                        None => s.cv.wait(g).unwrap(),
+                    };
+                }
             }
         };
 
@@ -306,7 +427,7 @@ fn run_task_slice_once(task: &Arc<Task>) {
             {
                 let s = sched();
                 s.inner.lock().unwrap().ready.push_back(task.clone());
-                s.cv.notify_one();
+                s.notify();
             }
         }
         SliceOutcome::Parked => {
@@ -315,7 +436,7 @@ fn run_task_slice_once(task: &Arc<Task>) {
             if task.state.load(Ordering::SeqCst) == task_state::READY {
                 let s = sched();
                 s.inner.lock().unwrap().ready.push_back(task.clone());
-                s.cv.notify_one();
+                s.notify();
             }
         }
     }
@@ -374,7 +495,7 @@ pub fn spawn_task(
         pending_error: Mutex::new(None),
     });
     s.inner.lock().unwrap().ready.push_back(task.clone());
-    s.cv.notify_one();
+    s.notify();
     Ok(id)
 }
 
@@ -395,7 +516,7 @@ pub fn wake_task(task: &Arc<Task>) {
     {
         let s = sched();
         s.inner.lock().unwrap().ready.push_back(task.clone());
-        s.cv.notify_one();
+        s.notify();
     }
 }
 
@@ -427,14 +548,17 @@ type BlockingJob = Box<dyn FnOnce() + Send + 'static>;
 /// 阻塞型内置函数（文件/网络 IO）在任务内调用时卸载到此池：任务挂起等待，
 /// 不占调度 worker。池大小默认 256（SF_BLOCKING_WORKERS 可配 1..=4096）——
 /// 超出并发数的卸载请求排队（任务保持挂起，无额外开销）。
+#[cfg(not(target_arch = "wasm32"))]
 static BLOCKING_POOL: OnceLock<Arc<BlockingPool>> = OnceLock::new();
 
+#[cfg(not(target_arch = "wasm32"))]
 struct BlockingPool {
     jobs: Mutex<VecDeque<BlockingJob>>,
     cv: Condvar,
 }
 
 /// submit_blocking_job 提交阻塞任务到池（池线程执行，完成后自行唤醒原任务）。
+#[cfg(not(target_arch = "wasm32"))]
 pub fn submit_blocking_job(job: BlockingJob) {
     let pool = BLOCKING_POOL.get_or_init(|| {
         let workers = std::env::var("SF_BLOCKING_WORKERS")
@@ -461,7 +585,15 @@ pub fn submit_blocking_job(job: BlockingJob) {
     pool.cv.notify_one();
 }
 
+/// submit_blocking_job wasm 版：无阻塞池线程，直接内联执行。
+/// 到达此处的 job 只会来自已裁剪的 IO 内置函数（正常不可达），内联保持语义兜底。
+#[cfg(target_arch = "wasm32")]
+pub fn submit_blocking_job(job: BlockingJob) {
+    job();
+}
+
 /// blocking_worker_loop 阻塞池工作线程：取任务执行（IO 完成后回调唤醒原任务）。
+#[cfg(not(target_arch = "wasm32"))]
 fn blocking_worker_loop(pool: Arc<BlockingPool>) {
     loop {
         let job = {
@@ -543,7 +675,7 @@ pub fn schedule_timer(task: &Arc<Task>, deadline: Instant) {
     let s = sched();
     let mut g = s.inner.lock().unwrap();
     g.timers.push(Reverse((deadline, task.clone())));
-    s.cv.notify_one();
+    s.notify();
 }
 
 /// queued_task_count 当前排队中的任务数（诊断用）。
@@ -573,7 +705,7 @@ mod tests {
 
     /// wait_until 轮询等待条件成立（任务异步完成）。
     fn wait_until(f: impl Fn() -> bool, timeout: Duration) -> bool {
-        let start = Instant::now();
+        let start = mono_now();
         while start.elapsed() < timeout {
             if f() {
                 return true;

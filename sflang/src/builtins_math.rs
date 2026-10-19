@@ -555,10 +555,8 @@ fn rng_state() -> &'static Mutex<u64> {
 
 /// seed_init 取一个非零初始种子（基于启动时刻）。
 fn seed_init() -> u64 {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0x9E3779B97F4A7C15);
+    let nanos = crate::clock::now_millis()
+        .wrapping_mul(1_000_000);
     // 保证非零
     if nanos == 0 {
         0x9E3779B97F4A7C15

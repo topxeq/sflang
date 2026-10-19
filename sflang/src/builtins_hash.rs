@@ -505,12 +505,7 @@ fn bi_get_otp_code(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     // 时间戳：可选，默认当前
     let timestamp: i64 = match args.get(1) {
         Some(_) => bh::as_int(args, 1, "getOtpCode")?,
-        None => SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .map_err(|e| crate::value::error_value(format!(
-                "getOtpCode() 获取系统时间失败: {} (可能原因：系统时钟异常)", e,
-            )))?,
+        None => (crate::clock::now_millis() / 1000) as i64,
     };
 
     // Base32 解码
@@ -542,12 +537,7 @@ fn bi_check_otp_code(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 
     let timestamp: i64 = match args.get(2) {
         Some(_) => bh::as_int(args, 2, "checkOtpCode")?,
-        None => SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .map_err(|e| crate::value::error_value(format!(
-                "checkOtpCode() 获取系统时间失败: {} (可能原因：系统时钟异常)", e,
-            )))?,
+        None => (crate::clock::now_millis() / 1000) as i64,
     };
 
     // Base32 解码

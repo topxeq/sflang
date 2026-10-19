@@ -2029,13 +2029,17 @@ fn bi_sleep(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         if scheduler::park_current_task_inject(vm).is_ok() {
             scheduler::schedule_timer(
                 &scheduler::current_task().unwrap(),
-                std::time::Instant::now() + dur,
+                crate::clock::mono_now() + dur,
             );
             return Ok(Value::Undefined); // 占位：唤醒后从本调用之后继续
         }
         // park 失败（异常路径）→ 退化为线程 sleep
     }
+    #[cfg(not(target_arch = "wasm32"))]
     std::thread::sleep(dur);
+    // wasm（浏览器）无线程：泵任务/定时器直到截止（无就绪任务时按时钟自旋）
+    #[cfg(target_arch = "wasm32")]
+    crate::scheduler::pump_until(crate::clock::mono_now() + dur);
     Ok(Value::Undefined)
 }
 
@@ -2056,12 +2060,16 @@ fn bi_sleep_ms(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         if scheduler::park_current_task_inject(vm).is_ok() {
             scheduler::schedule_timer(
                 &scheduler::current_task().unwrap(),
-                std::time::Instant::now() + dur,
+                crate::clock::mono_now() + dur,
             );
             return Ok(Value::Undefined);
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
     std::thread::sleep(dur);
+    // wasm（浏览器）无线程：泵任务/定时器直到截止（无就绪任务时按时钟自旋）
+    #[cfg(target_arch = "wasm32")]
+    crate::scheduler::pump_until(crate::clock::mono_now() + dur);
     Ok(Value::Undefined)
 }
 

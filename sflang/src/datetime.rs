@@ -71,10 +71,7 @@ impl DateTime {
 
     /// now 当前时间（本地时区）。
     pub fn now() -> Self {
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+        let millis = crate::clock::now_millis() as i64;
         // 本地时区偏移：用当前本地时间与 UTC 的差估算
         let tz_offset = local_tz_offset_minutes();
         DateTime { millis, tz_offset }
@@ -347,10 +344,7 @@ fn month_name(m: i32) -> &'static str {
 ///     取当前时刻生效的偏移
 /// 获取失败时回退 0（UTC），不产生错误（调用方无须处理失败分支）。
 pub fn local_tz_offset_minutes() -> i32 {
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let now_secs = (crate::clock::now_millis() / 1000) as i64;
     local_tz_offset_minutes_at(now_secs)
 }
 

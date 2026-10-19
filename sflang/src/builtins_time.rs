@@ -24,7 +24,6 @@
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::datetime::DateTime;
 use crate::function::BuiltinDoc;
@@ -330,28 +329,22 @@ pub fn register(vm: &mut VM) {
 }
 
 /// MONOTONIC_BASE 进程级单调时钟基准（懒初始化）。
-static MONOTONIC_BASE: OnceLock<Instant> = OnceLock::new();
+static MONOTONIC_BASE: OnceLock<crate::clock::Mono> = OnceLock::new();
 
 /// base 返回单调时钟基准（首次调用时初始化）。
-fn base() -> Instant {
-    *MONOTONIC_BASE.get_or_init(Instant::now)
+fn base() -> crate::clock::Mono {
+    *MONOTONIC_BASE.get_or_init(crate::clock::mono_now)
 }
 
 /// bi_now 返回自 epoch 以来的毫秒数（Int）。
 fn bi_now(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
-    let ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .map_err(|e| crate::value::error_value(format!("now() 系统时间异常: {}", e)))?;
+    let ms = crate::clock::now_millis() as i64;
     Ok(Value::Int(ms))
 }
 
 /// bi_now_sec 返回自 epoch 以来的秒数。
 fn bi_now_sec(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
-    let s = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .map_err(|e| crate::value::error_value(format!("nowSec() 系统时间异常: {}", e)))?;
+    let s = (crate::clock::now_millis() / 1000) as i64;
     Ok(Value::Int(s))
 }
 
@@ -525,12 +518,7 @@ fn bi_get_now_str(_vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
 ///
 /// 用法：getNowTimeStamp() → 1720000000
 fn bi_get_now_timestamp(_vm: &mut VM, _args: &[Value]) -> Result<Value, Value> {
-    let s = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .map_err(|e| crate::value::error_value(format!(
-            "getNowTimeStamp() 系统时间异常: {}", e,
-        )))?;
+    let s = (crate::clock::now_millis() / 1000) as i64;
     Ok(Value::Int(s))
 }
 

@@ -240,6 +240,8 @@ fn register_all_core(vm: &mut VM) {
     crate::builtins_math::register(vm);
     crate::builtins_arr::register(vm);
     crate::builtins_time::register(vm);
+    // 文件系统：wasm（浏览器）目标无文件系统，不注册
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_fs::register(vm);
     crate::builtins_json::register(vm);
     crate::builtins_bytes::register(vm);
@@ -247,12 +249,17 @@ fn register_all_core(vm: &mut VM) {
     crate::builtins_regex::register(vm);
     crate::builtins_encode::register(vm);
     crate::builtins_hash::register(vm);
+    // 系统/进程：wasm 目标不注册
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_sys::register(vm);
     crate::concurrency::register(vm);
     crate::builtins_ring::register(vm);
     crate::builtins_csv::register(vm);
     crate::builtins_xlsx::register(vm);
+    // docx/数据库：wasm 目标不注册（依赖随 target 条件依赖裁掉）
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_docx::register(vm);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_db::register(vm);
     crate::builtins_aes::register(vm);
     crate::txde::register(vm);
@@ -261,16 +268,26 @@ fn register_all_core(vm: &mut VM) {
     crate::builtins_gui::register(vm);
     #[cfg(all(feature = "gui", not(target_os = "windows")))]
     crate::builtins_gui_stub::register(vm);
+    // 网络/数据库类：wasm 目标不注册
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_ssh::register(vm);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_le::register(vm);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_email::register(vm);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_ftp::register(vm);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_http::register(vm);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_zip::register(vm);
     crate::builtins_containers::register(vm);
     crate::builtins_xml::register(vm);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_clipboard::register(vm);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_dialog::register(vm);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_async::register(vm);
     crate::builtins_test::register(vm);
     crate::builtins_pinyin::register(vm);
@@ -278,13 +295,18 @@ fn register_all_core(vm: &mut VM) {
     crate::builtins_rsa::register(vm);
     crate::builtins_cfg::register(vm);
     crate::builtins_template::register(vm);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_tcp::register(vm);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_tls::register(vm);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_proxy::register(vm);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_xxci::register(vm);
     crate::builtins_image::register(vm);
     crate::builtins_image_gen::register(vm);
     crate::builtins_seq::register(vm);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_s3::register(vm);
 }
 

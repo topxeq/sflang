@@ -1,0 +1,22 @@
+[package]
+name = "sflang-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Sflang WASM build for in-browser execution (playground)"
+publish = false
+
+[lib]
+# cdylib：产出可直接被 WebAssembly.instantiate 加载的 .wasm，无需 wasm-bindgen。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# 核心语言，纯计算特性（--no-default-features 裁掉 GUI/网络/数据库/文件系统）
+sflang = { path = "../sflang", default-features = false }
+# getrandom 自定义后端：wasm 无 OS 熵源，由 JS glue 在 wasm 内存里预填随机字节
+# （getrandom 0.2 已是 rsa 的传递依赖，此处显式声明仅为注册自定义后端，无新增实质依赖；
+# custom 特性关闭平台探测，配合 register_custom_getrandom! 宏使用）
+getrandom = { version = "0.2", features = ["custom"] }

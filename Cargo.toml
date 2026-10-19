@@ -5,7 +5,7 @@
 #   - sf:     主程序（CLI + REPL），依赖 sflang 库
 
 [workspace]
-members = ["sflang", "sf"]
+members = ["sflang", "sf", "sflang-wasm"]
 resolver = "2"
 
 # workspace 级别的依赖统一管理

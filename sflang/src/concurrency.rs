@@ -24,10 +24,31 @@
 
 use std::collections::VecDeque;
 
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::function::BuiltinDoc;
+
+/// thread_wait 非任务上下文的条件等待原语（双上下文阻塞路径的等待一步）。
+/// 桌面目标：Condvar 阻塞（由其他 OS 线程唤醒）；
+/// wasm 目标（浏览器，无线程）：让出原语锁 → 泵一个就绪任务切片 → 重查条件——
+/// 队列里的 run 任务只能由等待方顺手驱动，行为对脚本保持一致（可能更慢）。
+macro_rules! thread_wait {
+    ($g:ident, $obj:expr, $lk:ident) => {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            $g = $obj.cv.wait($g).unwrap();
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            drop($g);
+            crate::scheduler::pump_once();
+            $g = $obj.$lk.lock().unwrap();
+        }
+    };
+}
 use crate::scheduler::{self, Task};
 use crate::value::Value;
 use crate::vm::VM;
@@ -372,32 +393,43 @@ fn bi_thread_run(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     let globals = vm.globals_handle();
     let out = vm.output_handle();
     // 8MB 栈（与旧 run 线程一致；CPU 密集任务可能深递归）
-    let spawned = std::thread::Builder::new()
-        .name("sf-threadrun".to_string())
-        .stack_size(8 * 1024 * 1024)
-        .spawn(move || {
-            let mut tvm = VM::new();
-            tvm.set_globals_handle(globals);
-            tvm.set_output_handle(out);
-            let res = tvm.call_function_value(callee, call_args);
-            if let Err(v) = res {
-                let msg = match &v {
-                    Value::Error(e) => e.message.clone(),
-                    other => other.to_str(),
-                };
-                let _ = std::io::Write::write_fmt(
-                    &mut *tvm.output_handle().lock().unwrap(),
-                    format_args!("[threadRun 线程异常] {}
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let spawned = std::thread::Builder::new()
+            .name("sf-threadrun".to_string())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                let mut tvm = VM::new();
+                tvm.set_globals_handle(globals);
+                tvm.set_output_handle(out);
+                let res = tvm.call_function_value(callee, call_args);
+                if let Err(v) = res {
+                    let msg = match &v {
+                        Value::Error(e) => e.message.clone(),
+                        other => other.to_str(),
+                    };
+                    let _ = std::io::Write::write_fmt(
+                        &mut *tvm.output_handle().lock().unwrap(),
+                        format_args!("[threadRun 线程异常] {}
 ", msg),
-                );
-            }
-        });
-    if let Err(e) = spawned {
-        let _ = std::io::Write::write_fmt(
-            &mut *vm.output_handle().lock().unwrap(),
-            format_args!("[threadRun 线程启动失败] {}
+                    );
+                }
+            });
+        if let Err(e) = spawned {
+            let _ = std::io::Write::write_fmt(
+                &mut *vm.output_handle().lock().unwrap(),
+                format_args!("[threadRun 线程启动失败] {}
 ", e),
-        );
+            );
+        }
+    }
+    // wasm（浏览器）单线程回退：同步执行（独占执行至完成，语义与独占线程最接近）
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut tvm = VM::new();
+        tvm.set_globals_handle(globals);
+        tvm.set_output_handle(out);
+        let _ = tvm.call_function_value(callee, call_args);
     }
     Ok(Value::Undefined)
 }
@@ -506,7 +538,7 @@ fn bi_chan_recv(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         if let Some(v) = g.queue.pop_front() {
             return Ok(v);
         }
-        g = chan.cv.wait(g).unwrap();
+        thread_wait!(g, chan, inner);
     }
 }
 
@@ -592,7 +624,7 @@ fn bi_lock(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
     // 线程上下文：cv 阻塞
     while g.held {
-        g = m.cv.wait(g).unwrap();
+        thread_wait!(g, m, inner);
     }
     g.held = true;
     Ok(Value::Undefined)
@@ -750,7 +782,7 @@ fn bi_rlock(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         return Ok(Value::Undefined); // 放行时已登记 readers+1
     }
     while g.state.writer || g.state.writer_waiting > 0 {
-        g = m.cv.wait(g).unwrap();
+        thread_wait!(g, m, inner);
     }
     g.state.readers += 1;
     Ok(Value::Undefined)
@@ -792,7 +824,7 @@ fn bi_wlock(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     }
     g.state.writer_waiting += 1;
     while g.state.writer || g.state.readers > 0 {
-        g = m.cv.wait(g).unwrap();
+        thread_wait!(g, m, inner);
     }
     g.state.writer_waiting -= 1;
     g.state.writer = true;
@@ -924,7 +956,7 @@ fn bi_wg_wait(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     // 线程上下文：cv 循环
     let mut g = wg.mu.lock().unwrap();
     while wg.counter.load(Ordering::SeqCst) != 0 {
-        g = wg.cv.wait(g).unwrap();
+        thread_wait!(g, wg, mu);
     }
     Ok(Value::Undefined)
 }
@@ -991,7 +1023,7 @@ fn bi_sem_acquire(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
     // 线程上下文
     let mut g = sem.mu.lock().unwrap();
     while sem.count.load(Ordering::SeqCst) <= 0 {
-        g = sem.cv.wait(g).unwrap();
+        thread_wait!(g, sem, mu);
     }
     sem.count.fetch_sub(1, Ordering::SeqCst);
     Ok(Value::Undefined)
@@ -1227,19 +1259,23 @@ fn bi_pool_run(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
         return Ok(Value::Array(Arc::new(Mutex::new(Vec::new()))));
     }
 
-    // 原子任务索引：工作线程抢占下一项
+    // 原子任务索引：工作线程抢占下一项（wasm 单线程回退不用）
+    #[cfg(not(target_arch = "wasm32"))]
     let next = Arc::new(AtomicUsize::new(0));
     // 结果槽：预分配、按下标写入（保证结果顺序与输入一致）
     let slots: Arc<Vec<Arc<Mutex<Option<Value>>>>> = Arc::new(
         (0..items.len()).map(|_| Arc::new(Mutex::new(None))).collect(),
     );
 
-    // 工作线程数不超过任务数（不启多余线程）
+    // 工作线程数不超过任务数（不启多余线程；wasm 单线程回退不用）
+    #[cfg(not(target_arch = "wasm32"))]
     let n_workers = (workers as usize).min(items.len());
     let globals = vm.globals_handle();
     let out = vm.output_handle();
 
+    #[cfg(not(target_arch = "wasm32"))]
     let mut handles = Vec::with_capacity(n_workers);
+    #[cfg(not(target_arch = "wasm32"))]
     for _ in 0..n_workers {
         let func = func.clone();
         let items = items.clone();
@@ -1274,8 +1310,30 @@ fn bi_pool_run(vm: &mut VM, args: &[Value]) -> Result<Value, Value> {
             }
         }));
     }
+    #[cfg(not(target_arch = "wasm32"))]
     for h in handles {
         let _ = h.join();
+    }
+
+    // wasm（浏览器）单线程回退：在当前 VM 顺序逐项执行，无并发但结果语义一致
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut wvm = VM::new();
+        wvm.set_globals_handle(globals);
+        wvm.set_output_handle(out);
+        for (idx, item) in items.iter().enumerate() {
+            let val = match wvm.call_function_value(func.clone(), vec![item.clone()]) {
+                Ok(v) => v,
+                Err(e) => match e {
+                    Value::Error(_) => e,
+                    other => crate::value::error_value(format!(
+                        "poolRun: 任务处理函数抛出异常: {}",
+                        other.to_str()
+                    )),
+                },
+            };
+            *slots[idx].lock().unwrap() = Some(val);
+        }
     }
 
     // 汇总结果（顺序与 items 一致；每个槽必被恰好写入一次）

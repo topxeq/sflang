@@ -4976,6 +4976,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sflang-wasm"
+version = "0.2.2"
+dependencies = [
+ "getrandom 0.2.17",
+ "sflang",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
