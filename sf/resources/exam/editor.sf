@@ -298,6 +298,8 @@ var aiConfigsG = []
 var aiActiveNameG = ""
 var aiBusyG = false
 var aiBuiltinIndexG = undefined
+var aiProcG = undefined
+var aiStopG = false
 // 流式全局状态机（aiChatStreamOnce / aiSseLine 使用）
 var aiFullG = ""
 var aiTcAccG = []
@@ -556,12 +558,23 @@ func aiChatTask(data) {
     for var i = 0; i < len(msgs); i = i + 1 {
         push(full, msgs[i])
     }
+    // 上下文裁剪：总字符超 48000 时从最旧的非系统消息开始丢弃（防 token 爆炸）
+    var totalT = 0
+    for var i = 0; i < len(full); i = i + 1 {
+        totalT += len(toStr(full[i]["content"]))
+    }
+    while totalT > 48000 && len(full) > 5 {
+        totalT -= len(toStr(full[1]["content"]))
+        remove(full, 1)
+    }
     var r = aiChatCore(cfg, full, func(t, txt) {
         guiEval(win, "aiChatProgress('" + escapeJS(t + "|" + txt) + "')")
     })
     aiBusyG = false
     if r["ok"] {
-        guiEval(win, "aiChatDone('" + escapeJS(r["content"]) + "')")
+        var doneMsgT = ""
+        if r["stopped"] == true { doneMsgT = "aiChatStoppedNote();" }
+        guiEval(win, "aiChatDone('" + escapeJS(r["content"]) + "'); " + doneMsgT)
     } else {
         guiEval(win, "aiChatError('" + escapeJS(r["err"]) + "')")
     }
@@ -676,6 +689,8 @@ func aiChatStreamOnce(cfg, messages, onDelta) {
     if isErr(p) {
         return {ok: false, err: "curl 不可用: " + toStr(p), fallback: true}
     }
+    aiProcG = p
+    aiStopG = false
     // 初始化流式全局状态
     aiFullG = ""
     aiTcAccG = []
@@ -688,6 +703,7 @@ func aiChatStreamOnce(cfg, messages, onDelta) {
     var rawHeadG = ""
     var guard = 0
     while !aiDoneG {
+        if aiStopG { break }
         var chunk = procRead(p)
         if chunk != "" {
             if len(rawHeadG) < 400 { rawHeadG = rawHeadG + chunk }
@@ -708,6 +724,7 @@ func aiChatStreamOnce(cfg, messages, onDelta) {
             break
         }
     }
+    if aiStopG { procKill(p) }
     procKill(p)
     // 排空缓冲中未完成的行
     var rest = procRead(p)
@@ -719,6 +736,7 @@ func aiChatStreamOnce(cfg, messages, onDelta) {
         nl2 = strFind("\n", aiSseBufG)
     }
     onDelta("content", aiFullG)
+    aiProcG = undefined
     if aiErrBodyG != "" {
         return {ok: false, err: "API 错误: " + aiErrBodyG}
     }
@@ -734,9 +752,9 @@ func aiChatStreamOnce(cfg, messages, onDelta) {
             var t = aiTcAccG[i]
             push(tcs, {id: t["id"], type: "function", function: {name: t["name"], arguments: t["args"]}})
         }
-        return {ok: true, content: aiFullG, tool_calls: tcs}
+        return {ok: true, content: aiFullG, tool_calls: tcs, stopped: aiStopG}
     }
-    return {ok: true, content: aiFullG}
+    return {ok: true, content: aiFullG, stopped: aiStopG}
 }
 
 // ---- GUI handler：处理来自前端的消息 ----
@@ -777,6 +795,28 @@ func onMessageImpl(msg) {
         } else {
             guiEval(win, "setStatus('当前没有运行中的脚本')")
         }
+    }
+    elif op == "AI_STOP" {
+        if aiProcG != undefined {
+            if procIsRunning(aiProcG) {
+                procKill(aiProcG)
+            }
+            aiStopG = true
+        }
+        guiEval(win, "setStatus('已发送 AI 停止信号')")
+    }
+    elif op == "AIHIST_SAVE" {
+        var d = undefined
+        try {
+            d = jsonDecode(data)
+        } catch (e) {
+            return ""
+        }
+        setCfgStr("ai.history", d)
+    }
+    elif op == "AIHIST_GET" {
+        var hist = getCfgStr("ai.history", [])
+        guiEval(win, "aiHistRestore('" + escapeJS(jsonEncode(hist)) + "')")
     }
     elif op == "AICHAT" {
         // AI 对话：data = JSON {messages:[{role,content}...]}（前端维护历史）
@@ -1666,8 +1706,8 @@ if debugMode {
     html = html + "</script>"
 }
 html = html + "<div class='ai-panel' id='aiPanel'>"
-html = html + "  <div class='ai-head'><b>🤖 AI 助手</b><span style='flex:1'></span><button onclick='aiOpenCfg()'>⚙ 设置</button><button onclick='aiTogglePanel()'>✕</button></div>"
-html = html + "  <div class='ai-head' style='padding:6px 12px'>供应商 <select id='aiCfgSel' onchange='aiCfgSelChange(this.value)' style='flex:1;background:#1e1e1e;color:#d4d4d4;border:1px solid #505050;border-radius:4px;padding:3px 6px;font-size:12px'></select></div>"
+html = html + "  <div class='ai-head'><b>🤖 AI 助手</b><span style='flex:1'></span><button onclick='aiHistClear()' title='清空对话历史'>🗑</button><button onclick='aiOpenCfg()'>⚙ 设置</button><button onclick='aiTogglePanel()'>✕</button></div>"
+html = html + "  <div class='ai-head' style='padding:6px 12px'>供应商 <input type='checkbox' id='aiCtxToggle' checked title='是否附上当前编辑器代码' style='margin:0 2px 0 0;vertical-align:middle'><span style='margin-right:6px'>附代码</span><select id='aiCfgSel' onchange='aiCfgSelChange(this.value)' style='flex:1;background:#1e1e1e;color:#d4d4d4;border:1px solid #505050;border-radius:4px;padding:3px 6px;font-size:12px'></select></div>"
 html = html + "  <div class='ai-msgs' id='aiMsgs'><div class='ai-m bot ai-empty'>配置 LLM 后即可对话。已注入 Sflang 语言参考与 738 个内置函数索引——AI 可自行查文档、运行验证代码。</div></div>"
 html = html + "  <div class='ai-quick'><button onclick='aiQuick(\"explain\")'>解释选中</button><button onclick='aiQuick(\"fix\")'>修复选中</button><button onclick='aiQuick(\"optimize\")'>优化选中</button><button onclick='aiQuick(\"comment\")'>加注释</button></div>"
 html = html + "  <div class='ai-inputrow'><textarea id='aiInput' placeholder='向 AI 提问（Ctrl+Enter 发送）…'></textarea><button id='aiSend' onclick='aiSend()'>发送</button></div>"
@@ -3394,18 +3434,21 @@ html = html + "  aiCfgStatus('✓ 配置已保存', 'ok');"
 html = html + "  try { window.ipc.postMessage('AICFG'); } catch (e) {}"
 html = html + "}"
 html = html + "function aiSend() {"
-html = html + "  if (document.getElementById('aiSend').disabled) return;"
+html = html + "  var btn = document.getElementById('aiSend');"
+html = html + "  if (btn.dataset.mode === 'busy') { aiStop(); return; }"
 html = html + "  var input = document.getElementById('aiInput');"
 html = html + "  var text = input.value.trim();"
 html = html + "  if (!text) return;"
 html = html + "  input.value = '';"
 html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var ctxOn = document.getElementById('aiCtxToggle') ? document.getElementById('aiCtxToggle').checked : true;"
 html = html + "  var sel = ta.value.substring(ta.selectionStart, ta.selectionEnd);"
 html = html + "  var ctx = sel ? sel : (ta.value.length <= 12000 ? ta.value : ta.value.substring(0, 12000) + '\\n…(已截断)');"
 html = html + "  var full = text + '\\n\\n[当前编辑器代码]\\n```sflang\\n' + ctx + '\\n```';"
 html = html + "  aiHistory.push({role: 'user', content: full});"
 html = html + "  aiAppendMsg('user', text);"
 html = html + "  aiPostChat();"
+html = html + "  aiHistSave();"
 html = html + "}"
 html = html + "function aiQuick(action) {"
 html = html + "  var ta = document.getElementById('editor');"
@@ -3419,7 +3462,9 @@ html = html + "  aiAppendMsg('user', ask + (sel ? '（选中代码）' : '（整
 html = html + "  aiPostChat();"
 html = html + "}"
 html = html + "function aiPostChat() {"
-html = html + "  document.getElementById('aiSend').disabled = true;"
+html = html + "  var btn = document.getElementById('aiSend');"
+html = html + "  btn.dataset.mode = 'busy';"
+html = html + "  btn.textContent = '⏹ 停止';"
 html = html + "  var box = document.getElementById('aiMsgs');"
 html = html + "  var d = document.createElement('div');"
 html = html + "  d.className = 'ai-m bot';"
@@ -3444,6 +3489,46 @@ html = html + "  } else {"
 html = html + "    el.innerHTML = '<span class=\"prog\">' + escHtml(payload) + '</span>';"
 html = html + "  }"
 html = html + "}"
+html = html + "function aiStop() {"
+html = html + "  try { window.ipc.postMessage('AI_STOP'); } catch (e) {}"
+html = html + "}"
+html = html + "function aiChatStoppedNote() {"
+html = html + "  var box = document.getElementById('aiMsgs');"
+html = html + "  var d = document.createElement('div');"
+html = html + "  d.className = 'ai-m bot';"
+html = html + "  d.style.color = '#f87171';"
+html = html + "  d.style.fontSize = '12px';"
+html = html + "  d.textContent = '[已手动停止，以上为已接收的部分回复]';"
+html = html + "  box.appendChild(d);"
+html = html + "  box.scrollTop = box.scrollHeight;"
+html = html + "}"
+html = html + "function aiHistRestore(json) {"
+html = html + "  try { aiHistory = JSON.parse(json); } catch (e) { aiHistory = []; }"
+html = html + "  if (!aiHistory.length) return;"
+html = html + "  var box = document.getElementById('aiMsgs');"
+html = html + "  box.innerHTML = '';"
+html = html + "  var n = aiHistory.length;"
+html = html + "  var start = Math.max(0, n - 10);"
+html = html + "  for (var i = start; i < n; i++) {"
+html = html + "    var d = document.createElement('div');"
+html = html + "    d.className = 'ai-m ' + (aiHistory[i].role === 'user' ? 'user' : 'bot');"
+html = html + "    aiRenderContent(d, aiHistory[i].content);"
+html = html + "    box.appendChild(d);"
+html = html + "  }"
+html = html + "  box.scrollTop = box.scrollHeight;"
+html = html + "  setStatus('已恢复上次对话（共 ' + n + ' 条）');"
+html = html + "}"
+html = html + "function aiHistSave() {"
+html = html + "  try { window.ipc.postMessage('AIHIST_SAVE' + String.fromCharCode(10) + JSON.stringify(aiHistory)); } catch (e) {}"
+html = html + "}"
+html = html + "function aiHistClear() {"
+html = html + "  if (!confirm('确定清空对话历史？')) return;"
+html = html + "  aiHistory = [];"
+html = html + "  var box = document.getElementById('aiMsgs');"
+html = html + "  box.innerHTML = '<div class=\"ai-m bot ai-empty\">对话已清空。</div>';"
+html = html + "  aiHistSave();"
+html = html + "}"
+
 html = html + "function aiChatDone(content) {"
 html = html + "  aiHistory.push({role: 'assistant', content: content});"
 html = html + "  var box = document.getElementById('aiMsgs');"
@@ -3454,10 +3539,15 @@ html = html + "  d.className = 'ai-m bot';"
 html = html + "  aiRenderContent(d, content);"
 html = html + "  box.appendChild(d);"
 html = html + "  box.scrollTop = box.scrollHeight;"
-html = html + "  document.getElementById('aiSend').disabled = false;"
+html = html + "  var btn = document.getElementById('aiSend');"
+html = html + "  btn.dataset.mode = 'idle';"
+html = html + "  btn.textContent = '发送';"
+html = html + "  aiHistSave();"
 html = html + "}"
 html = html + "function aiChatError(msg) {"
-html = html + "  document.getElementById('aiSend').disabled = false;"
+html = html + "  var btn = document.getElementById('aiSend');"
+html = html + "  btn.dataset.mode = 'idle';"
+html = html + "  btn.textContent = '发送';"
 html = html + "  var pend = document.getElementById('aiPending');"
 html = html + "  if (pend) { pend.className = 'ai-m err'; pend.textContent = msg; }"
 html = html + "  else aiAppendMsg('err', msg);"
