@@ -279,6 +279,19 @@ func monitorRun() {
     runProcG = undefined
 }
 
+/// startProcTask 通用异步流水线入口：RUN/EVAL/BUILD 共用。
+/// 记录句柄 → 通知前端进入运行态 → 启动监视任务。
+/// 返回 "" 表示已启动；非空为启动失败描述（调用方负责展示）。
+func startProcTask(p) {
+    if isErr(p) {
+        return "启动失败: " + toStr(p)
+    }
+    runProcG = p
+    guiEval(win, "runningStarted()")
+    run monitorRun()
+    return ""
+}
+
 // ---- GUI handler：处理来自前端的消息 ----
 func onMessageImpl(msg) {
     // 解析消息类型（用 \n 分隔操作码和数据）
@@ -297,15 +310,12 @@ func onMessageImpl(msg) {
         // 全程不阻塞 GUI（脚本死循环时编辑器仍可响应，可随时 STOP）
         ensureTempDir()
         writeFile(tempFile, data)
-        var procT = procStart(sfExe, tempFile)
-        if isErr(procT) {
-            guiEval(win, "showOutput('启动失败: " + escapeJS(toStr(procT)) + "', true)")
+        var errT = startProcTask(procStart(sfExe, tempFile))
+        if errT != "" {
+            guiEval(win, "showOutput('" + escapeJS(errT) + "', true)")
             guiEval(win, "runningFinished(-1)")
             return ""
         }
-        runProcG = procT
-        guiEval(win, "runningStarted()")
-        run monitorRun()
     }
     elif op == "STOP" {
         // 停止当前运行：强杀子进程（monitorRun 检测到退出后发 runningFinished）
@@ -363,10 +373,13 @@ func onMessageImpl(msg) {
             guiEval(win, "setStatus('已取消编译')")
             return
         }
-        var output = systemCmd(sfExe, "--build", tempFile, "--output", outPath)
-        var isErrB = strContains(output, "错误") || strContains(output, "error")
-        guiEval(win, "showOutput('" + escapeJS(output) + "', " + toStr(isErrB) + ")")
-        guiEval(win, "setStatus('" + escapeJS(isErrB ? "编译失败" : "编译完成") + "')")
+        // 异步流水线编译：--build 在子进程执行，输出流式回传，可随时停止
+        var errB = startProcTask(procStart(sfExe, "--build", tempFile, "--output", outPath))
+        if errB != "" {
+            guiEval(win, "showOutput('" + escapeJS(errB) + "', true)")
+            guiEval(win, "runningFinished(-1)")
+            return ""
+        }
     }
     elif op == "CHECK" {
         // 语法检查：只编译不执行；失败时提取行号并跳转定位
@@ -415,20 +428,21 @@ func onMessageImpl(msg) {
         guiEval(win, "setDirty(true); setStatus('" + escapeJS(statMsg) + "')")
     }
     elif op == "EVAL" {
-        // 进程内模式：compile + runCode
-        var c = compile(data)
-        if isErr(c) {
-            guiEval(win, "showOutput('" + escapeJS(toStr(c)) + "', true)")
-            return
+        // 子进程异步模式：表达式先尝试 pln 包裹（保留 => 值回显），
+        // 包裹编译不过（多语句代码）则原样执行。全程不占用编辑器进程。
+        ensureTempDir()
+        var evalCodeT = data
+        var wrapT = "pln(\"=> \" + toStr(" + data + "))"
+        if !isErr(compile(wrapT)) {
+            evalCodeT = wrapT
         }
-        var result = runCode(c)
-        if isErr(result) {
-            guiEval(win, "showOutput('" + escapeJS(toStr(result)) + "', true)")
-        } else {
-            var out = "=> " + toStr(result)
-            guiEval(win, "showOutput('" + escapeJS(out) + "', false)")
+        writeFile(tempFile, evalCodeT)
+        var errT = startProcTask(procStart(sfExe, tempFile))
+        if errT != "" {
+            guiEval(win, "showOutput('" + escapeJS(errT) + "', true)")
+            guiEval(win, "runningFinished(-1)")
+            return ""
         }
-        guiEval(win, "setStatus('求值完成')")
     }
     elif op == "OPENDLG" {
         // 原生文件打开对话框
