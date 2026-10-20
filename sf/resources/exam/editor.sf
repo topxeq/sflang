@@ -292,8 +292,293 @@ func startProcTask(p) {
     return ""
 }
 
+// ---- AI 助手（LLM 集成，OpenAI 兼容接口） ----
+
+var aiConfigsG = []
+var aiActiveNameG = ""
+var aiBusyG = false
+var aiBuiltinIndexG = undefined
+
+/// loadAiConfigs 从持久化配置载入 LLM 供应商列表与激活项。
+func loadAiConfigs() {
+    aiConfigsG = getCfgStr("ai.configs", [])
+    aiActiveNameG = getCfgStr("ai.active", "")
+}
+
+/// aiFindConfig 按名称查找配置。
+func aiFindConfig(name) {
+    for var i = 0; i < len(aiConfigsG); i = i + 1 {
+        if aiConfigsG[i]["name"] == name { return aiConfigsG[i] }
+    }
+    return undefined
+}
+
+/// aiActiveConfig 返回激活配置（无激活项时回退第一个）。
+func aiActiveConfig() {
+    loadAiConfigs()
+    var c = aiFindConfig(aiActiveNameG)
+    if c != undefined { return c }
+    if len(aiConfigsG) > 0 { return aiConfigsG[0] }
+    return undefined
+}
+
+/// aiDecryptField 解密 API Key（与 SSH 凭据同一 encryptText 体系）。
+func aiDecryptField(hex) {
+    if !isType(hex, "string") || hex == "" {
+        return ""
+    }
+    var plain = decryptText(hex, "")
+    if isErr(plain) {
+        return ""
+    }
+    return plain
+}
+
+/// saveAiConfigs 持久化配置；apiKey 若带 __ENCRYPT_ME__ 前缀则加密落盘。
+func saveAiConfigs(configsArr, activeName) {
+    var out = []
+    for var i = 0; i < len(configsArr); i = i + 1 {
+        var c = configsArr[i]
+        var key = c["apiKey"]
+        if strStartsWith(key, "__ENCRYPT_ME__") {
+            c["apiKey"] = encryptText(strSub(key, 14), "")
+        }
+        push(out, c)
+    }
+    setCfgStr("ai.configs", out)
+    setCfgStr("ai.active", activeName)
+    aiConfigsG = out
+    aiActiveNameG = activeName
+}
+
+/// aiBuiltinIndex 解析 help() 总览生成 {cat, name} 索引（懒构建一次）。
+func aiBuiltinIndex() {
+    if aiBuiltinIndexG != undefined { return aiBuiltinIndexG }
+    var idx = []
+    var cat = ""
+    var lines = strSplit(help(), "\n")
+    for var i = 0; i < len(lines); i = i + 1 {
+        var ln = lines[i]
+        if strStartsWith(ln, "== ") {
+            var e = strFind("（", ln)
+            if e > 0 { cat = strSub(ln, 3, e - 3) }
+        } elif strStartsWith(ln, "  ") {
+            var names = strSplit(strTrim(ln), ", ")
+            for var k = 0; k < len(names); k = k + 1 {
+                push(idx, {cat: cat, name: strTrim(names[k])})
+            }
+        }
+    }
+    aiBuiltinIndexG = idx
+    return idx
+}
+
+/// aiSystemPrompt 组装系统提示：角色 + 语言参考全文（知识注入）+ 函数索引 + 工具规则。
+func aiSystemPrompt() {
+    var p = "你是 Sflang 语言专家编程助手。Sflang 是轻量快速的脚本语言（Rust 字节码 VM）。始终用中文回答；所有代码放在 ```sflang 代码块中。\n\n"
+    p = p + "## Sflang 语言参考（权威资料）\n\n" + strFromBytes(base64Decode(langRefB64)) + "\n\n"
+    p = p + "## 内置函数索引（详情用 get_builtin_doc 工具查询，勿凭记忆猜签名）\n"
+    var idx = aiBuiltinIndex()
+    var lastCat = ""
+    for var i = 0; i < len(idx); i = i + 1 {
+        var e = idx[i]
+        if e["cat"] != lastCat {
+            p = p + "\n[" + e["cat"] + "] "
+            lastCat = e["cat"]
+        }
+        p = p + e["name"] + " "
+    }
+    p = p + "\n\n## 工具使用规则\n"
+    p = p + "1. 不确定内置函数签名/参数顺序时，必须先调 get_builtin_doc 查文档，禁止凭记忆猜。\n"
+    p = p + "2. 不确定某能力是否有内置函数时，先用 search_builtins 按关键词搜索。\n"
+    p = p + "3. 写完代码可用 run_sflang_code 实际运行验证（子进程执行，15 秒自动终止），根据输出修正后再给最终答案。\n"
+    p = p + "4. 最终回答给出完整可运行的代码与简要说明。"
+    return p
+}
+
+/// aiToolDefs 工具定义（结构化构建后 jsonEncode，避免手写 JSON 转义）。
+func aiToolDefs() {
+    var t1 = {type: "function", function: {name: "search_builtins", description: "按关键词搜索 Sflang 内置函数，返回匹配的函数名与所属分类", parameters: {type: "object", properties: {keyword: {type: "string", description: "关键词（函数名片段或能力描述）"}}, required: ["keyword"]}}}
+    var t2 = {type: "function", function: {name: "get_builtin_doc", description: "查看某个内置函数的完整文档：签名、参数、返回值、示例、常见错误", parameters: {type: "object", properties: {name: {type: "string", description: "函数名，如 procStart"}}, required: ["name"]}}}
+    var t3 = {type: "function", function: {name: "run_sflang_code", description: "执行一段 Sflang 代码并返回输出与退出码（子进程运行，15 秒自动终止）。用于验证代码正确性", parameters: {type: "object", properties: {code: {type: "string", description: "要执行的完整 Sflang 代码"}}, required: ["code"]}}}
+    return jsonEncode([t1, t2, t3])
+}
+
+/// aiChatOnce 调用一次 LLM（OpenAI 兼容 /chat/completions，非流式）。
+/// 返回 {ok:true, content, tool_calls} 或 {ok:false, err}。
+func aiChatOnce(cfg, messages) {
+    var url = cfg["baseURL"]
+    if !strEndsWith(url, "/") { url = url + "/" }
+    url = url + "chat/completions"
+    var bodyMap = {}
+    bodyMap["model"] = cfg["model"]
+    bodyMap["messages"] = messages
+    bodyMap["temperature"] = 0.3
+    var toolsVal = jsonDecode(aiToolDefs())
+    if !isErr(toolsVal) { bodyMap["tools"] = toolsVal }
+    var key = aiDecryptField(cfg["apiKey"])
+    var resp = postWeb(url, jsonEncode(bodyMap), "application/json", "Authorization: Bearer " + key, "--timeout=120")
+    if isErr(resp) {
+        return {ok: false, err: "请求失败: " + toStr(resp) + " (可能原因：baseURL 错误、网络不通、密钥无效)"}
+    }
+    var data = jsonDecode(resp)
+    if isErr(data) {
+        return {ok: false, err: "响应不是 JSON: " + strSub(resp, 0, 200)}
+    }
+    if data["error"] != undefined {
+        return {ok: false, err: "API 错误: " + toStr(data["error"]["message"])}
+    }
+    var choices = data["choices"]
+    if choices == undefined || len(choices) == 0 {
+        return {ok: false, err: "响应无 choices: " + strSub(resp, 0, 200)}
+    }
+    var msg = choices[0]["message"]
+    return {ok: true, content: msg["content"], tool_calls: msg["tool_calls"]}
+}
+
+/// aiExecTool 执行一次工具调用，返回文本结果。
+func aiExecTool(name, argsJson) {
+    var args = jsonDecode(argsJson)
+    if isErr(args) {
+        return "参数不是合法 JSON: " + strSub(argsJson, 0, 100)
+    }
+    if name == "search_builtins" {
+        var kw = toStr(args["keyword"])
+        var idx = aiBuiltinIndex()
+        var hits = ""
+        var cnt = 0
+        for var i = 0; i < len(idx); i = i + 1 {
+            var e = idx[i]
+            if strContains(e["name"], kw) || strContains(e["cat"], kw) {
+                hits = hits + e["cat"] + " | " + e["name"] + "\n"
+                cnt += 1
+                if cnt >= 40 {
+                    hits = hits + "…(已截断，请缩小关键词范围)"
+                    break
+                }
+            }
+        }
+        if hits == "" { return "无匹配函数" }
+        return "共 " + toStr(cnt) + " 个匹配：\n" + hits
+    }
+    if name == "get_builtin_doc" {
+        return help(toStr(args["name"]))
+    }
+    if name == "run_sflang_code" {
+        ensureTempDir()
+        writeFile("temp/.ai_run_tmp.sf", toStr(args["code"]))
+        var p = procStart(sfExe, "temp/.ai_run_tmp.sf")
+        if isErr(p) {
+            return "启动失败: " + toStr(p)
+        }
+        var out = ""
+        var waited = 0
+        while procIsRunning(p) {
+            out = out + procRead(p)
+            sleepMs(80)
+            waited += 80
+            if waited >= 15000 {
+                procKill(p)
+                out = out + "\n[超过 15 秒，已强制终止]"
+                break
+            }
+        }
+        out = out + procRead(p)
+        if len(out) > 8000 {
+            out = strSub(out, 0, 8000) + "\n…(输出过长已截断)"
+        }
+        return "退出码 " + toStr(procExitCode(p)) + "\n" + out
+    }
+    return "未知工具: " + name
+}
+
+/// aiChatCore 对话主循环（含工具轮次）。
+/// emitT 为进度回调 func(type, text)；返回 {ok:true, content} 或 {ok:false, err}。
+func aiChatCore(cfg, messages, emitT) {
+    for var round = 1; round <= 8; round = round + 1 {
+        emitT("progress", "第 " + toStr(round) + " 轮：请求 LLM…")
+        var r = aiChatOnce(cfg, messages)
+        if !r["ok"] {
+            return {ok: false, err: r["err"]}
+        }
+        var tcs = r["tool_calls"]
+        if tcs != undefined && len(tcs) > 0 {
+            push(messages, {role: "assistant", content: r["content"], tool_calls: tcs})
+            for var k = 0; k < len(tcs); k = k + 1 {
+                var fn = tcs[k]["function"]
+                emitT("tool", fn["name"])
+                var result = aiExecTool(fn["name"], fn["arguments"])
+                emitT("toolresult", fn["name"] + " 完成")
+                push(messages, {role: "tool", tool_call_id: tcs[k]["id"], content: result})
+            }
+            continue
+        }
+        return {ok: true, content: r["content"]}
+    }
+    return {ok: false, err: "已达到最大工具轮数（8），已停止"}
+}
+
+/// aiChatTask AICHAT 的后台任务体：注入系统提示 → 跑主循环 → guiEval 回传前端。
+func aiChatTask(data) {
+    var payload = jsonDecode(data)
+    if isErr(payload) {
+        aiBusyG = false
+        guiEval(win, "aiChatError('请求数据异常')")
+        return
+    }
+    var cfg = aiActiveConfig()
+    if cfg == undefined {
+        aiBusyG = false
+        guiEval(win, "aiNeedConfig()")
+        return
+    }
+    var full = [{role: "system", content: aiSystemPrompt()}]
+    var msgs = payload["messages"]
+    for var i = 0; i < len(msgs); i = i + 1 {
+        push(full, msgs[i])
+    }
+    var r = aiChatCore(cfg, full, func(t, txt) {
+        guiEval(win, "aiChatProgress('" + escapeJS(t + "|" + txt) + "')")
+    })
+    aiBusyG = false
+    if r["ok"] {
+        guiEval(win, "aiChatDone('" + escapeJS(r["content"]) + "')")
+    } else {
+        guiEval(win, "aiChatError('" + escapeJS(r["err"]) + "')")
+    }
+}
+
+/// aiCfgTestTask LLM 连接测试后台任务：发最小请求，结果经 aiCfgTestResult 回传。
+func aiCfgTestTask(d) {
+    var urlT = d["baseURL"]
+    if !strEndsWith(urlT, "/") { urlT = urlT + "/" }
+    urlT = urlT + "chat/completions"
+    var bm = {}
+    bm["model"] = d["model"]
+    bm["messages"] = [{role: "user", content: "ping"}]
+    bm["max_tokens"] = 5
+    var keyT = d["apiKey"]
+    if strStartsWith(keyT, "__ENCRYPT_ME__") { keyT = aiDecryptField(strSub(keyT, 14)) }
+    var respT = postWeb(urlT, jsonEncode(bm), "application/json", "Authorization: Bearer " + keyT, "--timeout=30")
+    if isErr(respT) {
+        guiEval(win, "aiCfgTestResult(false, '连接失败: ' + toStr(respT))")
+        return
+    }
+    var dataT = jsonDecode(respT)
+    if isErr(dataT) {
+        guiEval(win, "aiCfgTestResult(false, '响应不是 JSON: ' + strSub(respT, 0, 120))")
+        return
+    }
+    if dataT["error"] != undefined {
+        guiEval(win, "aiCfgTestResult(false, 'API 错误: ' + toStr(dataT['error']['message']))")
+        return
+    }
+    guiEval(win, "aiCfgTestResult(true, '连接成功，模型 ' + toStr(dataT['model']))")
+}
+
 // ---- GUI handler：处理来自前端的消息 ----
 func onMessageImpl(msg) {
+
     // 解析消息类型（用 \n 分隔操作码和数据）
     var nlPos = strFind("\n", msg)
     var op = ""
@@ -328,6 +613,46 @@ func onMessageImpl(msg) {
         } else {
             guiEval(win, "setStatus('当前没有运行中的脚本')")
         }
+    }
+    elif op == "AICHAT" {
+        // AI 对话：data = JSON {messages:[{role,content}...]}（前端维护历史）
+        // 后台任务执行（可能多轮 LLM/工具调用），经 aiChatDone/Error 回传
+        if aiBusyG {
+            guiEval(win, "aiChatError('AI 正忙，请等当前任务完成')")
+            return ""
+        }
+        if aiActiveConfig() == undefined {
+            guiEval(win, "aiNeedConfig()")
+            return ""
+        }
+        aiBusyG = true
+        guiEval(win, "aiChatPending()")
+        run aiChatTask(data)
+    }
+    elif op == "AICFG" {
+        // 返回全部 LLM 配置（apiKey 保持密文，前端空着表示未改）
+        loadAiConfigs()
+        guiEval(win, "aiCfgRender('" + escapeJS(jsonEncode(aiConfigsG)) + "', '" + escapeJS(aiActiveNameG) + "')")
+    }
+    elif op == "AICFG_SAVE" {
+        // data = JSON {configs:[...], active:名称}；apiKey 空=保留原值，__ENCRYPT_ME__明文=加密
+        var d = jsonDecode(data)
+        if isErr(d) {
+            guiEval(win, "aiCfgTestResult(false, '保存数据不是合法 JSON')")
+            return ""
+        }
+        saveAiConfigs(d["configs"], d["active"])
+        guiEval(win, "aiCfgTestResult(true, '配置已保存')")
+    }
+    elif op == "AICFG_TEST" {
+        // 连接测试：data = JSON {baseURL, apiKey, model}（后台任务发最小请求）
+        var d = jsonDecode(data)
+        if isErr(d) {
+            guiEval(win, "aiCfgTestResult(false, '测试数据不是合法 JSON')")
+            return ""
+        }
+        guiEval(win, "aiCfgTestPending()")
+        run aiCfgTestTask(d)
     }
     elif op == "CMDRUN" {
         // CMD 窗口运行：在新 CMD 窗口中执行脚本
@@ -927,6 +1252,42 @@ html = html + ".tab:hover { background: #37373d; color: #c8c8c8; }"
 html = html + ".tab.active { background: #1e1e1e; color: #fff; border-color: #505050; }"
 html = html + ".tab .tabclose { color: #888; padding: 0 2px; border-radius: 3px; font-size: 13px; line-height: 1; }"
 html = html + ".tab .tabclose:hover { background: #505050; color: #fff; }"
+html = html + ".ai-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 430px; background: #1e1e1e; border-left: 1px solid #3c3c3c; z-index: 3000; display: none; flex-direction: column; box-shadow: -8px 0 24px rgba(0,0,0,0.4); }"
+html = html + ".ai-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: #252526; border-bottom: 1px solid #3c3c3c; color: #d4d4d4; font-size: 13px; }"
+html = html + ".ai-head b { color: #4ec9b0; }"
+html = html + ".ai-head button { background: #3c3c3c; color: #d4d4d4; border: 1px solid #505050; border-radius: 3px; padding: 3px 9px; cursor: pointer; font-size: 12px; font-family: inherit; }"
+html = html + ".ai-head button:hover { background: #505050; }"
+html = html + ".ai-msgs { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }"
+html = html + ".ai-m { max-width: 92%; border-radius: 10px; padding: 8px 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }"
+html = html + ".ai-m.user { align-self: flex-end; background: #264f78; color: #fff; }"
+html = html + ".ai-m.bot { align-self: flex-start; background: #2d2d2d; color: #d4d4d4; }"
+html = html + ".ai-m.err { align-self: flex-start; background: #5a1e1e; color: #f87171; }"
+html = html + ".ai-m .prog { color: #888; font-size: 12px; }"
+html = html + ".ai-m pre { background: #161616; border: 1px solid #3c3c3c; border-radius: 6px; padding: 8px; margin: 6px 0; overflow-x: auto; font-family: Consolas, Menlo, monospace; font-size: 12px; color: #9cdcfe; }"
+html = html + ".ai-m .codebtns { display: flex; gap: 6px; margin-bottom: 4px; }"
+html = html + ".ai-m .codebtns button { background: #3c3c3c; color: #9cdcfe; border: 1px solid #505050; border-radius: 3px; padding: 2px 8px; cursor: pointer; font-size: 11px; font-family: inherit; }"
+html = html + ".ai-m .codebtns button:hover { background: #264f78; color: #fff; }"
+html = html + ".ai-quick { display: flex; gap: 5px; padding: 6px 10px 0; flex-wrap: wrap; }"
+html = html + ".ai-quick button { background: #2d2d2d; color: #4ec9b0; border: 1px solid #3c3c3c; border-radius: 10px; padding: 3px 10px; cursor: pointer; font-size: 12px; font-family: inherit; }"
+html = html + ".ai-quick button:hover { background: #37373d; }"
+html = html + ".ai-inputrow { display: flex; gap: 8px; padding: 10px; }"
+html = html + ".ai-inputrow textarea { flex: 1; height: 64px; background: #252526; color: #d4d4d4; border: 1px solid #505050; border-radius: 8px; padding: 8px 10px; font-size: 13px; font-family: inherit; resize: none; }"
+html = html + ".ai-inputrow textarea:focus { outline: none; border-color: #1a56db; }"
+html = html + ".ai-inputrow button { background: linear-gradient(135deg, #1a56db 0%, #0e2a86 100%); color: #fff; border: none; border-radius: 8px; padding: 0 18px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit; }"
+html = html + ".ai-inputrow button:disabled { opacity: 0.5; cursor: not-allowed; }"
+html = html + ".ai-cfg-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 4000; display: none; align-items: center; justify-content: center; }"
+html = html + ".ai-cfg-box { width: 520px; max-width: 92vw; background: #252526; border: 1px solid #505050; border-radius: 12px; padding: 18px 20px; color: #d4d4d4; }"
+html = html + ".ai-cfg-box h3 { margin: 0 0 12px; font-size: 15px; color: #4ec9b0; }"
+html = html + ".ai-cfg-box label { display: block; font-size: 12px; color: #9ca3af; margin: 9px 0 3px; }"
+html = html + ".ai-cfg-box input, .ai-cfg-box select { width: 100%; box-sizing: border-box; background: #1e1e1e; color: #d4d4d4; border: 1px solid #505050; border-radius: 5px; padding: 6px 9px; font-size: 13px; font-family: inherit; }"
+html = html + ".ai-cfg-box input:focus, .ai-cfg-box select:focus { outline: none; border-color: #1a56db; }"
+html = html + ".ai-cfg-btns { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }"
+html = html + ".ai-cfg-btns button { background: #3c3c3c; color: #d4d4d4; border: 1px solid #505050; border-radius: 5px; padding: 6px 14px; cursor: pointer; font-size: 12.5px; font-family: inherit; }"
+html = html + ".ai-cfg-btns button:hover { background: #505050; }"
+html = html + ".ai-cfg-btns button.primary { background: #1a56db; border-color: #1a56db; color: #fff; }"
+html = html + ".ai-cfg-status { margin-top: 10px; font-size: 12.5px; min-height: 18px; color: #9ca3af; }"
+html = html + ".ai-cfg-status.ok { color: #4ade80; }"
+html = html + ".ai-cfg-status.bad { color: #f87171; }"
 
 // 编辑器区
 html = html + ".editor-area { flex: 1; display: flex; overflow: hidden; position: relative; }"
@@ -1035,6 +1396,7 @@ html = html + "<div class='tpl-item' onclick=\"loadTpl('csvdb')\">CSV 数据库<
 html = html + "</div>"
 html = html + "</div>"
 html = html + "<div class='sep'></div>"
+html = html + "<button onclick='aiTogglePanel()' title='AI 助手'>🤖 AI</button>"
 html = html + "<button onclick=\"toggleWrap()\" title='切换折行' id='wrapBtn'>↩ 折行</button>"
 html = html + "<div style='position:relative;display:inline-block'>"
 html = html + "<button onclick='toggleMoreMenu()' title='更多功能'>⋯ 更多 ▾</button>"
@@ -1135,6 +1497,36 @@ if debugMode {
     html = html + "}, 0);"
     html = html + "</script>"
 }
+html = html + "<div class='ai-panel' id='aiPanel'>"
+html = html + "  <div class='ai-head'><b>🤖 AI 助手</b><span style='flex:1'></span><button onclick='aiOpenCfg()'>⚙ 设置</button><button onclick='aiTogglePanel()'>✕</button></div>"
+html = html + "  <div class='ai-head' style='padding:6px 12px'>供应商 <select id='aiCfgSel' onchange='aiCfgSelChange(this.value)' style='flex:1;background:#1e1e1e;color:#d4d4d4;border:1px solid #505050;border-radius:4px;padding:3px 6px;font-size:12px'></select></div>"
+html = html + "  <div class='ai-msgs' id='aiMsgs'><div class='ai-m bot ai-empty'>配置 LLM 后即可对话。已注入 Sflang 语言参考与 738 个内置函数索引——AI 可自行查文档、运行验证代码。</div></div>"
+html = html + "  <div class='ai-quick'><button onclick='aiQuick(\"explain\")'>解释选中</button><button onclick='aiQuick(\"fix\")'>修复选中</button><button onclick='aiQuick(\"optimize\")'>优化选中</button><button onclick='aiQuick(\"comment\")'>加注释</button></div>"
+html = html + "  <div class='ai-inputrow'><textarea id='aiInput' placeholder='向 AI 提问（Ctrl+Enter 发送）…'></textarea><button id='aiSend' onclick='aiSend()'>发送</button></div>"
+html = html + "</div>"
+html = html + "<div class='ai-cfg-overlay' id='aiCfgOverlay'>"
+html = html + "  <div class='ai-cfg-box'>"
+html = html + "    <h3>⚙ LLM 供应商设置（OpenAI 兼容）</h3>"
+html = html + "    <label>配置选择</label>"
+html = html + "    <select id='aiCfgSel2' onchange='aiCfgSelChange(this.value)'></select>"
+html = html + "    <label>名称</label>"
+html = html + "    <input id='aiCfgName' placeholder='如 DeepSeek / GLM / 本地 ollama'>"
+html = html + "    <label>Base URL（OpenAI 兼容根地址，以 /v1/ 结尾）</label>"
+html = html + "    <input id='aiCfgUrl' placeholder='https://api.deepseek.com/v1/'>"
+html = html + "    <label>API Key（留空保持已存值；仅本地加密存储）</label>"
+html = html + "    <input id='aiCfgKey' type='password' placeholder='sk-…'>"
+html = html + "    <label>模型</label>"
+html = html + "    <input id='aiCfgModel' placeholder='deepseek-chat'>"
+html = html + "    <div class='ai-cfg-btns'>"
+html = html + "      <button onclick='aiCfgNew()'>➕ 新增</button>"
+html = html + "      <button onclick='aiCfgDel()'>🗑 删除</button>"
+html = html + "      <button onclick='aiCfgSave()' class='primary'>💾 保存</button>"
+html = html + "      <button onclick='aiCfgTest()'>🔌 测试连接</button>"
+html = html + "      <button onclick='document.getElementById(\"aiCfgOverlay\").style.display = \"none\"'>关闭</button>"
+html = html + "    </div>"
+html = html + "    <div class='ai-cfg-status' id='aiCfgStatus'></div>"
+html = html + "  </div>"
+html = html + "</div>"
 html = html + "<script>"
 
 // Sflang 关键字
@@ -2728,6 +3120,224 @@ html = html + "  setDirty(false);"
 html = html + "  document.getElementById('editor').focus();"
 html = html + "};"
 
+html = html + "var aiCodeBlocks = [];"
+html = html + "var aiHistory = [];"
+html = html + "var aiCfgs = [];"
+html = html + "var aiCfgActiveName = '';"
+html = html + "var aiCfgEditIdx = -1;"
+html = html + "var aiStoredKeyHex = '';"
+html = html + "function escHtml(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }"
+html = html + "function aiTogglePanel() {"
+html = html + "  var p = document.getElementById('aiPanel');"
+html = html + "  var show = p.style.display !== 'flex';"
+html = html + "  p.style.display = show ? 'flex' : 'none';"
+html = html + "  if (show) { try { window.ipc.postMessage('AICFG'); } catch (e) {} }"
+html = html + "}"
+html = html + "function aiNeedConfig() {"
+html = html + "  if (document.getElementById('aiPanel').style.display !== 'flex') aiTogglePanel();"
+html = html + "  try { window.ipc.postMessage('AICFG'); } catch (e) {}"
+html = html + "  aiCfgStatus('尚未配置 LLM：请填写供应商信息并保存', 'bad');"
+html = html + "}"
+html = html + "function aiCfgStatus(msg, cls) {"
+html = html + "  var el = document.getElementById('aiCfgStatus');"
+html = html + "  el.textContent = msg;"
+html = html + "  el.className = 'ai-cfg-status' + (cls ? ' ' + cls : '');"
+html = html + "}"
+html = html + "function aiCfgRender(cfgJson, activeName) {"
+html = html + "  try { aiCfgs = JSON.parse(cfgJson); } catch (e) { aiCfgs = []; }"
+html = html + "  aiCfgActiveName = activeName || '';"
+html = html + "  var h = '';"
+html = html + "  for (var i = 0; i < aiCfgs.length; i++) {"
+html = html + "    h += '<option value=\"' + i + '\">' + escHtml(aiCfgs[i].name) + ' (' + escHtml(aiCfgs[i].model) + ')</option>';"
+html = html + "  }"
+html = html + "  if (!aiCfgs.length) h = '<option value=\"-1\">（未配置）</option>';"
+html = html + "  document.getElementById('aiCfgSel').innerHTML = h;"
+html = html + "  document.getElementById('aiCfgSel2').innerHTML = h;"
+html = html + "  var cur = -1;"
+html = html + "  for (var i = 0; i < aiCfgs.length; i++) { if (aiCfgs[i].name === aiCfgActiveName) { cur = i; break; } }"
+html = html + "  document.getElementById('aiCfgSel').value = cur;"
+html = html + "  document.getElementById('aiCfgSel2').value = cur;"
+html = html + "  if (cur < 0) { aiCfgEditIdx = -1; aiCfgStatus('未配置供应商：填写后保存即可启用 AI 功能'); return; }"
+html = html + "  aiCfgLoadForm(cur);"
+html = html + "}"
+html = html + "function aiCfgLoadForm(i) {"
+html = html + "  aiCfgEditIdx = i;"
+html = html + "  var c = aiCfgs[i];"
+html = html + "  document.getElementById('aiCfgName').value = c.name || '';"
+html = html + "  document.getElementById('aiCfgUrl').value = c.baseURL || '';"
+html = html + "  document.getElementById('aiCfgModel').value = c.model || '';"
+html = html + "  var keyEl = document.getElementById('aiCfgKey');"
+html = html + "  keyEl.value = '';"
+html = html + "  keyEl.placeholder = c.apiKey ? '已保存（留空保持不变）' : 'sk-…';"
+html = html + "  aiStoredKeyHex = c.apiKey || '';"
+html = html + "}"
+html = html + "function aiCfgSelChange(v) {"
+html = html + "  var idx = parseInt(v, 10);"
+html = html + "  if (!isNaN(idx) && idx >= 0 && idx < aiCfgs.length) { aiCfgLoadForm(idx); document.getElementById('aiCfgSel').value = idx; document.getElementById('aiCfgSel2').value = idx; }"
+html = html + "}"
+html = html + "function aiCfgNew() {"
+html = html + "  aiCfgs.push({name: '新供应商', baseURL: 'https://api.deepseek.com/v1/', apiKey: '', model: 'deepseek-chat'});"
+html = html + "  aiCfgLoadForm(aiCfgs.length - 1);"
+html = html + "  aiCfgStatus('已新增，填写后点保存');"
+html = html + "}"
+html = html + "function aiCfgDel() {"
+html = html + "  if (aiCfgEditIdx < 0 || aiCfgEditIdx >= aiCfgs.length) return;"
+html = html + "  if (!confirm('确定删除配置「' + aiCfgs[aiCfgEditIdx].name + '」？')) return;"
+html = html + "  aiCfgs.splice(aiCfgEditIdx, 1);"
+html = html + "  if (aiCfgs.length) { aiCfgLoadForm(Math.min(aiCfgEditIdx, aiCfgs.length - 1)); } else { aiCfgEditIdx = -1; aiCfgStatus('已删除；全部为空时可关闭对话框'); }"
+html = html + "}"
+html = html + "function aiCfgCollect() {"
+html = html + "  var name = document.getElementById('aiCfgName').value.trim();"
+html = html + "  var url = document.getElementById('aiCfgUrl').value.trim();"
+html = html + "  var key = document.getElementById('aiCfgKey').value;"
+html = html + "  var model = document.getElementById('aiCfgModel').value.trim();"
+html = html + "  if (!name || !url || !model) { aiCfgStatus('名称 / baseURL / 模型 不能为空', 'bad'); return null; }"
+html = html + "  var configs = JSON.parse(JSON.stringify(aiCfgs));"
+html = html + "  if (aiCfgEditIdx >= 0 && aiCfgEditIdx < configs.length) {"
+html = html + "    var c = configs[aiCfgEditIdx];"
+html = html + "    c.name = name; c.baseURL = url; c.model = model;"
+html = html + "    if (key) c.apiKey = '__ENCRYPT_ME__' + key;"
+html = html + "    aiCfgActiveName = name;"
+html = html + "    return {configs: configs, active: name};"
+html = html + "  }"
+html = html + "  var nk = key ? '__ENCRYPT_ME__' + key : '';"
+html = html + "  configs.push({name: name, baseURL: url, apiKey: nk, model: model});"
+html = html + "  aiCfgActiveName = name;"
+html = html + "  return {configs: configs, active: name};"
+html = html + "}"
+html = html + "function aiCfgSave() {"
+html = html + "  var payload = aiCfgCollect();"
+html = html + "  if (!payload) return;"
+html = html + "  try { window.ipc.postMessage('AICFG_SAVE' + String.fromCharCode(10) + JSON.stringify(payload)); } catch (e) { aiCfgStatus('保存失败: ' + e.message, 'bad'); }"
+html = html + "}"
+html = html + "function aiCfgTest() {"
+html = html + "  var payload = aiCfgCollect();"
+html = html + "  if (!payload) return;"
+html = html + "  var c = payload.configs[payload.configs.length - 1];"
+html = html + "  try { window.ipc.postMessage('AICFG_TEST' + String.fromCharCode(10) + JSON.stringify({baseURL: c.baseURL, apiKey: c.apiKey, model: c.model})); } catch (e) { aiCfgStatus('测试失败: ' + e.message, 'bad'); }"
+html = html + "}"
+html = html + "function aiCfgTestPending() { aiCfgStatus('正在测试连接…'); }"
+html = html + "function aiCfgTestResult(ok, msg) {"
+html = html + "  aiCfgStatus((ok ? '✓ ' : '✗ ') + msg, ok ? 'ok' : 'bad');"
+html = html + "  if (ok) { try { window.ipc.postMessage('AICFG'); } catch (e) {} }"
+html = html + "}"
+html = html + "function aiCfgSaved() {"
+html = html + "  aiCfgStatus('✓ 配置已保存', 'ok');"
+html = html + "  try { window.ipc.postMessage('AICFG'); } catch (e) {}"
+html = html + "}"
+html = html + "function aiSend() {"
+html = html + "  if (document.getElementById('aiSend').disabled) return;"
+html = html + "  var input = document.getElementById('aiInput');"
+html = html + "  var text = input.value.trim();"
+html = html + "  if (!text) return;"
+html = html + "  input.value = '';"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var sel = ta.value.substring(ta.selectionStart, ta.selectionEnd);"
+html = html + "  var ctx = sel ? sel : (ta.value.length <= 12000 ? ta.value : ta.value.substring(0, 12000) + '\\n…(已截断)');"
+html = html + "  var full = text + '\\n\\n[当前编辑器代码]\\n```sflang\\n' + ctx + '\\n```';"
+html = html + "  aiHistory.push({role: 'user', content: full});"
+html = html + "  aiAppendMsg('user', text);"
+html = html + "  aiPostChat();"
+html = html + "}"
+html = html + "function aiQuick(action) {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var sel = ta.value.substring(ta.selectionStart, ta.selectionEnd);"
+html = html + "  var target = sel || ta.value;"
+html = html + "  if (!target.trim()) { setStatus('没有可操作的代码'); return; }"
+html = html + "  var ask = {explain: '解释这段代码的功能与执行流程', fix: '找出这段代码的问题并给出修复后的完整代码', optimize: '优化这段代码的性能与可读性，给出优化后的完整代码', comment: '给这段代码加上清晰的注释，给出加注释后的完整代码'}[action];"
+html = html + "  var full = ask + ':\\n```sflang\\n' + target + '\\n```';"
+html = html + "  aiHistory.push({role: 'user', content: full});"
+html = html + "  aiAppendMsg('user', ask + (sel ? '（选中代码）' : '（整个文件）'));"
+html = html + "  aiPostChat();"
+html = html + "}"
+html = html + "function aiPostChat() {"
+html = html + "  document.getElementById('aiSend').disabled = true;"
+html = html + "  var box = document.getElementById('aiMsgs');"
+html = html + "  var d = document.createElement('div');"
+html = html + "  d.className = 'ai-m bot';"
+html = html + "  d.id = 'aiPending';"
+html = html + "  d.innerHTML = '<span class=\"prog\">AI 思考中…</span>';"
+html = html + "  box.appendChild(d);"
+html = html + "  box.scrollTop = box.scrollHeight;"
+html = html + "  try { window.ipc.postMessage('AICHAT' + String.fromCharCode(10) + JSON.stringify({messages: aiHistory})); } catch (e) { aiChatError('发送失败: ' + e.message); }"
+html = html + "}"
+html = html + "function aiChatPending() { }"
+html = html + "function aiChatProgress(text) {"
+html = html + "  var el = document.getElementById('aiPending');"
+html = html + "  if (el) { var i = text.indexOf('|'); el.innerHTML = '<span class=\"prog\">' + escHtml(text.substring(i + 1)) + '</span>'; }"
+html = html + "}"
+html = html + "function aiChatDone(content) {"
+html = html + "  aiHistory.push({role: 'assistant', content: content});"
+html = html + "  var box = document.getElementById('aiMsgs');"
+html = html + "  var pend = document.getElementById('aiPending');"
+html = html + "  if (pend) pend.remove();"
+html = html + "  var d = document.createElement('div');"
+html = html + "  d.className = 'ai-m bot';"
+html = html + "  aiRenderContent(d, content);"
+html = html + "  box.appendChild(d);"
+html = html + "  box.scrollTop = box.scrollHeight;"
+html = html + "  document.getElementById('aiSend').disabled = false;"
+html = html + "}"
+html = html + "function aiChatError(msg) {"
+html = html + "  document.getElementById('aiSend').disabled = false;"
+html = html + "  var pend = document.getElementById('aiPending');"
+html = html + "  if (pend) { pend.className = 'ai-m err'; pend.textContent = msg; }"
+html = html + "  else aiAppendMsg('err', msg);"
+html = html + "}"
+html = html + "function aiAppendMsg(role, text) {"
+html = html + "  var box = document.getElementById('aiMsgs');"
+html = html + "  var empty = box.querySelector('.ai-empty');"
+html = html + "  if (empty) empty.remove();"
+html = html + "  var d = document.createElement('div');"
+html = html + "  d.className = 'ai-m ' + (role === 'user' ? 'user' : (role === 'err' ? 'err' : 'bot'));"
+html = html + "  d.textContent = text;"
+html = html + "  box.appendChild(d);"
+html = html + "  box.scrollTop = box.scrollHeight;"
+html = html + "}"
+html = html + "function aiRenderContent(el, content) {"
+html = html + "  var parts = String(content).split('```');"
+html = html + "  el.innerHTML = '';"
+html = html + "  for (var i = 0; i < parts.length; i++) {"
+html = html + "    if (i % 2 === 0) {"
+html = html + "      if (!parts[i].trim()) continue;"
+html = html + "      var d = document.createElement('div');"
+html = html + "      d.innerHTML = escHtml(parts[i]).replace(/\\n/g, '<br>');"
+html = html + "      el.appendChild(d);"
+html = html + "    } else {"
+html = html + "      var code = parts[i];"
+html = html + "      var nl = code.indexOf('\\n');"
+html = html + "      if (nl > 0 && nl < 20 && /^[a-z]+$/.test(code.substring(0, nl).trim())) code = code.substring(nl + 1);"
+html = html + "      code = code.replace(/\\n+$/, '');"
+html = html + "      var id = aiCodeBlocks.push(code) - 1;"
+html = html + "      var btns = document.createElement('div');"
+html = html + "      btns.className = 'codebtns';"
+html = html + "      btns.innerHTML = '<button data-ai-ins=\"' + id + '\">插入到编辑器</button><button data-ai-run=\"' + id + '\">运行</button>';"
+html = html + "      var pre = document.createElement('pre');"
+html = html + "      pre.textContent = code;"
+html = html + "      el.appendChild(btns);"
+html = html + "      el.appendChild(pre);"
+html = html + "    }"
+html = html + "  }"
+html = html + "}"
+html = html + "document.addEventListener('click', function (e) {"
+html = html + "  var t = e.target;"
+html = html + "  if (t.dataset && t.dataset.aiIns !== undefined) { aiInsertCode(aiCodeBlocks[parseInt(t.dataset.aiIns, 10)]); }"
+html = html + "  else if (t.dataset && t.dataset.aiRun !== undefined) { aiRunBlock(aiCodeBlocks[parseInt(t.dataset.aiRun, 10)]); }"
+html = html + "});"
+html = html + "function aiInsertCode(code) {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  ta.focus();"
+html = html + "  document.execCommand('insertText', false, code);"
+html = html + "  onEdit();"
+html = html + "  setStatus('已插入 AI 代码');"
+html = html + "}"
+html = html + "function aiRunBlock(code) {"
+html = html + "  document.getElementById('status').textContent = '运行 AI 生成代码…';"
+html = html + "  try { window.ipc.postMessage('RUN' + String.fromCharCode(10) + code); } catch (e) { setStatus('发送失败: ' + e.message); }"
+html = html + "}"
+html = html + "document.getElementById('aiInput').addEventListener('keydown', function (e) {"
+html = html + "  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); aiSend(); }"
+html = html + "});"
 html = html + "</script>"
 // 调试模式：在主 JS 之后注入回调包装。
 // 后端通过 window.onAsyncResult / window.onStreamData 直接推送结果，
@@ -2735,22 +3345,9 @@ html = html + "</script>"
 // 包装后每次回调的参数（类型+预览）都会以 JSLOG 回传进调试日志，
 // 回调内部的异常也会进入 onerror（红色调试条 + JSERR 日志）。
 if debugMode {
-    html = html + "<script>"
-    html = html + "(function() {"
-    html = html + "  function jslog(m) { try { window.ipc.postMessage('JSLOG' + String.fromCharCode(10) + String(m).substring(0, 200)); } catch(e) {} }"
-    html = html + "  function wrap(name) {"
-    html = html + "    var f = window[name];"
-    html = html + "    if (typeof f !== 'function') return;"
-    html = html + "    window[name] = function(a, b, c) {"
-    html = html + "      jslog(name + '(' + a + (c ? ', ERR' : '') + ') ' + typeof b + ' : ' + String(b).substring(0, 120));"
-    html = html + "      try { return f(a, b, c); }"
-    html = html + "      catch(e) { try { window.onerror(name + ' 回调异常: ' + e.message, '(callback)', 0, 0); } catch(e2) {} }"
-    html = html + "    };"
-    html = html + "  }"
-    html = html + "  wrap('onAsyncResult'); wrap('onStreamData');"
-    html = html + "  jslog('回调包装完成 onAsyncResult=' + typeof window.onAsyncResult + ' onStreamData=' + typeof window.onStreamData);"
-    html = html + "})();"
-    html = html + "</script>"
+html = html + "  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); aiSend(); }"
+html = html + "});"
+html = html + "</script>"
 }
 html = html + "</html>"
 
@@ -2766,6 +3363,28 @@ if dumpHtmlG {
     writeFile("temp/sf_editor_dump.html", html)
     pln("界面 HTML 已写入 temp/sf_editor_dump.html (" + toStr(len(html)) + " 字符)")
     exit(0)
+}
+// --ai-selftest=<mockBaseURL>：AI 核心链路自测（工具循环直连 mock LLM，不开窗口）
+var selfTestUrlG = ""
+for var iG = 0; iG < len(argsG); iG = iG + 1 {
+    if strStartsWith(argsG[iG], "--ai-selftest=") {
+        selfTestUrlG = strSub(argsG[iG], 14)
+    }
+}
+if selfTestUrlG != "" {
+    var cfgT = {name: "selftest", baseURL: selfTestUrlG, apiKey: "test-key", model: "mock-model"}
+    var msgsT = [{role: "user", content: "帮我查一下 procStart 怎么用，然后写个例子运行验证"}]
+    var rT = aiChatCore(cfgT, msgsT, func(t, txt) {
+        pl("[" + t + "] " + txt)
+    })
+    if rT["ok"] {
+        pl("=== AI 自测成功，最终回答 ===")
+        pl(rT["content"])
+        exit(0)
+    } else {
+        pl("=== AI 自测失败: " + rT["err"])
+        exit(1)
+    }
 }
 var win = guiNewWindow("--title=Sflang 代码编辑器", "--width=1100", "--height=750")
 win = guiSetHtml(win, html)
