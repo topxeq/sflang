@@ -252,6 +252,9 @@ fn register_all_core(vm: &mut VM) {
     // 系统/进程：wasm 目标不注册
     #[cfg(not(target_arch = "wasm32"))]
     crate::builtins_sys::register(vm);
+    // 子进程控制：wasm 目标不注册
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::builtins_proc::register(vm);
     crate::concurrency::register(vm);
     crate::builtins_ring::register(vm);
     crate::builtins_csv::register(vm);

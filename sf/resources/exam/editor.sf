@@ -1,7 +1,9 @@
 // Sflang GUI 代码编辑器
 // ==================================
 // 一个用 Sflang 自身实现的代码编辑器，支持语法高亮、运行、快速求值、打开/保存。
-// 用法：sf examples/showcase/sf_editor.sf [文件路径] [--debug]
+// 用法：sf --edit [文件路径] [--debug]   （sf.exe 内嵌同款脚本）
+//       sf --exam editor.sf [文件路径] [--debug]   （从 Sflang 专区下载运行）
+//       --dump-html 把界面 HTML 写到 temp/sf_editor_dump.html 后退出（前端测试钩子）
 //       --debug 开启调试：IPC 消息、handler 异常、前端 JS 错误都会
 //       打印到控制台并记录到 temp/sf_editor_debug.log
 
@@ -50,6 +52,10 @@ var sshActiveName = ""
 var sshTermSessionG = undefined
 // 当前 PTY 会话的 streamId（前端 onStreamData 据此过滤）
 var sshTermStreamIdG = 0
+
+// ---- 运行链路状态 ----
+// runProcG 当前 RUN 的子进程句柄（procStart 返回；STOP/退出清理用）
+var runProcG = undefined
 
 // 查找 sf 可执行文件路径
 func findSfExe() {
@@ -251,6 +257,28 @@ func sshBuildArgs(srv) {
     return args
 }
 
+/// monitorRun 运行监视任务（经 run 启动）：轮询 procRead 把子进程输出
+/// 流式回传前端，退出后回报退出码。全程不占用 GUI 线程。
+/// 注意：本函数只在 run 任务中调用，读取主层全局 runProcG/win。
+func monitorRun() {
+    while procIsRunning(runProcG) {
+        var chunkT = procRead(runProcG)
+        if chunkT != "" {
+            guiEval(win, "appendOutput('" + escapeJS(chunkT) + "')")
+        }
+        sleepMs(60)
+    }
+    // 进程退出后排空剩余输出
+    var restT = procRead(runProcG)
+    if restT != "" {
+        guiEval(win, "appendOutput('" + escapeJS(restT) + "')")
+    }
+    var codeT = procExitCode(runProcG)
+    if codeT == undefined { codeT = -1 }
+    guiEval(win, "runningFinished(" + toStr(codeT) + ")")
+    runProcG = undefined
+}
+
 // ---- GUI handler：处理来自前端的消息 ----
 func onMessageImpl(msg) {
     // 解析消息类型（用 \n 分隔操作码和数据）
@@ -265,15 +293,31 @@ func onMessageImpl(msg) {
     }
 
     if op == "RUN" {
-        // 子进程模式：写临时文件 + systemCmd 执行
+        // 异步流式运行：procStart 启动子进程，run 任务轮询输出经 guiEval 回传前端，
+        // 全程不阻塞 GUI（脚本死循环时编辑器仍可响应，可随时 STOP）
         ensureTempDir()
         writeFile(tempFile, data)
-        // 用分离参数调用 systemCmd（避免 cmd /C 的路径解析问题）
-        var output = systemCmd(sfExe, tempFile)
-        // 检查是否有错误标记
-        var isError = strContains("错误", output) || strContains("error", output) || strContains("panic", output)
-        guiEval(win, "showOutput('" + escapeJS(output) + "', " + toStr(isError) + ")")
-        guiEval(win, "setStatus('运行完成')")
+        var procT = procStart(sfExe, tempFile)
+        if isErr(procT) {
+            guiEval(win, "showOutput('启动失败: " + escapeJS(toStr(procT)) + "', true)")
+            guiEval(win, "runningFinished(-1)")
+            return ""
+        }
+        runProcG = procT
+        guiEval(win, "runningStarted()")
+        run monitorRun()
+    }
+    elif op == "STOP" {
+        // 停止当前运行：强杀子进程（monitorRun 检测到退出后发 runningFinished）
+        if runProcG != undefined {
+            if procIsRunning(runProcG) {
+                procKill(runProcG)
+                guiEval(win, "setStatus('已终止运行进程')")
+            }
+            runProcG = undefined
+        } else {
+            guiEval(win, "setStatus('当前没有运行中的脚本')")
+        }
     }
     elif op == "CMDRUN" {
         // CMD 窗口运行：在新 CMD 窗口中执行脚本
@@ -405,10 +449,8 @@ func onMessageImpl(msg) {
                     detectedLE = "CRLF"
                     content = strReplace(content, "\r\n", "\n")
                 }
-                guiEval(win, "window.__tplContent = '" + escapeJS(content) + "';")
-                guiEval(win, "document.getElementById('editor').value = window.__tplContent; onEdit(); setDirty(false); currentFile='" + escapeJS(path) + "'; updateTitle(); document.getElementById('status').textContent='已打开: " + escapeJS(path) + "'; window.__tplContent=null;")
-                guiEval(win, "fileEncoding='" + detectedEnc + "'; encIdx=" + (detectedEnc == "GBK" ? "1" : "0") + "; document.getElementById('encodingInfo').textContent='" + detectedEnc + "';")
-                guiEval(win, "lineEnding='" + detectedLE + "'; leIdx=" + (detectedLE == "CRLF" ? "1" : "0") + "; document.getElementById('lineEndingInfo').textContent='" + detectedLE + "';")
+                guiEval(win, "openIntoTab('" + escapeJS(path) + "', '" + escapeJS(content) + "', '" + detectedEnc + "', '" + detectedLE + "');")
+                guiEval(win, "document.getElementById('status').textContent='已打开: " + escapeJS(path) + "';")
             } else {
                 guiEval(win, "showOutput('文件不存在: " + escapeJS(path) + "', true)")
             }
@@ -849,12 +891,29 @@ html = html + ".toolbar button:hover { background: #505050; }"
 html = html + ".toolbar button:active { background: #264f78; }"
 html = html + ".toolbar button.run { background: #388e3c; border-color: #4caf50; color: #fff; }"
 html = html + ".toolbar button.run:hover { background: #4caf50; }"
+html = html + ".toolbar button.stop { background: #c62828; border-color: #e53935; color: #fff; }"
+html = html + ".toolbar button.stop:hover { background: #e53935; }"
 html = html + ".toolbar button.build { background: #6a4fb3; border-color: #8a6fd4; color: #fff; }"
 html = html + ".toolbar button.build:hover { background: #7d5fc9; }"
 html = html + ".toolbar button.eval { background: #1565c0; border-color: #1976d2; color: #fff; }"
 html = html + ".toolbar button.eval:hover { background: #1976d2; }"
 html = html + ".toolbar .sep { width: 1px; height: 22px; background: #505050; margin: 0 4px; }"
 html = html + ".toolbar .title { margin-left: auto; color: #888; font-size: 12px; }"
+html = html + ".findbar { position: absolute; top: 0; right: 14px; z-index: 30; background: #252526; border: 1px solid #454545; border-top: none; border-radius: 0 0 6px 6px; padding: 6px 8px; display: none; gap: 5px; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }"
+html = html + ".findbar input { background: #1e1e1e; color: #d4d4d4; border: 1px solid #505050; border-radius: 3px; padding: 4px 7px; font-size: 12px; font-family: inherit; width: 170px; }"
+html = html + ".findbar input:focus { outline: none; border-color: #1a56db; }"
+html = html + ".findbar .cnt { color: #888; font-size: 12px; min-width: 52px; text-align: center; }"
+html = html + ".findbar button { background: #3c3c3c; color: #d4d4d4; border: 1px solid #505050; border-radius: 3px; padding: 3px 9px; cursor: pointer; font-size: 12px; font-family: inherit; }"
+html = html + ".findbar button:hover { background: #505050; }"
+html = html + ".findbar button.case-on { background: #264f78; border-color: #1a56db; }"
+html = html + ".tabbar { background: #252526; border-bottom: 1px solid #3c3c3c; display: flex; gap: 2px; padding: 4px 8px 0; overflow-x: auto; flex-shrink: 0; min-height: 30px; }"
+html = html + ".tabbar:empty { display: none; }"
+html = html + ".tab { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; background: #2d2d2d; color: #969696; border: 1px solid #3c3c3c; border-bottom: none; border-radius: 6px 6px 0 0; font-size: 12.5px; cursor: pointer; white-space: nowrap; user-select: none; }"
+html = html + ".tab:hover { background: #37373d; color: #c8c8c8; }"
+html = html + ".tab.active { background: #1e1e1e; color: #fff; border-color: #505050; }"
+html = html + ".tab .tabclose { color: #888; padding: 0 2px; border-radius: 3px; font-size: 13px; line-height: 1; }"
+html = html + ".tab .tabclose:hover { background: #505050; color: #fff; }"
+
 // 编辑器区
 html = html + ".editor-area { flex: 1; display: flex; overflow: hidden; position: relative; }"
 html = html + ".editor-wrap { flex: 1; position: relative; overflow: hidden; display: flex; }"
@@ -929,7 +988,8 @@ html = html + "</head><body>"
 
 // 工具栏
 html = html + "<div class='toolbar'>"
-html = html + "<button class='run' onclick='doRun()' title='运行(F5)'>▶ 运行</button>"
+html = html + "<button class='run' id='btnRun' onclick='doRun()' title='运行(F5)'>▶ 运行</button>"
+html = html + "<button class='stop' id='btnStop' onclick='doStop()' title='停止当前运行' style='display:none'>⏹ 停止</button>"
 html = html + "<button class='eval' onclick='doEval()' title='快速求值(F6)'>⚡ 求值</button>"
 html = html + "<button onclick='doCmdRun()' title='CMD窗口运行(F7)'>🖥 CMD</button>"
 html = html + "<button class='build' onclick='doBuild()' title='编译为独立可执行文件(F8)'>📦 编译</button>"
@@ -991,11 +1051,23 @@ html = html + "<input type='file' id='savePicker' nwsaveaccept='.sf,.txt' style=
 
 // 编辑器区
 html = html + "<div class='editor-area'>"
+html = html + "<div class='tabbar' id='tabbar'></div>"
 html = html + "<div class='editor-wrap'>"
 html = html + "<div class='gutter' id='gutter'>1</div>"
 html = html + "<div class='editor-inner'>"
 html = html + "<pre id='highlight'></pre>"
 html = html + "<textarea id='editor' spellcheck='false' oninput='onEdit()' onscroll='onScroll()' onkeydown='onKey(event)' onclick='updateCursor()' onkeyup='updateCursor()'></textarea>"
+html = html + "<div class='findbar' id='findbar'>"
+html = html + "  <input id='findInput' placeholder='查找 (回车=下一个)' oninput='updateFindCount()' onkeydown='onFindKey(event)'>"
+html = html + "  <button id='caseBtn' onclick='toggleCase()' title='区分大小写开/关'>Aa</button>"
+html = html + "  <span class='cnt' id='findCount'>0/0</span>"
+html = html + "  <button onclick='findNext(-1)' title='上一个 (Shift+F3)'>↑</button>"
+html = html + "  <button onclick='findNext(1)' title='下一个 (F3)'>↓</button>"
+html = html + "  <button onclick='closeFind()' title='关闭 (Esc)'>✕</button>"
+html = html + "  <input id='replInput' placeholder='替换为' style='width:150px'>"
+html = html + "  <button onclick='replaceOne()' title='替换当前匹配'>替换</button>"
+html = html + "  <button onclick='replaceAll()' title='替换全部'>全部</button>"
+html = html + "</div>"
 html = html + "</div>"
 html = html + "</div>"
 html = html + "</div>"
@@ -1138,7 +1210,87 @@ html = html + "var __xtermAssets = {js:'', css:'', fit:''};"
 html = html + "var __sshActiveName = '" + escapeJS(sshActiveName) + "';"
 html = html + "var __sshServerNames = " + sshNamesJson() + ";"
 html = html + "var __sshTermState = {term:null, fitAddon:null, streamId:0, dialog:null, reconnectBar:null, serverName:'', closed:false};"
-html = html + "function setDirty(v) { isDirty = v; updateTitle(); }"
+html = html + "function setDirty(v) { isDirty = v; tabRender(); updateTitle(); }"
+
+// ---- 多标签页：tabs[] 存非活动页快照，currentFile/isDirty/fileEncoding/lineEnding 仍为活动页镜像 ----
+html = html + "var tabs = [];"
+html = html + "var activeTab = -1;"
+html = html + "function tabNameOf(path, fallback) {"
+html = html + "  if (!path) return fallback;"
+html = html + "  return path.split('/').pop().split('\\\\').pop();"
+html = html + "}"
+html = html + "function tabSyncActive() {"
+html = html + "  if (activeTab < 0 || activeTab >= tabs.length) return;"
+html = html + "  var t = tabs[activeTab];"
+html = html + "  t.content = document.getElementById('editor').value;"
+html = html + "  t.path = currentFile;"
+html = html + "  t.dirty = isDirty;"
+html = html + "  t.enc = fileEncoding;"
+html = html + "  t.le = lineEnding;"
+html = html + "  t.name = tabNameOf(currentFile, t.name);"
+html = html + "}"
+html = html + "function tabRender() {"
+html = html + "  var bar = document.getElementById('tabbar');"
+html = html + "  if (!bar) return;"
+html = html + "  var h = '';"
+html = html + "  for (var i = 0; i < tabs.length; i++) {"
+html = html + "    var t = tabs[i];"
+html = html + "    h += '<span class=\"tab' + (i === activeTab ? ' active' : '') + '\" onclick=\"tabActivate(' + i + ')\" title=\"' + esc(t.path || t.name) + '\">' + esc(t.name) + (t.dirty ? ' ●' : '') + '<span class=\"tabclose\" onclick=\"event.stopPropagation(); tabClose(' + i + ')\">×</span></span>';"
+html = html + "  }"
+html = html + "  bar.innerHTML = h;"
+html = html + "}"
+html = html + "function tabApply(i) {"
+html = html + "  var t = tabs[i];"
+html = html + "  document.getElementById('editor').value = t.content;"
+html = html + "  currentFile = t.path;"
+html = html + "  fileEncoding = t.enc;"
+html = html + "  lineEnding = t.le;"
+html = html + "  document.getElementById('encodingInfo').textContent = t.enc;"
+html = html + "  document.getElementById('lineEndingInfo').textContent = t.le;"
+html = html + "  onEdit();"
+html = html + "  setDirty(t.dirty);"
+html = html + "  document.getElementById('editor').focus();"
+html = html + "}"
+html = html + "function tabActivate(i) {"
+html = html + "  if (i === activeTab) return;"
+html = html + "  tabSyncActive();"
+html = html + "  activeTab = i;"
+html = html + "  tabApply(i);"
+html = html + "  tabRender();"
+html = html + "  updateTitle();"
+html = html + "}"
+html = html + "function tabClose(i) {"
+html = html + "  tabSyncActive();"
+html = html + "  var t = tabs[i];"
+html = html + "  if (t.dirty && !confirm('\"' + t.name + '\" 未保存，确定关闭？')) return;"
+html = html + "  tabs.splice(i, 1);"
+html = html + "  if (tabs.length === 0) { tabNew('未命名.sf', '', '', false); clearOutput(); document.getElementById('status').textContent = '就绪'; return; }"
+html = html + "  if (i < activeTab) activeTab--;"
+html = html + "  else if (i === activeTab) activeTab = Math.min(i, tabs.length - 1);"
+html = html + "  tabApply(activeTab);"
+html = html + "  tabRender();"
+html = html + "  updateTitle();"
+html = html + "}"
+html = html + "function tabNew(name, path, content, dirty) {"
+html = html + "  tabSyncActive();"
+html = html + "  tabs.push({name: tabNameOf(path, name), path: path, content: content, dirty: dirty, enc: fileEncoding, le: lineEnding});"
+html = html + "  activeTab = tabs.length - 1;"
+html = html + "  tabApply(activeTab);"
+html = html + "  tabRender();"
+html = html + "  updateTitle();"
+html = html + "}"
+html = html + "function openIntoTab(path, content, enc, le) {"
+html = html + "  tabSyncActive();"
+html = html + "  tabs.push({name: tabNameOf(path, '未命名.sf'), path: path, content: content, dirty: false, enc: enc, le: le});"
+html = html + "  activeTab = tabs.length - 1;"
+html = html + "  tabApply(activeTab);"
+html = html + "  fileEncoding = enc; lineEnding = le;"
+html = html + "  document.getElementById('encodingInfo').textContent = enc;"
+html = html + "  document.getElementById('lineEndingInfo').textContent = le;"
+html = html + "  setDirty(false);"
+html = html + "  tabRender();"
+html = html + "  updateTitle();"
+html = html + "}"
 html = html + "function updateTitle() {"
 html = html + "  var base = currentFile || '未命名.sf';"
 html = html + "  var prefix = '';"
@@ -1228,12 +1380,111 @@ html = html + "  else if (e.key == 'F6') { e.preventDefault(); doEval(); }"
 html = html + "  else if (e.key == 'F7') { e.preventDefault(); doCmdRun(); }"
 html = html + "  else if (e.key == 'F8') { e.preventDefault(); doBuild(); }"
 html = html + "  else if (e.key == 'F9') { e.preventDefault(); doCheck(); }"
+html = html + "  else if (e.key == 'F3') { e.preventDefault(); if (document.getElementById('findbar').style.display === 'flex') findNext(e.shiftKey ? -1 : 1); else openFind(false); }"
+html = html + "  else if (e.ctrlKey && e.key == 'f') { e.preventDefault(); openFind(false); }"
+html = html + "  else if (e.ctrlKey && e.key == 'h') { e.preventDefault(); openFind(true); }"
 html = html + "  else if (e.ctrlKey && e.shiftKey && e.key == 'F') { e.preventDefault(); doFormat(); }"
 html = html + "  else if (e.ctrlKey && e.shiftKey && e.key == 'S') { e.preventDefault(); doSaveAs(); }"
 html = html + "  else if (e.ctrlKey && e.key == 's') { e.preventDefault(); doSave(); }"
 html = html + "  else if (e.ctrlKey && e.key == 'o') { e.preventDefault(); doOpen(); }"
 html = html + "  else if (e.ctrlKey && e.key == 'n') { e.preventDefault(); doNew(); }"
+html = html + "  else if (e.ctrlKey && e.key == ']') { e.preventDefault(); indentSelection(1); }"
+html = html + "  else if (e.ctrlKey && e.key == '[') { e.preventDefault(); indentSelection(-1); }"
+html = html + "  else if (e.ctrlKey && e.key == '\\\\') { e.preventDefault(); jumpToMatch(); }"
+html = html + "  else if (e.key == 'Enter' && !e.ctrlKey && !e.altKey) { e.preventDefault(); smartEnter(); }"
 html = html + "  else if (e.key == 'Tab') { e.preventDefault(); document.execCommand('insertText', false, '    '); }"
+html = html + "}"
+
+// ---- 智能回车：继承当前行缩进；{ 后加一级；} 前回退一级 ----
+html = html + "function smartEnter() {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var pos = ta.selectionStart;"
+html = html + "  var v = ta.value;"
+html = html + "  var lineStart = v.lastIndexOf('\\n', pos - 1) + 1;"
+html = html + "  var line = v.substring(lineStart, pos);"
+html = html + "  var indent = (line.match(/^\\s*/) || [''])[0];"
+html = html + "  var before = v.substring(0, pos);"
+html = html + "  var prevCh = before.length ? before[before.length - 1] : '';"
+html = html + "  var after = v.substring(pos);"
+html = html + "  var nextCh = after.length ? after[0] : '';"
+html = html + "  var insert = '\\n' + indent;"
+html = html + "  if (prevCh === '{') {"
+html = html + "    if (nextCh === '}') {"
+html = html + "      document.execCommand('insertText', false, '\\n' + indent + '    ' + '\\n' + indent);"
+html = html + "      var np = pos + 1 + indent.length + 4;"
+html = html + "      ta.setSelectionRange(np, np);"
+html = html + "      return;"
+html = html + "    }"
+html = html + "    insert += '    ';"
+html = html + "  } else if (nextCh === '}') {"
+html = html + "    insert = '\\n' + indent;"
+html = html + "    document.execCommand('insertText', false, insert);"
+html = html + "    return;"
+html = html + "  }"
+html = html + "  document.execCommand('insertText', false, insert);"
+html = html + "}"
+
+// ---- 选区缩进 / 反缩进（Ctrl+] / Ctrl+[） ----
+html = html + "function indentSelection(dir) {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var v = ta.value;"
+html = html + "  var a = ta.selectionStart, b = ta.selectionEnd;"
+html = html + "  var lineStart = v.lastIndexOf('\\n', a - 1) + 1;"
+html = html + "  var lineEnd = v.indexOf('\\n', b);"
+html = html + "  if (lineEnd === -1) lineEnd = v.length;"
+html = html + "  var block = v.substring(lineStart, lineEnd);"
+html = html + "  var lines = block.split('\\n');"
+html = html + "  for (var i = 0; i < lines.length; i++) {"
+html = html + "    if (dir > 0) { if (lines[i].length) lines[i] = '    ' + lines[i]; }"
+html = html + "    else { lines[i] = lines[i].replace(/^ {1,4}/, ''); }"
+html = html + "  }"
+html = html + "  var nb = lines.join('\\n');"
+html = html + "  if (nb === block) return;"
+html = html + "  ta.setSelectionRange(lineStart, lineEnd);"
+html = html + "  document.execCommand('insertText', false, nb);"
+html = html + "  ta.setSelectionRange(lineStart, lineStart + nb.length);"
+html = html + "  onEdit();"
+html = html + "}"
+
+// ---- 括号匹配：状态栏显示匹配位置；Ctrl+\ 跳转 ----
+html = html + "var BRACKET_PAIRS = { ')': '(', ']': '[', '}': '{', '(': ')', '[': ']', '{': '}' };"
+html = html + "function findMatchingBracket(v, pos, ch) {"
+html = html + "  var openers = '([{';"
+html = html + "  var isOpener = openers.indexOf(ch) !== -1;"
+html = html + "  var match = BRACKET_PAIRS[ch];"
+html = html + "  var depth = 1;"
+html = html + "  var i = isOpener ? pos + 1 : pos - 1;"
+html = html + "  var step = isOpener ? 1 : -1;"
+html = html + "  var inStr = false, strCh = '';"
+html = html + "  while (i >= 0 && i < v.length) {"
+html = html + "    var c = v[i];"
+html = html + "    if (inStr) {"
+html = html + "      if (c === '\\\\') { i += step; if (i < 0 || i >= v.length) break; if (v[i] === strCh) inStr = false; }"
+html = html + "      else if (c === strCh) inStr = false;"
+html = html + "      i += step; continue;"
+html = html + "    }"
+html = html + "    if (c === \"'\" || c === '\\'' ) { inStr = true; strCh = c; i += step; continue; }"
+html = html + "    if (c === '/' && v[i + 1] === '/' && step > 0) { var nl = v.indexOf('\\n', i); if (nl === -1) break; i = nl + 1; continue; }"
+html = html + "    if (c === ch) depth++;"
+html = html + "    else if (c === match) { depth--; if (depth === 0) return i; }"
+html = html + "    i += step;"
+html = html + "  }"
+html = html + "  return -1;"
+html = html + "}"
+html = html + "function jumpToMatch() {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var pos = ta.selectionStart;"
+html = html + "  var v = ta.value;"
+html = html + "  var chAt = v[pos], chBefore = v[pos - 1];"
+html = html + "  var ch = null, at = -1;"
+html = html + "  if (chAt && BRACKET_PAIRS[chAt]) { ch = chAt; at = pos; }"
+html = html + "  else if (chBefore && BRACKET_PAIRS[chBefore]) { ch = chBefore; at = pos - 1; }"
+html = html + "  if (ch === null) return;"
+html = html + "  var m = findMatchingBracket(v, at, ch);"
+html = html + "  if (m === -1) { setStatus('括号不匹配'); return; }"
+html = html + "  ta.focus();"
+html = html + "  ta.setSelectionRange(m, m + 1);"
+html = html + "  scrollToPos(ta, m);"
 html = html + "}"
 
 // 运行（子进程）
@@ -1290,11 +1541,7 @@ html = html + "}"
 
 // 新建文件
 html = html + "function doNew() {"
-html = html + "  if (isDirty && !confirm('当前文件未保存，是否放弃修改？')) return;"
-html = html + "  document.getElementById('editor').value = '';"
-html = html + "  onEdit();"
-html = html + "  currentFile = '';"
-html = html + "  setDirty(false);"
+html = html + "  tabNew('未命名.sf', '', '', false);"
 html = html + "  clearOutput();"
 html = html + "  document.getElementById('status').textContent = '就绪';"
 html = html + "  document.getElementById('editor').focus();"
@@ -1302,7 +1549,6 @@ html = html + "}"
 
 // 打开文件（用原生系统对话框，通过 IPC 调 Sflang 后端）
 html = html + "function doOpen() {"
-html = html + "  if (isDirty && !confirm('当前文件未保存，是否放弃修改？')) return;"
 html = html + "  document.getElementById('status').textContent = '请选择文件...';"
 html = html + "  window.ipc.postMessage('OPENDLG');"
 html = html + "}"
@@ -1335,6 +1581,178 @@ html = html + "function showOutput(text, isError) {"
 html = html + "  var el = document.getElementById('output');"
 html = html + "  el.className = 'output-content' + (isError ? ' error' : '');"
 html = html + "  el.textContent = text;"
+html = html + "  el.scrollTop = el.scrollHeight;"
+html = html + "}"
+
+// ---- 运行链路（异步流式）：runningStarted/appendOutput/runningFinished/doStop ----
+html = html + "var runExited = 0;"
+html = html + "function runningStarted() {"
+html = html + "  runExited = 0;"
+html = html + "  document.getElementById('btnRun').disabled = true;"
+html = html + "  document.getElementById('btnStop').style.display = '';"
+html = html + "  var el = document.getElementById('output');"
+html = html + "  el.className = 'output-content';"
+html = html + "  el.textContent = '';"
+html = html + "  setStatus('运行中… （点⏹停止）');"
+html = html + "}"
+html = html + "function appendOutput(text) {"
+html = html + "  var el = document.getElementById('output');"
+html = html + "  var stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;"
+html = html + "  el.textContent += text;"
+html = html + "  if (stick) el.scrollTop = el.scrollHeight;"
+html = html + "}"
+html = html + "function runningFinished(code) {"
+html = html + "  if (runExited) return;"
+html = html + "  runExited = 1;"
+html = html + "  document.getElementById('btnRun').disabled = false;"
+html = html + "  document.getElementById('btnStop').style.display = 'none';"
+html = html + "  var el = document.getElementById('output');"
+html = html + "  var tail = document.createElement('div');"
+html = html + "  var ok = (code === 0);"
+html = html + "  tail.style.color = ok ? '#4caf50' : '#ef5350';"
+html = html + "  tail.style.borderTop = '1px solid #3c3c3c';"
+html = html + "  tail.style.marginTop = '6px';"
+html = html + "  tail.style.paddingTop = '4px';"
+html = html + "  tail.textContent = ok ? '[退出码: 0，运行成功]' : ('[退出码: ' + code + '，运行失败]');"
+html = html + "  el.appendChild(tail);"
+html = html + "  el.scrollTop = el.scrollHeight;"
+html = html + "  setStatus(ok ? '运行完成 (退出码 0)' : '运行结束 (退出码 ' + code + ')');"
+html = html + "}"
+html = html + "function doStop() {"
+html = html + "  try { window.ipc.postMessage('STOP' + String.fromCharCode(10)); } catch (e) { setStatus('停止信号发送失败: ' + e.message); }"
+html = html + "}"
+
+// ---- 查找/替换（Ctrl+F / Ctrl+H / F3 / Esc） ----
+html = html + "var findCaseSensitive = false;"
+// findCursor 记录上一次命中位置（-1=未开始）；JS 行注释会吞掉后续无换行代码，注释一律放在 Sflang 层
+html = html + "var findCursor = -1;"
+html = html + "function openFind(withReplace) {"
+html = html + "  var fb = document.getElementById('findbar');"
+html = html + "  fb.style.display = 'flex';"
+html = html + "  document.getElementById('replInput').style.display = withReplace ? '' : 'none';"
+html = html + "  fb.querySelectorAll('button').forEach(function(b){ if (b.textContent==='替换'||b.textContent==='全部') b.style.display = withReplace ? '' : 'none'; });"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  if (ta.selectionEnd > ta.selectionStart) document.getElementById('findInput').value = ta.value.substring(ta.selectionStart, ta.selectionEnd);"
+html = html + "  document.getElementById('findInput').focus();"
+html = html + "  document.getElementById('findInput').select();"
+html = html + "  updateFindCount();"
+html = html + "}"
+html = html + "function closeFind() {"
+html = html + "  document.getElementById('findbar').style.display = 'none';"
+html = html + "  document.getElementById('editor').focus();"
+html = html + "}"
+html = html + "function toggleCase() {"
+html = html + "  findCaseSensitive = !findCaseSensitive;"
+html = html + "  document.getElementById('caseBtn').className = findCaseSensitive ? 'case-on' : '';"
+html = html + "  updateFindCount();"
+html = html + "}"
+html = html + "function buildNeedle() {"
+html = html + "  var n = document.getElementById('findInput').value;"
+html = html + "  return findCaseSensitive ? n : n.toLowerCase();"
+html = html + "}"
+html = html + "function buildHaystack() {"
+html = html + "  var v = document.getElementById('editor').value;"
+html = html + "  return findCaseSensitive ? v : v.toLowerCase();"
+html = html + "}"
+html = html + "function updateFindCount() {"
+html = html + "  var needle = buildNeedle();"
+html = html + "  var hay = buildHaystack();"
+html = html + "  var total = 0;"
+html = html + "  if (needle) { var i = 0; while ((i = hay.indexOf(needle, i)) !== -1) { total++; i += needle.length; } }"
+html = html + "  var idx = -1;"
+html = html + "  if (needle) {"
+html = html + "    var from = findCursor >= 0 ? findCursor : 0;"
+html = html + "    idx = hay.indexOf(needle, from);"
+html = html + "    if (idx === -1 && from > 0) idx = hay.indexOf(needle, 0);"
+html = html + "  }"
+html = html + "  findCursor = idx;"
+html = html + "  document.getElementById('findCount').textContent = (total ? (idx === -1 ? 0 : countOrdinal(hay, needle, idx)) : 0) + '/' + total;"
+html = html + "  if (idx !== -1) jumpTo(idx, needle.length);"
+html = html + "}"
+html = html + "function countOrdinal(hay, needle, target) {"
+html = html + "  var n = 0; var i = 0;"
+html = html + "  while ((i = hay.indexOf(needle, i)) !== -1) { n++; if (i === target) break; i += needle.length; }"
+html = html + "  return n;"
+html = html + "}"
+html = html + "function jumpTo(start, len) {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  ta.focus();"
+html = html + "  ta.setSelectionRange(start, start + len);"
+html = html + "  scrollToPos(ta, start);"
+html = html + "}"
+html = html + "function findNext(dir) {"
+html = html + "  var needle = buildNeedle();"
+html = html + "  if (!needle) return;"
+html = html + "  var hay = buildHaystack();"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var idx;"
+html = html + "  if (dir > 0) {"
+html = html + "    idx = hay.indexOf(needle, (findCursor >= 0 ? findCursor : ta.selectionStart) + needle.length > hay.length ? 0 : (findCursor >= 0 ? findCursor + needle.length : ta.selectionStart));"
+html = html + "    if (idx === -1) idx = hay.indexOf(needle, 0);"
+html = html + "  } else {"
+html = html + "    var from = findCursor >= 0 ? findCursor : ta.selectionStart;"
+html = html + "    idx = hay.lastIndexOf(needle, Math.max(0, from - 1));"
+html = html + "    if (idx === -1) idx = hay.lastIndexOf(needle);"
+html = html + "  }"
+html = html + "  if (idx === -1) { updateFindCount(); return; }"
+html = html + "  findCursor = idx;"
+html = html + "  jumpTo(idx, needle.length);"
+html = html + "  var total = 0, ord = 0, i = 0;"
+html = html + "  while ((i = hay.indexOf(needle, i)) !== -1) { total++; if (i <= idx) ord = total; i += needle.length; }"
+html = html + "  document.getElementById('findCount').textContent = ord + '/' + total;"
+html = html + "}"
+html = html + "function onFindKey(e) {"
+html = html + "  if (e.key == 'Enter') { e.preventDefault(); findNext(e.shiftKey ? -1 : 1); }"
+html = html + "  else if (e.key == 'Escape') { e.preventDefault(); closeFind(); }"
+html = html + "}"
+html = html + "function replaceOne() {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var needle = buildNeedle();"
+html = html + "  if (!needle) return;"
+html = html + "  var sel = ta.value.substring(ta.selectionStart, ta.selectionEnd);"
+html = html + "  var selCmp = findCaseSensitive ? sel : sel.toLowerCase();"
+html = html + "  if (selCmp !== needle) { findNext(1); return; }"
+html = html + "  var repl = document.getElementById('replInput').value;"
+html = html + "  ta.focus();"
+html = html + "  document.execCommand('insertText', false, repl);"
+html = html + "  onEdit();"
+html = html + "  findCursor = ta.selectionStart;"
+html = html + "  findNext(1);"
+html = html + "}"
+html = html + "function replaceAll() {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var needle = buildNeedle();"
+html = html + "  if (!needle) return;"
+html = html + "  var repl = document.getElementById('replInput').value;"
+html = html + "  var v = ta.value;"
+html = html + "  var hay = findCaseSensitive ? v : v.toLowerCase();"
+html = html + "  var n = 0, i = 0, out = '';"
+html = html + "  while (true) {"
+html = html + "    var j = hay.indexOf(needle, i);"
+html = html + "    if (j === -1) break;"
+html = html + "    out += v.substring(i, j) + repl;"
+html = html + "    i = j + needle.length;"
+html = html + "    n++;"
+html = html + "  }"
+html = html + "  if (n === 0) return;"
+html = html + "  out += v.substring(i);"
+html = html + "  ta.focus();"
+html = html + "  ta.setSelectionRange(0, ta.value.length);"
+html = html + "  document.execCommand('insertText', false, out);"
+html = html + "  onEdit();"
+html = html + "  setStatus('已替换 ' + n + ' 处');"
+html = html + "  updateFindCount();"
+html = html + "}"
+html = html + "function scrollToPos(ta, pos) {"
+html = html + "  var line = ta.value.substring(0, pos).split('\\n').length - 1;"
+html = html + "  var lh = 20;"
+html = html + "  var st = getComputedStyle(ta);"
+html = html + "  if (st.lineHeight && st.lineHeight !== 'normal') lh = parseFloat(st.lineHeight);"
+html = html + "  var target = line * lh;"
+html = html + "  if (target < ta.scrollTop + 8 || target > ta.scrollTop + ta.clientHeight - 8) {"
+html = html + "    ta.scrollTop = Math.max(0, target - ta.clientHeight / 2);"
+html = html + "  }"
+html = html + "  onScroll();"
 html = html + "}"
 
 // 设置编辑器内容（打开文件时）
@@ -2323,6 +2741,18 @@ if debugMode {
 html = html + "</html>"
 
 // ---- 创建窗口 ----
+// --dump-html：把生成的界面 HTML 写到 temp/sf_editor_dump.html 后退出（测试钩子，
+// 供浏览器自动化加载验证前端逻辑，无需真开 GUI 窗口）
+var dumpHtmlG = false
+for var iG = 0; iG < len(argsG); iG = iG + 1 {
+    if argsG[iG] == "--dump-html" { dumpHtmlG = true }
+}
+if dumpHtmlG {
+    ensureTempDir()
+    writeFile("temp/sf_editor_dump.html", html)
+    pln("界面 HTML 已写入 temp/sf_editor_dump.html (" + toStr(len(html)) + " 字符)")
+    exit(0)
+}
 var win = guiNewWindow("--title=Sflang 代码编辑器", "--width=1100", "--height=750")
 win = guiSetHtml(win, html)
 win = guiSetHandler(win, onMessage)
@@ -2334,10 +2764,18 @@ if initFile != "" && fileExists(initFile) {
     // 改为在 HTML 的 onload 中检查全局变量
     // 简单方案：把初始内容编码到 HTML 中
     html = strReplace(html, "window.onload = function() {",
-        "window.onload = function() { document.getElementById('editor').value = '" + escapeJS(initContent) + "'; document.getElementById('filename').textContent = '" + escapeJS(initFile) + "';")
+        "window.onload = function() { tabNew('" + escapeJS(initFile) + "', '" + escapeJS(initFile) + "', '" + escapeJS(initContent) + "', false); document.getElementById('filename').textContent = '" + escapeJS(initFile) + "';")
     win = guiSetHtml(win, html)
 }
 
 dbg("窗口已创建，即将进入 guiShow 事件循环（关闭窗口后才会返回）")
 guiShow(win)
 dbg("事件循环结束，窗口已关闭")
+// 退出清理：若仍有运行中的子脚本，终止之（避免孤儿进程）
+if runProcG != undefined {
+    if procIsRunning(runProcG) {
+        procKill(runProcG)
+        dbg("退出清理：已终止运行中的子进程")
+    }
+    runProcG = undefined
+}

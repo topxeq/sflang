@@ -54,6 +54,9 @@ pub mod builtins_hash;
 // 系统/进程内置函数（env/exec/临时目录等）：wasm 目标裁掉。
 #[cfg(not(target_arch = "wasm32"))]
 pub mod builtins_sys;
+// 子进程控制（procStart/procRead/procKill 等，依赖 std::process），wasm 目标裁掉。
+#[cfg(not(target_arch = "wasm32"))]
+pub mod builtins_proc;
 pub mod concurrency;
 pub mod ring;
 pub mod builtins_ring;

@@ -320,6 +320,10 @@ impl Value {
                 if n.downcast_ref::<std::sync::Arc<regex::Regex>>().is_some() {
                     return "regex".to_string();
                 }
+                #[cfg(not(target_arch = "wasm32"))]
+                if n.downcast_ref::<std::sync::Arc<crate::builtins_proc::ProcHandle>>().is_some() {
+                    return "process".to_string();
+                }
                 if n.downcast_ref::<std::sync::Arc<std::sync::Mutex<rust_xlsxwriter::Workbook>>>().is_some() {
                     return "workbook".to_string();
                 }
