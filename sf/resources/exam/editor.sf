@@ -298,6 +298,15 @@ var aiConfigsG = []
 var aiActiveNameG = ""
 var aiBusyG = false
 var aiBuiltinIndexG = undefined
+// 流式全局状态机（aiChatStreamOnce / aiSseLine 使用）
+var aiFullG = ""
+var aiTcAccG = []
+var aiDoneG = false
+var aiErrBodyG = ""
+var aiFinishG = ""
+var aiLastEmitLenG = 0
+var aiSseBufG = ""
+var aiOnDeltaG = undefined
 
 /// loadAiConfigs 从持久化配置载入 LLM 供应商列表与激活项。
 func loadAiConfigs() {
@@ -421,9 +430,11 @@ func aiChatOnce(cfg, messages) {
     if isErr(resp) {
         return {ok: false, err: "请求失败: " + toStr(resp) + " (可能原因：baseURL 错误、网络不通、密钥无效)"}
     }
-    var data = jsonDecode(resp)
-    if isErr(data) {
-        return {ok: false, err: "响应不是 JSON: " + strSub(resp, 0, 200)}
+    var data = undefined
+    try {
+        data = jsonDecode(resp)
+    } catch (e) {
+        return {ok: false, err: "响应不是 JSON: " + getErrStr(e)}
     }
     if data["error"] != undefined {
         return {ok: false, err: "API 错误: " + toStr(data["error"]["message"])}
@@ -438,9 +449,11 @@ func aiChatOnce(cfg, messages) {
 
 /// aiExecTool 执行一次工具调用，返回文本结果。
 func aiExecTool(name, argsJson) {
-    var args = jsonDecode(argsJson)
-    if isErr(args) {
-        return "参数不是合法 JSON: " + strSub(argsJson, 0, 100)
+    var args = undefined
+    try {
+        args = jsonDecode(argsJson)
+    } catch (e) {
+        return "参数不是合法 JSON: " + getErrStr(e)
     }
     if name == "search_builtins" {
         var kw = toStr(args["keyword"])
@@ -497,7 +510,11 @@ func aiExecTool(name, argsJson) {
 func aiChatCore(cfg, messages, emitT) {
     for var round = 1; round <= 8; round = round + 1 {
         emitT("progress", "第 " + toStr(round) + " 轮：请求 LLM…")
-        var r = aiChatOnce(cfg, messages)
+        var r = aiChatStreamOnce(cfg, messages, emitT)
+        if r["fallback"] != undefined && r["fallback"] == true {
+            emitT("progress", "curl 不可用，回退整段模式")
+            r = aiChatOnce(cfg, messages)
+        }
         if !r["ok"] {
             return {ok: false, err: r["err"]}
         }
@@ -520,10 +537,12 @@ func aiChatCore(cfg, messages, emitT) {
 
 /// aiChatTask AICHAT 的后台任务体：注入系统提示 → 跑主循环 → guiEval 回传前端。
 func aiChatTask(data) {
-    var payload = jsonDecode(data)
-    if isErr(payload) {
+    var payload = undefined
+    try {
+        payload = jsonDecode(data)
+    } catch (e) {
         aiBusyG = false
-        guiEval(win, "aiChatError('请求数据异常')")
+        guiEval(win, "aiChatError('请求数据异常: ' + getErrStr(e))")
         return
     }
     var cfg = aiActiveConfig()
@@ -576,8 +595,153 @@ func aiCfgTestTask(d) {
     guiEval(win, "aiCfgTestResult(true, '连接成功，模型 ' + toStr(dataT['model']))")
 }
 
+/// aiSseLine 处理一行 SSE 数据（流式全局状态机）。
+/// 依赖全局：aiFullG（累计内容）、aiTcAccG（tool_calls 分片累积）、
+/// aiDoneG（收到 [DONE]）、aiErrBodyG（API 错误）、aiOnDeltaG（增量回调）。
+func aiSseLine(line) {
+    if !strStartsWith(line, "data: ") { return }
+    var payload = strTrim(strSub(line, 6))
+    if payload == "[DONE]" {
+        aiDoneG = true
+        return
+    }
+    var d = undefined
+    try {
+        d = jsonDecode(payload)
+    } catch (e) {
+        return
+    }
+    if d["error"] != undefined {
+        aiErrBodyG = toStr(d["error"]["message"])
+        return
+    }
+    var ch = d["choices"]
+    if ch == undefined || len(ch) == 0 { return }
+    var delta = ch[0]["delta"]
+    if delta == undefined { return }
+    if delta["content"] != undefined && delta["content"] != "" {
+        aiFullG = aiFullG + delta["content"]
+        if len(aiFullG) >= aiLastEmitLenG + 24 {
+            aiLastEmitLenG = len(aiFullG)
+            aiOnDeltaG("content", aiFullG)
+        }
+    }
+    var dtc = delta["tool_calls"]
+    if dtc != undefined && len(dtc) > 0 {
+        for var k = 0; k < len(dtc); k = k + 1 {
+            var t = dtc[k]
+            var ti = t["index"]
+            if ti == undefined { ti = 0 }
+            while len(aiTcAccG) <= ti {
+                push(aiTcAccG, {id: "", name: "", args: ""})
+            }
+            if t["id"] != undefined { aiTcAccG[ti]["id"] = t["id"] }
+            var fnT = t["function"]
+            if fnT != undefined {
+                if fnT["name"] != undefined && fnT["name"] != "" {
+                    aiTcAccG[ti]["name"] = fnT["name"]
+                }
+                if fnT["arguments"] != undefined {
+                    aiTcAccG[ti]["args"] = aiTcAccG[ti]["args"] + fnT["arguments"]
+                }
+            }
+        }
+    }
+    var rf = ch[0]["finish_reason"]
+    if rf != undefined { aiFinishG = toStr(rf) }
+}
+
+/// aiChatStreamOnce 流式调用 LLM（curl 子进程 + SSE 增量解析）。
+/// onDelta("content", 累计全文) 实时回调（≥24 字符节流）；收尾必补发一次。
+/// 返回值同 aiChatOnce；curl 不可用时返回带 fallback:true，调用方回退整段模式。
+func aiChatStreamOnce(cfg, messages, onDelta) {
+    var url = cfg["baseURL"]
+    if !strEndsWith(url, "/") { url = url + "/" }
+    url = url + "chat/completions"
+    var bodyMap = {}
+    bodyMap["model"] = cfg["model"]
+    bodyMap["messages"] = messages
+    bodyMap["temperature"] = 0.3
+    bodyMap["stream"] = true
+    var toolsVal = jsonDecode(aiToolDefs())
+    if !isErr(toolsVal) { bodyMap["tools"] = toolsVal }
+    ensureTempDir()
+    writeFile("temp/.ai_body.json", jsonEncode(bodyMap))
+    var key = aiDecryptField(cfg["apiKey"])
+    var p = procStart("curl", "-sN", "-X", "POST", url,
+        "-H", "Content-Type: application/json",
+        "-H", "Authorization: Bearer " + key,
+        "--data-binary", "@temp/.ai_body.json",
+        "--max-time", "150")
+    if isErr(p) {
+        return {ok: false, err: "curl 不可用: " + toStr(p), fallback: true}
+    }
+    // 初始化流式全局状态
+    aiFullG = ""
+    aiTcAccG = []
+    aiDoneG = false
+    aiErrBodyG = ""
+    aiFinishG = ""
+    aiLastEmitLenG = 0
+    aiSseBufG = ""
+    aiOnDeltaG = onDelta
+    var rawHeadG = ""
+    var guard = 0
+    while !aiDoneG {
+        var chunk = procRead(p)
+        if chunk != "" {
+            if len(rawHeadG) < 400 { rawHeadG = rawHeadG + chunk }
+            aiSseBufG = aiSseBufG + chunk
+            var nl = strFind("\n", aiSseBufG)
+            while nl >= 0 {
+                var line = strSub(aiSseBufG, 0, nl)
+                aiSseBufG = strSub(aiSseBufG, nl + 1)
+                aiSseLine(strTrim(line))
+                nl = strFind("\n", aiSseBufG)
+            }
+        }
+        if aiDoneG { break }
+        sleepMs(30)
+        guard += 1
+        if guard > 6000 {
+            procKill(p)
+            break
+        }
+    }
+    procKill(p)
+    // 排空缓冲中未完成的行
+    var rest = procRead(p)
+    aiSseBufG = aiSseBufG + rest
+    var nl2 = strFind("\n", aiSseBufG)
+    while nl2 >= 0 {
+        aiSseLine(strTrim(strSub(aiSseBufG, 0, nl2)))
+        aiSseBufG = strSub(aiSseBufG, nl2 + 1)
+        nl2 = strFind("\n", aiSseBufG)
+    }
+    onDelta("content", aiFullG)
+    if aiErrBodyG != "" {
+        return {ok: false, err: "API 错误: " + aiErrBodyG}
+    }
+    if !aiDoneG && aiFullG == "" && len(aiTcAccG) == 0 {
+        // 没有任何有效 SSE 数据：多半是 HTTP 错误（401/404 等）
+        var head = strSub(rawHeadG, 0, 200)
+        if head == "" { head = "无响应" }
+        return {ok: false, err: "流式响应异常: " + head, fallback: true}
+    }
+    if len(aiTcAccG) > 0 {
+        var tcs = []
+        for var i = 0; i < len(aiTcAccG); i = i + 1 {
+            var t = aiTcAccG[i]
+            push(tcs, {id: t["id"], type: "function", function: {name: t["name"], arguments: t["args"]}})
+        }
+        return {ok: true, content: aiFullG, tool_calls: tcs}
+    }
+    return {ok: true, content: aiFullG}
+}
+
 // ---- GUI handler：处理来自前端的消息 ----
 func onMessageImpl(msg) {
+
 
     // 解析消息类型（用 \n 分隔操作码和数据）
     var nlPos = strFind("\n", msg)
@@ -636,9 +800,11 @@ func onMessageImpl(msg) {
     }
     elif op == "AICFG_SAVE" {
         // data = JSON {configs:[...], active:名称}；apiKey 空=保留原值，__ENCRYPT_ME__明文=加密
-        var d = jsonDecode(data)
-        if isErr(d) {
-            guiEval(win, "aiCfgTestResult(false, '保存数据不是合法 JSON')")
+        var d = undefined
+        try {
+            d = jsonDecode(data)
+        } catch (e) {
+            guiEval(win, "aiCfgTestResult(false, '保存数据不是合法 JSON: ' + getErrStr(e))")
             return ""
         }
         saveAiConfigs(d["configs"], d["active"])
@@ -646,9 +812,11 @@ func onMessageImpl(msg) {
     }
     elif op == "AICFG_TEST" {
         // 连接测试：data = JSON {baseURL, apiKey, model}（后台任务发最小请求）
-        var d = jsonDecode(data)
-        if isErr(d) {
-            guiEval(win, "aiCfgTestResult(false, '测试数据不是合法 JSON')")
+        var d = undefined
+        try {
+            d = jsonDecode(data)
+        } catch (e) {
+            guiEval(win, "aiCfgTestResult(false, '测试数据不是合法 JSON: ' + getErrStr(e))")
             return ""
         }
         guiEval(win, "aiCfgTestPending()")
@@ -713,7 +881,7 @@ func onMessageImpl(msg) {
             var chkText = toStr(chk)
             // 错误消息中行号格式："语法错误: N:"
             var errLine = -1
-            var posTag = strFind(chkText, "语法错误: ")
+            var posTag = strFind("语法错误: ", chkText)
             if posTag >= 0 {
                 var i = posTag + len("语法错误: ")
                 var digits = ""
@@ -3264,7 +3432,17 @@ html = html + "}"
 html = html + "function aiChatPending() { }"
 html = html + "function aiChatProgress(text) {"
 html = html + "  var el = document.getElementById('aiPending');"
-html = html + "  if (el) { var i = text.indexOf('|'); el.innerHTML = '<span class=\"prog\">' + escHtml(text.substring(i + 1)) + '</span>'; }"
+html = html + "  if (!el) return;"
+html = html + "  var i = text.indexOf('|');"
+html = html + "  var type = text.substring(0, i);"
+html = html + "  var payload = text.substring(i + 1);"
+html = html + "  if (type === 'delta') {"
+html = html + "    if (el.dataset.deltaMode !== '1') { el.className = 'ai-m bot'; el.dataset.deltaMode = '1'; el.innerHTML = ''; }"
+html = html + "    aiRenderContent(el, payload);"
+html = html + "    el.scrollTop = el.scrollHeight;"
+html = html + "  } else {"
+html = html + "    el.innerHTML = '<span class=\"prog\">' + escHtml(payload) + '</span>';"
+html = html + "  }"
 html = html + "}"
 html = html + "function aiChatDone(content) {"
 html = html + "  aiHistory.push({role: 'assistant', content: content});"
