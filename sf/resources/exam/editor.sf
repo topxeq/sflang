@@ -404,7 +404,8 @@ func aiSystemPrompt() {
     p = p + "2. 不确定内置函数签名/参数顺序时，必须先调 get_builtin_doc 查文档，禁止凭记忆猜。\n"
     p = p + "3. 不确定某能力是否有内置函数时，先用 search_builtins 按关键词搜索。\n"
     p = p + "4. 写完代码可用 run_sflang_code 实际运行验证（子进程执行，15 秒自动终止），根据输出修正后再给最终答案。\n"
-    p = p + "5. 最终回答给出完整可运行的代码与简要说明。"
+    p = p + "5. 最终回答给出完整可运行的代码与简要说明.\n"
+    p = p + "6. 文件操作：read_file/list_dir/write_file 直接访问本地文件系统；相对路径基于编辑器工作目录（get_cwd 查看）。read_file 仅支持 UTF-8 文本，二进制文件请用 run_sflang_code 写代码处理。"
     return p
 }
 
@@ -416,7 +417,11 @@ func aiToolDefs() {
     var t4 = {type: "function", function: {name: "get_editor_code", description: "查看编辑器当前的完整代码、选区与文件名。调试或修改用户代码前必须先调用", parameters: {type: "object", properties: {}, required: []}}}
     var t5 = {type: "function", function: {name: "get_output", description: "查看输出面板中最近一次脚本运行的输出日志（含报错信息），用于诊断用户脚本的问题", parameters: {type: "object", properties: {}, required: []}}}
     var t6 = {type: "function", function: {name: "set_editor_code", description: "将修改后的完整代码写回编辑器（用户立即可见）。仅用于应用你确认过的修改", parameters: {type: "object", properties: {code: {type: "string", description: "修改后的完整 Sflang 代码"}}, required: ["code"]}}}
-    return jsonEncode([t1, t2, t3, t4, t5, t6])
+    var t7 = {type: "function", function: {name: "read_file", description: "读取本地文本文件（UTF-8，自动识别 GBK），最大 50KB。超长返回截断", parameters: {type: "object", properties: {path: {type: "string", description: "文件路径（相对路径基于编辑器工作目录，建议绝对路径）"}}, required: ["path"]}}}
+    var t8 = {type: "function", function: {name: "write_file", description: "将文本内容写入本地文件（覆盖写入，UTF-8）", parameters: {type: "object", properties: {path: {type: "string", description: "目标文件路径"}, content: {type: "string", description: "要写入的文本内容"}}, required: ["path", "content"]}}}
+    var t9 = {type: "function", function: {name: "list_dir", description: "列出目录下的文件与子目录（最多 200 项）", parameters: {type: "object", properties: {path: {type: "string", description: "目录路径"}}}, required: ["path"]}}
+    var t10 = {type: "function", function: {name: "get_cwd", description: "获取编辑器当前工作目录与系统信息（相对路径基于此解析）", parameters: {type: "object", properties: {}, required: []}}}
+    return jsonEncode([t1, t2, t3, t4, t5, t6, t7, t8, t9, t10])
     return jsonEncode([t1, t2, t3])
 }
 
@@ -508,6 +513,53 @@ func aiExecTool(name, argsJson) {
             out = strSub(out, 0, 8000) + "\n…(输出过长已截断)"
         }
         return "退出码 " + toStr(procExitCode(p)) + "\n" + out
+    }
+    if name == "read_file" {
+        var pathT = absPath(toStr(args["path"]))
+        if !fileExists(pathT) {
+            return "文件不存在: " + pathT
+        }
+        var rawBytes = readFileBytes(pathT)
+        if !isUtf8(rawBytes) {
+            return "二进制或非 UTF-8 文件（" + toStr(len(rawBytes)) + " 字节），不适合直接阅读。可用 run_sflang_code 写代码处理（如 bytesGbToUtf8Str 转码）"
+        }
+        var contentT = strFromBytes(rawBytes)
+        var noteT = "（" + toStr(len(rawBytes)) + " 字节）"
+        if len(contentT) > 50000 {
+            contentT = strSub(contentT, 0, 50000)
+            noteT = noteT + "（超 50KB 已截断）"
+        }
+        return pathT + " " + noteT + ":\n" + contentT
+    }
+    if name == "write_file" {
+        var pathT = absPath(toStr(args["path"]))
+        var contentT = toStr(args["content"])
+        var w = writeFile(pathT, contentT)
+        if isErr(w) {
+            return "写入失败: " + toStr(w) + " (可能原因：目录不存在、权限不足)"
+        }
+        return "已写入 " + toStr(len(contentT)) + " 字符到 " + pathT
+    }
+    if name == "list_dir" {
+        var dirT = absPath(toStr(args["path"]))
+        var items = listDir(dirT)
+        if isErr(items) {
+            return "列目录失败: " + toStr(items)
+        }
+        var out = "目录 " + dirT + " 共 " + toStr(len(items)) + " 项:\n"
+        var n = 0
+        for var i = 0; i < len(items); i = i + 1 {
+            out = out + items[i] + "\n"
+            n += 1
+            if n >= 200 {
+                out = out + "…(仅显示前 200 项)"
+                break
+            }
+        }
+        return out
+    }
+    if name == "get_cwd" {
+        return "当前工作目录: " + getCurDir() + "\n系统: " + osName() + "/" + osArch() + "\n相对路径基于此目录解析，建议工具调用一律用绝对路径"
     }
     if name == "get_editor_code" {
         if aiCtxCodeG == "" {
