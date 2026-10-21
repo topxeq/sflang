@@ -738,6 +738,10 @@ func aiExecTool(name, argsJson, emitT) {
 /// emitT 为进度回调 func(type, text)；返回 {ok:true, content} 或 {ok:false, err}。
 func aiChatCore(cfg, messages, emitT) {
     for var round = 1; round <= 8; round = round + 1 {
+        // 工具执行阶段（含危险操作确认等待）用户按了停止：不再发起新请求
+        if aiStopG {
+            return {ok: true, content: "（已按要求停止）", stopped: true}
+        }
         emitT("progress", "第 " + toStr(round) + " 轮：请求 LLM…")
         var r = aiChatStreamOnce(cfg, messages, emitT)
         if r["fallback"] != undefined && r["fallback"] == true {
@@ -746,6 +750,10 @@ func aiChatCore(cfg, messages, emitT) {
         }
         if !r["ok"] {
             return {ok: false, err: r["err"]}
+        }
+        // 流式期间被停止：已收到的部分内容直接返回，未执行的 tool_calls 一并放弃
+        if r["stopped"] == true {
+            return {ok: true, content: r["content"], stopped: true}
         }
         var tcs = r["tool_calls"]
         if tcs != undefined && len(tcs) > 0 {
@@ -794,9 +802,18 @@ func aiChatTask(data) {
         totalT -= len(toStr(full[1]["content"]))
         remove(full, 1)
     }
-    var r = aiChatCore(cfg, full, func(t, txt) {
-        guiEval(win, "aiChatProgress('" + escapeJS(t + "|" + txt) + "')")
-    })
+    // 安全网：对话管线内任何意外异常（如 guiEval 抛出）都不允许把 aiBusyG 卡死在 true，
+    // 否则 AI 面板永久"正忙"只能重启编辑器
+    var r = undefined
+    try {
+        r = aiChatCore(cfg, full, func(t, txt) {
+            guiEval(win, "aiChatProgress('" + escapeJS(t + "|" + txt) + "')")
+        })
+    } catch (e) {
+        aiBusyG = false
+        guiEval(win, "aiChatError('" + escapeJS("内部错误（对话已中止，可重试）: " + getErrStr(e)) + "')")
+        return
+    }
     aiBusyG = false
     if r["ok"] {
         var doneMsgT = ""
@@ -1073,9 +1090,10 @@ func onMessageImpl(msg) {
             guiEval(win, "aiNeedConfig()")
             return ""
         }
-        aiBusyG = true
-        guiEval(win, "aiChatPending()")
-        run aiChatTask(data)
+    aiBusyG = true
+    aiStopG = false
+    guiEval(win, "aiChatPending()")
+    run aiChatTask(data)
     }
     elif op == "AICFG" {
         // 返回全部 LLM 配置（apiKey 保持密文，前端空着表示未改）；第 3 参为危险操作免确认开关
