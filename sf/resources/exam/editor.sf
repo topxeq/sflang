@@ -309,6 +309,10 @@ var aiFinishG = ""
 var aiLastEmitLenG = 0
 var aiSseBufG = ""
 var aiOnDeltaG = undefined
+// 危险操作确认门卫状态（同一时刻只有一轮对话在跑，单槽位即可）
+var aiConfirmSeqG = 0   // 确认请求序号（用于匹配应答与请求）
+var aiConfirmIdG = ""   // 当前待应答的确认请求 ID
+var aiConfirmAnsG = ""  // 应答内容：""=未应答，"yes"/"no"=用户选择
 
 /// loadAiConfigs 从持久化配置载入 LLM 供应商列表与激活项。
 func loadAiConfigs() {
@@ -362,6 +366,53 @@ func saveAiConfigs(configsArr, activeName) {
     aiActiveNameG = activeName
 }
 
+/// aiDangerAllowed 危险操作免确认开关是否开启（设置对话框勾选，持久化于 ai.dangerousNoConfirm）。
+func aiDangerAllowed() {
+    return getCfgStr("ai.dangerousNoConfirm", false) == true
+}
+
+/// aiConfirmGate 危险操作确认门卫：AI 的 delete_path/move_path/run_cmd 都要过这道门。
+/// 免确认开启时直接放行；否则向前端弹确认框等待用户应答。
+/// emitT 为进度回调（在对话面板显示"等待确认"提示）；title/detail 组成确认框正文。
+/// 返回 true=允许执行；false=用户拒绝、超时（120 秒）或对话已停止。
+func aiConfirmGate(emitT, title, detail) {
+    if aiDangerAllowed() { return true }
+    if aiStopG { return false }
+    // 生成请求 ID → 清空应答槽 → 通知前端弹确认框
+    aiConfirmSeqG += 1
+    aiConfirmIdG = "c" + toStr(aiConfirmSeqG)
+    aiConfirmAnsG = ""
+    emitT("progress", "⏸ 等待确认：" + title)
+    guiEval(win, "aiConfirmAsk('" + aiConfirmIdG + "', '" + escapeJS(title + "\n" + detail + "\n\n确定允许执行？") + "')")
+    // 轮询应答槽（后台任务中 sleep 让出调度，GUI 不受影响）；120 秒超时视为拒绝
+    var waited = 0
+    while aiConfirmAnsG == "" && waited < 120000 && !aiStopG {
+        sleepMs(150)
+        waited += 150
+    }
+    return aiConfirmAnsG == "yes"
+}
+
+/// aiDeleteDirRecursive 递归删除目录（removeDir 只能删空目录，这里先清空内容再删本身）。
+/// 返回 undefined=成功；error=失败（含路径，便于定位）。
+func aiDeleteDirRecursive(dir) {
+    var items = listDir(dir)
+    if isErr(items) {
+        return items
+    }
+    for var i = 0; i < len(items); i = i + 1 {
+        var full = joinPath(dir, items[i])
+        if isDir(full) {
+            var r = aiDeleteDirRecursive(full)
+            if isErr(r) { return r }
+        } else {
+            var r = deleteFile(full)
+            if isErr(r) { return r }
+        }
+    }
+    return removeDir(dir)
+}
+
 /// aiBuiltinIndex 解析 help() 总览生成 {cat, name} 索引（懒构建一次）。
 func aiBuiltinIndex() {
     if aiBuiltinIndexG != undefined { return aiBuiltinIndexG }
@@ -405,7 +456,8 @@ func aiSystemPrompt() {
     p = p + "3. 不确定某能力是否有内置函数时，先用 search_builtins 按关键词搜索。\n"
     p = p + "4. 写完代码可用 run_sflang_code 实际运行验证（子进程执行，15 秒自动终止），根据输出修正后再给最终答案。\n"
     p = p + "5. 最终回答给出完整可运行的代码与简要说明.\n"
-    p = p + "6. 文件操作：read_file/list_dir/write_file 直接访问本地文件系统；相对路径基于编辑器工作目录（get_cwd 查看）。read_file 仅支持 UTF-8 文本，二进制文件请用 run_sflang_code 写代码处理。"
+    p = p + "6. 文件操作：read_file/list_dir/write_file 直接访问本地文件系统；相对路径基于编辑器工作目录（get_cwd 查看）。read_file 仅支持 UTF-8 文本，二进制文件请用 run_sflang_code 写代码处理。\n"
+    p = p + "7. 危险操作 delete_path/move_path/run_cmd 默认会弹确认框等用户批准（被拒绝时不要重试同一操作，改问用户）；若用户开启了\"危险操作免确认\"则直接生效。这类操作要在回答里明确说明你做了什么。"
     return p
 }
 
@@ -421,7 +473,10 @@ func aiToolDefs() {
     var t8 = {type: "function", function: {name: "write_file", description: "将文本内容写入本地文件（覆盖写入，UTF-8）", parameters: {type: "object", properties: {path: {type: "string", description: "目标文件路径"}, content: {type: "string", description: "要写入的文本内容"}}, required: ["path", "content"]}}}
     var t9 = {type: "function", function: {name: "list_dir", description: "列出目录下的文件与子目录（最多 200 项）", parameters: {type: "object", properties: {path: {type: "string", description: "目录路径"}}}, required: ["path"]}}
     var t10 = {type: "function", function: {name: "get_cwd", description: "获取编辑器当前工作目录与系统信息（相对路径基于此解析）", parameters: {type: "object", properties: {}, required: []}}}
-    return jsonEncode([t1, t2, t3, t4, t5, t6, t7, t8, t9, t10])
+    var t11 = {type: "function", function: {name: "delete_path", description: "删除本地文件或目录（目录含全部子内容，不可恢复）。危险操作：默认弹确认框，用户批准后才执行", parameters: {type: "object", properties: {path: {type: "string", description: "要删除的文件或目录路径"}}, required: ["path"]}}}
+    var t12 = {type: "function", function: {name: "move_path", description: "移动/重命名本地文件或目录（目标已存在时拒绝执行）。危险操作：默认弹确认框，用户批准后才执行", parameters: {type: "object", properties: {src: {type: "string", description: "源路径"}, dst: {type: "string", description: "目标路径（不得与现有文件/目录重名）"}}, required: ["src", "dst"]}}}
+    var t13 = {type: "function", function: {name: "run_cmd", description: "执行系统命令（Windows cmd / Unix sh），返回 stdout/stderr 与退出码。危险操作：默认弹确认框，用户批准后才执行。用于 git/dir/ls 等只读命令较安全，避免主动执行格式化、批量删除类命令", parameters: {type: "object", properties: {cmd: {type: "string", description: "要执行的完整命令行"}, timeoutMs: {type: "integer", description: "可选。超时毫秒数，默认 15000，最大 60000"}}, required: ["cmd"]}}}
+    return jsonEncode([t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13])
 }
 
 /// aiChatOnce 调用一次 LLM（OpenAI 兼容 /chat/completions，非流式）。
@@ -459,7 +514,8 @@ func aiChatOnce(cfg, messages) {
 }
 
 /// aiExecTool 执行一次工具调用，返回文本结果。
-func aiExecTool(name, argsJson) {
+/// emitT 为进度回调（危险操作确认门卫用它显示"等待确认"提示）。
+func aiExecTool(name, argsJson, emitT) {
     var args = undefined
     try {
         args = jsonDecode(argsJson)
@@ -592,6 +648,89 @@ func aiExecTool(name, argsJson) {
         guiEval(win, "aiSetEditorCode('" + escapeJS(codeT) + "')")
         return "已将 " + toStr(len(codeT)) + " 字符写入编辑器（用户可见，脏标记已置位）"
     }
+    if name == "delete_path" {
+        var pathT = absPath(toStr(args["path"]))
+        if !fileExists(pathT) && !isDir(pathT) {
+            return "路径不存在: " + pathT + " (可能原因：路径拼写错误、相对路径未基于工作目录解析)"
+        }
+        var kindT = "文件"
+        if isDir(pathT) { kindT = "目录（含全部子内容，不可恢复）" }
+        if !aiConfirmGate(emitT, "删除" + kindT, pathT) {
+            return "用户拒绝（或超时/已停止），未执行删除: " + pathT + "。不要重试同一操作；可询问用户是否要在设置中开启\"危险操作免确认\""
+        }
+        var d = undefined
+        if isDir(pathT) {
+            d = aiDeleteDirRecursive(pathT)
+        } else {
+            d = deleteFile(pathT)
+        }
+        if isErr(d) {
+            return "删除失败: " + toStr(d) + " (可能原因：文件被其他程序占用、权限不足)"
+        }
+        return "已删除" + kindT + ": " + pathT
+    }
+    if name == "move_path" {
+        var srcT = absPath(toStr(args["src"]))
+        var dstT = absPath(toStr(args["dst"]))
+        if !fileExists(srcT) && !isDir(srcT) {
+            return "源路径不存在: " + srcT + " (可能原因：路径拼写错误、相对路径未基于工作目录解析)"
+        }
+        if fileExists(dstT) || isDir(dstT) {
+            return "目标已存在，拒绝覆盖: " + dstT + " (请换目标路径，或先经用户确认删除目标)"
+        }
+        if !aiConfirmGate(emitT, "移动/重命名", srcT + "  →  " + dstT) {
+            return "用户拒绝（或超时/已停止），未执行移动: " + srcT + " → " + dstT + "。不要重试同一操作"
+        }
+        var m = rename(srcT, dstT)
+        if isErr(m) {
+            return "移动失败: " + toStr(m) + " (可能原因：跨磁盘分区移动不支持、目标目录不存在、文件被占用)"
+        }
+        return "已移动: " + srcT + " → " + dstT
+    }
+    if name == "run_cmd" {
+        var cmdT = toStr(args["cmd"])
+        if strTrim(cmdT) == "" {
+            return "cmd 不能为空"
+        }
+        // 超时：默认 15 秒，可由参数指定，上限 60 秒
+        var timeoutT = 15000
+        if args["timeoutMs"] != undefined {
+            var tt = toInt(args["timeoutMs"])
+            if !isErr(tt) && tt > 0 { timeoutT = tt }
+        }
+        if timeoutT > 60000 { timeoutT = 60000 }
+        if !aiConfirmGate(emitT, "执行系统命令", cmdT) {
+            return "用户拒绝（或超时/已停止），未执行命令: " + cmdT + "。不要重试同一操作；可询问用户是否要在设置中开启\"危险操作免确认\""
+        }
+        // 平台 shell 包装：Windows 用 cmd /C，其余用 sh -c
+        var shT = "sh"
+        var shArgT = "-c"
+        if osName() == "windows" {
+            shT = "cmd"
+            shArgT = "/C"
+        }
+        var p = procStart(shT, shArgT, cmdT)
+        if isErr(p) {
+            return "启动失败: " + toStr(p)
+        }
+        var out = ""
+        var waited = 0
+        while procIsRunning(p) {
+            out = out + procRead(p)
+            sleepMs(80)
+            waited += 80
+            if waited >= timeoutT {
+                procKill(p)
+                out = out + "\n[超过 " + toStr(timeoutT / 1000) + " 秒，已强制终止]"
+                break
+            }
+        }
+        out = out + procRead(p)
+        if len(out) > 8000 {
+            out = strSub(out, 0, 8000) + "\n…(输出过长已截断)"
+        }
+        return "退出码 " + toStr(procExitCode(p)) + "\n" + out
+    }
     return "未知工具: " + name
 }
 
@@ -614,7 +753,7 @@ func aiChatCore(cfg, messages, emitT) {
             for var k = 0; k < len(tcs); k = k + 1 {
                 var fn = tcs[k]["function"]
                 emitT("tool", fn["name"])
-                var result = aiExecTool(fn["name"], fn["arguments"])
+                var result = aiExecTool(fn["name"], fn["arguments"], emitT)
                 emitT("toolresult", fn["name"] + " 完成")
                 push(messages, {role: "tool", tool_call_id: tcs[k]["id"], content: result})
             }
@@ -901,6 +1040,15 @@ func onMessageImpl(msg) {
         }
         guiEval(win, "setStatus('已发送 AI 停止信号')")
     }
+    elif op == "AI_CONFIRM_RESULT" {
+        // 危险操作确认框应答：data = "<请求ID>\n<yes|no>"（ID 不匹配视为过期应答，忽略）
+        var sepC = strFind("\n", data)
+        if sepC > 0 {
+            if strSub(data, 0, sepC) == aiConfirmIdG {
+                aiConfirmAnsG = strSub(data, sepC + 1)
+            }
+        }
+    }
     elif op == "AIHIST_SAVE" {
         var d = undefined
         try {
@@ -930,12 +1078,15 @@ func onMessageImpl(msg) {
         run aiChatTask(data)
     }
     elif op == "AICFG" {
-        // 返回全部 LLM 配置（apiKey 保持密文，前端空着表示未改）
+        // 返回全部 LLM 配置（apiKey 保持密文，前端空着表示未改）；第 3 参为危险操作免确认开关
         loadAiConfigs()
-        guiEval(win, "aiCfgRender('" + escapeJS(jsonEncode(aiConfigsG)) + "', '" + escapeJS(aiActiveNameG) + "')")
+        var ncT = "false"
+        if aiDangerAllowed() { ncT = "true" }
+        guiEval(win, "aiCfgRender('" + escapeJS(jsonEncode(aiConfigsG)) + "', '" + escapeJS(aiActiveNameG) + "', " + ncT + ")")
     }
     elif op == "AICFG_SAVE" {
-        // data = JSON {configs:[...], active:名称}；apiKey 空=保留原值，__ENCRYPT_ME__明文=加密
+        // data = JSON {configs:[...], active:名称, dangerNoConfirm:bool}
+        // apiKey 空=保留原值，__ENCRYPT_ME__明文=加密
         var d = undefined
         try {
             d = jsonDecode(data)
@@ -943,6 +1094,8 @@ func onMessageImpl(msg) {
             guiEval(win, "aiCfgTestResult(false, '保存数据不是合法 JSON: ' + escapeJS(getErrStr(e)))")
             return ""
         }
+        // 危险操作免确认开关与供应商配置一起持久化
+        setCfgStr("ai.dangerousNoConfirm", d["dangerNoConfirm"] == true)
         saveAiConfigs(d["configs"], d["active"])
         guiEval(win, "aiCfgTestResult(true, '配置已保存')")
     }
@@ -1820,6 +1973,7 @@ html = html + "    <label>API Key（留空保持已存值；仅本地加密存�
 html = html + "    <input id='aiCfgKey' type='password' placeholder='sk-…'>"
 html = html + "    <label>模型</label>"
 html = html + "    <input id='aiCfgModel' placeholder='deepseek-chat'>"
+html = html + "    <label style='display:flex;align-items:center;cursor:pointer;font-weight:normal;white-space:normal;line-height:1.5'><input type='checkbox' id='aiCfgDanger' style='margin:0 6px 0 0;flex:none'><span>危险操作免确认（勾选后 AI 的删除/移动/执行命令直接执行，不再逐个弹窗审批）</span></label>"
 html = html + "    <div class='ai-cfg-btns'>"
 html = html + "      <button onclick='aiCfgNew()'>➕ 新增</button>"
 html = html + "      <button onclick='aiCfgDel()'>🗑 删除</button>"
@@ -3451,8 +3605,9 @@ html = html + "  var el = document.getElementById('aiCfgStatus');"
 html = html + "  el.textContent = msg;"
 html = html + "  el.className = 'ai-cfg-status' + (cls ? ' ' + cls : '');"
 html = html + "}"
-html = html + "function aiCfgRender(cfgJson, activeName) {"
+html = html + "function aiCfgRender(cfgJson, activeName, noConfirm) {"
 html = html + "  document.getElementById('aiCfgOverlay').style.display = 'flex';"
+html = html + "  document.getElementById('aiCfgDanger').checked = !!noConfirm;"
 html = html + "  try { aiCfgs = JSON.parse(cfgJson); } catch (e) { aiCfgs = []; }"
 html = html + "  aiCfgActiveName = activeName || '';"
 html = html + "  var h = '';"
@@ -3517,6 +3672,7 @@ html = html + "}"
 html = html + "function aiCfgSave() {"
 html = html + "  var payload = aiCfgCollect();"
 html = html + "  if (!payload) return;"
+html = html + "  payload.dangerNoConfirm = document.getElementById('aiCfgDanger').checked;"
 html = html + "  try { window.ipc.postMessage('AICFG_SAVE' + String.fromCharCode(10) + JSON.stringify(payload)); } catch (e) { aiCfgStatus('保存失败: ' + e.message, 'bad'); }"
 html = html + "}"
 html = html + "function aiCfgTest() {"
@@ -3533,6 +3689,11 @@ html = html + "}"
 html = html + "function aiCfgSaved() {"
 html = html + "  aiCfgStatus('✓ 配置已保存', 'ok');"
 html = html + "  try { window.ipc.postMessage('AICFG'); } catch (e) {}"
+html = html + "}"
+html = html + "function aiConfirmAsk(id, msg) {"
+html = html + "  var ok = false;"
+html = html + "  try { ok = window.confirm(msg); } catch (e) { ok = false; }"
+html = html + "  try { window.ipc.postMessage('AI_CONFIRM_RESULT' + String.fromCharCode(10) + id + String.fromCharCode(10) + (ok ? 'yes' : 'no')); } catch (e) {}"
 html = html + "}"
 html = html + "function aiSend() {"
 html = html + "  var btn = document.getElementById('aiSend');"
