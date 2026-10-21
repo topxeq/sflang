@@ -400,10 +400,11 @@ func aiSystemPrompt() {
         p = p + e["name"] + " "
     }
     p = p + "\n\n## 工具使用规则\n"
-    p = p + "1. 不确定内置函数签名/参数顺序时，必须先调 get_builtin_doc 查文档，禁止凭记忆猜。\n"
-    p = p + "2. 不确定某能力是否有内置函数时，先用 search_builtins 按关键词搜索。\n"
-    p = p + "3. 写完代码可用 run_sflang_code 实际运行验证（子进程执行，15 秒自动终止），根据输出修正后再给最终答案。\n"
-    p = p + "4. 最终回答给出完整可运行的代码与简要说明。"
+    p = p + "1. 调试/修改用户代码的标准循环：get_editor_code 查看当前代码 →（需要时）get_output 查看上次运行输出定位问题 → set_editor_code 将修改写回编辑器 → run_sflang_code 运行验证 → 有报错继续修。\n"
+    p = p + "2. 不确定内置函数签名/参数顺序时，必须先调 get_builtin_doc 查文档，禁止凭记忆猜。\n"
+    p = p + "3. 不确定某能力是否有内置函数时，先用 search_builtins 按关键词搜索。\n"
+    p = p + "4. 写完代码可用 run_sflang_code 实际运行验证（子进程执行，15 秒自动终止），根据输出修正后再给最终答案。\n"
+    p = p + "5. 最终回答给出完整可运行的代码与简要说明。"
     return p
 }
 
@@ -412,6 +413,10 @@ func aiToolDefs() {
     var t1 = {type: "function", function: {name: "search_builtins", description: "按关键词搜索 Sflang 内置函数，返回匹配的函数名与所属分类", parameters: {type: "object", properties: {keyword: {type: "string", description: "关键词（函数名片段或能力描述）"}}, required: ["keyword"]}}}
     var t2 = {type: "function", function: {name: "get_builtin_doc", description: "查看某个内置函数的完整文档：签名、参数、返回值、示例、常见错误", parameters: {type: "object", properties: {name: {type: "string", description: "函数名，如 procStart"}}, required: ["name"]}}}
     var t3 = {type: "function", function: {name: "run_sflang_code", description: "执行一段 Sflang 代码并返回输出与退出码（子进程运行，15 秒自动终止）。用于验证代码正确性", parameters: {type: "object", properties: {code: {type: "string", description: "要执行的完整 Sflang 代码"}}, required: ["code"]}}}
+    var t4 = {type: "function", function: {name: "get_editor_code", description: "查看编辑器当前的完整代码、选区与文件名。调试或修改用户代码前必须先调用", parameters: {type: "object", properties: {}, required: []}}}
+    var t5 = {type: "function", function: {name: "get_output", description: "查看输出面板中最近一次脚本运行的输出日志（含报错信息），用于诊断用户脚本的问题", parameters: {type: "object", properties: {}, required: []}}}
+    var t6 = {type: "function", function: {name: "set_editor_code", description: "将修改后的完整代码写回编辑器（用户立即可见）。仅用于应用你确认过的修改", parameters: {type: "object", properties: {code: {type: "string", description: "修改后的完整 Sflang 代码"}}, required: ["code"]}}}
+    return jsonEncode([t1, t2, t3, t4, t5, t6])
     return jsonEncode([t1, t2, t3])
 }
 
@@ -503,6 +508,38 @@ func aiExecTool(name, argsJson) {
             out = strSub(out, 0, 8000) + "\n…(输出过长已截断)"
         }
         return "退出码 " + toStr(procExitCode(p)) + "\n" + out
+    }
+    if name == "get_editor_code" {
+        if aiCtxCodeG == "" {
+            return "编辑器为空或状态未同步（打开 AI 面板或发送消息时会自动同步）"
+        }
+        var out = "文件: " + aiCtxFileG + "\n代码长度: " + toStr(len(aiCtxCodeG)) + " 字符"
+        if aiCtxSelG != "" {
+            out = out + "\n\n[当前选中代码]\n" + strSub(aiCtxSelG, 0, 3000)
+        }
+        out = out + "\n\n[编辑器完整代码]\n" + aiCtxCodeG
+        if len(out) > 12000 {
+            out = strSub(out, 0, 12000) + "\n…(过长已截断)"
+        }
+        return out
+    }
+    if name == "get_output" {
+        if aiCtxOutputG == "" {
+            return "输出面板为空（尚未运行过脚本，或运行仍在进行）"
+        }
+        var o = aiCtxOutputG
+        if len(o) > 8000 {
+            o = strSub(o, 0, 8000) + "\n…(过长已截断)"
+        }
+        return "最近一次运行输出:\n" + o
+    }
+    if name == "set_editor_code" {
+        var codeT = toStr(args["code"])
+        if codeT == "" {
+            return "code 不能为空"
+        }
+        guiEval(win, "aiSetEditorCode('" + escapeJS(codeT) + "')")
+        return "已将 " + toStr(len(codeT)) + " 字符写入编辑器（用户可见，脏标记已置位）"
     }
     return "未知工具: " + name
 }
@@ -3346,6 +3383,7 @@ html = html + "function aiTogglePanel() {"
 html = html + "  var p = document.getElementById('aiPanel');"
 html = html + "  var show = p.style.display !== 'flex';"
 html = html + "  p.style.display = show ? 'flex' : 'none';"
+html = html + "  if (show) aiPushCtx();"
 html = html + "  if (show) { try { window.ipc.postMessage('AICFG'); } catch (e) {} }"
 html = html + "}"
 html = html + "function aiOpenCfg() {"
@@ -3475,6 +3513,7 @@ html = html + "  aiPostChat();"
 html = html + "}"
 html = html + "function aiPostChat() {"
 html = html + "  var btn = document.getElementById('aiSend');"
+html = html + "  aiPushCtx();"
 html = html + "  btn.dataset.mode = 'busy';"
 html = html + "  btn.textContent = '⏹ 停止';"
 html = html + "  var box = document.getElementById('aiMsgs');"
@@ -3539,6 +3578,20 @@ html = html + "  aiHistory = [];"
 html = html + "  var box = document.getElementById('aiMsgs');"
 html = html + "  box.innerHTML = '<div class=\"ai-m bot ai-empty\">对话已清空。</div>';"
 html = html + "  aiHistSave();"
+html = html + "}"
+
+html = html + "function aiPushCtx() {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  var op = document.getElementById('output');"
+html = html + "  var payload = {code: ta.value, sel: ta.value.substring(ta.selectionStart, ta.selectionEnd), output: op ? op.textContent : '', file: currentFile};"
+html = html + "  try { window.ipc.postMessage('AICTX' + String.fromCharCode(10) + JSON.stringify(payload)); } catch (e) {}"
+html = html + "}"
+html = html + "function aiSetEditorCode(code) {"
+html = html + "  var ta = document.getElementById('editor');"
+html = html + "  ta.value = code;"
+html = html + "  onEdit();"
+html = html + "  setDirty(true);"
+html = html + "  setStatus('AI 已更新编辑器代码');"
 html = html + "}"
 
 html = html + "function aiChatDone(content) {"
