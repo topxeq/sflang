@@ -544,7 +544,7 @@ func aiChatTask(data) {
         payload = jsonDecode(data)
     } catch (e) {
         aiBusyG = false
-        guiEval(win, "aiChatError('请求数据异常: ' + getErrStr(e))")
+        guiEval(win, "aiChatError('请求数据异常: ' + escapeJS(getErrStr(e)))")
         return
     }
     var cfg = aiActiveConfig()
@@ -590,22 +590,30 @@ func aiCfgTestTask(d) {
     bm["messages"] = [{role: "user", content: "ping"}]
     bm["max_tokens"] = 5
     var keyT = d["apiKey"]
-    if strStartsWith(keyT, "__ENCRYPT_ME__") { keyT = aiDecryptField(strSub(keyT, 14)) }
-    var respT = postWeb(urlT, jsonEncode(bm), "application/json", "Authorization: Bearer " + keyT, "--timeout=30")
+    if strStartsWith(keyT, "__ENCRYPT_ME__") {
+        keyT = aiDecryptField(strSub(keyT, 14))
+    } elif keyT != "" {
+        // 存量配置的 apiKey 是加密 hex：能解密则解密回明文，解不开视为明文（兼容手动配置）
+        var decT = decryptText(keyT, "")
+        if !isErr(decT) { keyT = decT }
+    }
+    var respT = postWeb(urlT, jsonEncode(bm), "application/json", "Authorization: Bearer " + keyT, "--timeout=15")
     if isErr(respT) {
-        guiEval(win, "aiCfgTestResult(false, '连接失败: ' + toStr(respT))")
+        guiEval(win, "aiCfgTestResult(false, '" + escapeJS("连接失败: " + toStr(respT)) + "')")
         return
     }
-    var dataT = jsonDecode(respT)
-    if isErr(dataT) {
-        guiEval(win, "aiCfgTestResult(false, '响应不是 JSON: ' + strSub(respT, 0, 120))")
+    var dataT = undefined
+    try {
+        dataT = jsonDecode(respT)
+    } catch (e) {
+        guiEval(win, "aiCfgTestResult(false, '" + escapeJS("响应不是 JSON: " + strSub(respT, 0, 120)) + "')")
         return
     }
     if dataT["error"] != undefined {
-        guiEval(win, "aiCfgTestResult(false, 'API 错误: ' + toStr(dataT['error']['message']))")
+        guiEval(win, "aiCfgTestResult(false, '" + escapeJS("API 错误: " + toStr(dataT["error"]["message"])) + "')")
         return
     }
-    guiEval(win, "aiCfgTestResult(true, '连接成功，模型 ' + toStr(dataT['model']))")
+    guiEval(win, "aiCfgTestResult(true, '" + escapeJS("连接成功，模型 " + toStr(dataT["model"])) + "')")
 }
 
 /// aiSseLine 处理一行 SSE 数据（流式全局状态机）。
@@ -844,7 +852,7 @@ func onMessageImpl(msg) {
         try {
             d = jsonDecode(data)
         } catch (e) {
-            guiEval(win, "aiCfgTestResult(false, '保存数据不是合法 JSON: ' + getErrStr(e))")
+            guiEval(win, "aiCfgTestResult(false, '保存数据不是合法 JSON: ' + escapeJS(getErrStr(e)))")
             return ""
         }
         saveAiConfigs(d["configs"], d["active"])
@@ -856,7 +864,7 @@ func onMessageImpl(msg) {
         try {
             d = jsonDecode(data)
         } catch (e) {
-            guiEval(win, "aiCfgTestResult(false, '测试数据不是合法 JSON: ' + getErrStr(e))")
+            guiEval(win, "aiCfgTestResult(false, '测试数据不是合法 JSON: ' + escapeJS(getErrStr(e)))")
             return ""
         }
         guiEval(win, "aiCfgTestPending()")
