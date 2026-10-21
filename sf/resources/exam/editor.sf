@@ -422,7 +422,6 @@ func aiToolDefs() {
     var t9 = {type: "function", function: {name: "list_dir", description: "列出目录下的文件与子目录（最多 200 项）", parameters: {type: "object", properties: {path: {type: "string", description: "目录路径"}}}, required: ["path"]}}
     var t10 = {type: "function", function: {name: "get_cwd", description: "获取编辑器当前工作目录与系统信息（相对路径基于此解析）", parameters: {type: "object", properties: {}, required: []}}}
     return jsonEncode([t1, t2, t3, t4, t5, t6, t7, t8, t9, t10])
-    return jsonEncode([t1, t2, t3])
 }
 
 /// aiChatOnce 调用一次 LLM（OpenAI 兼容 /chat/completions，非流式）。
