@@ -145,7 +145,9 @@ pub extern "C" fn sf_run(code_len: usize) -> i64 {
     sf.set_output(OutSink);
     let result = sf.run_string(src);
 
-    // 排空 fire-and-forget 任务（run 启动的后台体在 wasm 单线程泵里执行）
+    // 排空 fire-and-forget 任务（run 启动的后台体在 wasm 单线程泵里执行）。
+    // 仅 wasm 目标有泵；桌面目标任务由常驻 worker 线程消费，无需（也无法）泵。
+    #[cfg(target_arch = "wasm32")]
     sflang::scheduler::pump_all();
 
     match result {

@@ -6,6 +6,9 @@
 
 [workspace]
 members = ["sflang", "sf", "sflang-wasm"]
+# default-members：裸 cargo build/test 只覆盖桌面包；sflang-wasm 仅 wasm 目标
+# 显式构建（cargo build -p sflang-wasm --target wasm32-unknown-unknown）
+default-members = ["sflang", "sf"]
 resolver = "2"
 
 # workspace 级别的依赖统一管理
