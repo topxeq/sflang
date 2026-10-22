@@ -1364,7 +1364,13 @@ func onMessageImpl(msg) {
         guiEval(win, "showOutput('" + escapeJS(info) + "', false)")
     }
     elif op == "SETTITLE" {
-        guiSetTitle(win, data)
+        // 窗口标题统一带应用名前缀：JS 层只传文件名部分（含 SSH 前缀/脏标记），
+        // 这里补上 "Sflang代码编辑器（Vx.x.x） - " 前缀，保证改文件名后前缀不丢
+        if data == "" {
+            guiSetTitle(win, "Sflang代码编辑器（V" + getVersion() + "）")
+        } else {
+            guiSetTitle(win, "Sflang代码编辑器（V" + getVersion() + "） - " + data)
+        }
     }
     elif op == "HELPDLG" {
         var helpMd = "# Sflang 代码编辑器\n\n## 快捷键\n\n| 按键 | 功能 |\n|------|------|\n| F5 | 运行（子进程，完整输出）|\n| F6 | 快速求值（进程内，返回值）|\n| F7 | CMD窗口运行 |\n| Ctrl+N | 新建 |\n| Ctrl+O | 打开 |\n| Ctrl+S | 保存 |\n| Ctrl+Shift+S | 另存为 |\n| Tab | 缩进4空格 |\n\n## 状态栏\n\n- 点击 **UTF-8** 切换编码（UTF-8/GBK）\n- 点击 **LF** 切换换行符（LF/CRLF）\n\n## 更多帮助\n\n- 命令行：`sf --help`\n- 脚本内：`help()` 内置函数\n- 内置函数列表：`sf --list-builtins`\n"
@@ -2760,6 +2766,8 @@ html = html + "  dlg.style.cssText = 'background:#252526;color:#d4d4d4;border:1p
 html = html + "  dlg.innerHTML = '<div style=\"font-size:20px;font-weight:bold;margin-bottom:12px;color:#4ec9b0;\">Sflang 代码编辑器</div>';"
 html = html + "  dlg.innerHTML += '<div>版本: 1.0</div>';"
 html = html + "  dlg.innerHTML += '<div>语言: <span style=\"color:#569cd6;\">Sflang</span></div>';"
+html = html + "  dlg.innerHTML += '<div>Sflang 版本: " + getVersion() + "</div>';"
+html = html + "  dlg.innerHTML += '<div>作者: TopXeq（陆满庭）</div>';"
 html = html + "  dlg.innerHTML += '<div style=\"color:#888;font-size:12px;margin-top:8px;\">github.com/topxeq/sflang</div>';"
 html = html + "  dlg.innerHTML += '<div style=\"color:#888;font-size:12px;\">用 Sflang 自身编写</div>';"
 html = html + "  var btn = document.createElement('button');"
@@ -3949,7 +3957,7 @@ if selfTestUrlG != "" {
         exit(1)
     }
 }
-var win = guiNewWindow("--title=Sflang 代码编辑器", "--width=1100", "--height=750")
+var win = guiNewWindow("--title=Sflang代码编辑器（V" + getVersion() + "）", "--width=1100", "--height=750")
 win = guiSetHtml(win, html)
 win = guiSetHandler(win, onMessage)
 
